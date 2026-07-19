@@ -49,14 +49,14 @@ Right-click the picture for every control; the same options live in the toolbar.
 # Architecture
 
 ```
-┌─────────────┐  REST (HTTP)   ┌──────────────────┐
+┌───────────-──┐  REST (HTTP)   ┌──-────────────────┐
 │              │◀──────────────▶│ UltimateAPIClient │  control plane
-│  C64 Ultimate│                └──────────────────┘
-│   (device)   │  UDP video     ┌──────────────────┐   ┌───────────────────┐
+│  C64 Ultimate│                └───-───────────────┘
+│   (device)   │  UDP video     ┌────────────────-──┐   ┌───────────-────────┐
 │              │───────────────▶│  VideoReceiver    │──▶│ MetalFrameRenderer │──▶ screen
-│              │  UDP audio     ├──────────────────┤   └───────────────────┘
+│              │  UDP audio     ├─────────────────-─┤   └──────────-─────────┘
 │              │───────────────▶│  AudioReceiver    │──▶ AVAudioEngine ──▶ speakers
-└─────────────┘                └──────────────────┘
+└─────────-────┘                └─────────────────-─┘
                                         ▲
                                DeviceSession (per device)
                                         ▲
