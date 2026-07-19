@@ -105,7 +105,15 @@ final class AudioReceiver {
         primed = false
         os_unfair_lock_unlock(lock)
 
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // CoreAudio can refuse (error 35) when the engine is restarted
+            // in quick succession — e.g. stop/start during a reconnect.
+            // A brief pause and one retry clears it.
+            Thread.sleep(forTimeInterval: 0.25)
+            try engine.start()
+        }
         started = true
 
         let params = NWParameters.udp

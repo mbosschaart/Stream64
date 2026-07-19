@@ -71,11 +71,21 @@ final class DeviceSession: ObservableObject {
 
     // MARK: - Connection lifecycle
 
+    private var connecting = false
+
     func connect() async {
         guard !device.host.isEmpty else {
             state = .error("Device has no address configured.")
             return
         }
+        // Reentrancy guard: connect is triggered from several places
+        // (auto-connect .task, Retry button, watchdog, grid tiles) and two
+        // interleaved runs race on the audio engine (CoreAudio error 35)
+        // and the receivers.
+        guard !connecting else { return }
+        connecting = true
+        defer { connecting = false }
+
         state = .connecting
         do {
             // Verify the device is reachable and get its identity.
@@ -86,11 +96,18 @@ final class DeviceSession: ObservableObject {
 
             // Start local UDP receivers first so no packets are dropped.
             try videoReceiver.start(port: UInt16(device.videoPort))
+            var audioFailed: String?
             if settings.audioEnabled {
                 audioReceiver.volume = Float(settings.volume)
                 audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
                 audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
-                try audioReceiver.start(port: UInt16(device.audioPort))
+                do {
+                    try audioReceiver.start(port: UInt16(device.audioPort))
+                } catch {
+                    // Audio must not take down the connection — video can
+                    // stream fine without it. Report it and carry on.
+                    audioFailed = error.localizedDescription
+                }
             }
 
             do {
@@ -103,6 +120,14 @@ final class DeviceSession: ObservableObject {
             }
 
             state = .connected(info: description.isEmpty ? device.displayAddress : description)
+            if let audioFailed {
+                transferStatus = .failed("Audio unavailable: \(audioFailed) — video only.")
+                Task {
+                    try? await Task.sleep(for: .seconds(6))
+                    if case .failed = transferStatus { transferStatus = nil }
+                }
+            }
+            watchForSilentStream()
         } catch {
             videoReceiver.stop()
             audioReceiver.stop()
@@ -119,6 +144,26 @@ final class DeviceSession: ObservableObject {
         }
     }
 
+    /// After connect, verify frames actually arrive. The device sometimes
+    /// acknowledges stream-start without sending packets (notably right
+    /// after a cold power-on); one stop/start re-kick fixes it. Bounded to
+    /// a few attempts so a genuinely broken path still surfaces as an error.
+    private func watchForSilentStream(attempt: Int = 0) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard let self, self.isConnected else { return }
+            if self.fps < 1 {
+                if attempt < 2 {
+                    try? await self.startStreaming()
+                    self.watchForSilentStream(attempt: attempt + 1)
+                } else {
+                    self.transferStatus = .failed(
+                        "No video arriving — check firewall/UDP path, or Restart Streams.")
+                }
+            }
+        }
+    }
+
     /// Ask the Ultimate to send its video/audio streams to this Mac's
     /// address. Streams stop on the device side after a reboot or when a
     /// configured stream duration expires — call this to (re)start them
@@ -127,11 +172,16 @@ final class DeviceSession: ObservableObject {
         guard let localIP = LocalNetwork.primaryIPv4Address() else {
             throw UltimateAPIClient.APIError.invalidURL
         }
+        // Always stop before starting: after a cold power-on the device
+        // accepts a bare start (HTTP 200) but silently sends no packets —
+        // a stop/start cycle reliably kicks the generator into streaming.
+        try? await client.stopVideoStream()
         try await client.startVideoStream(
             destinationHost: localIP,
             port: device.videoPort,
             durationSeconds: settings.streamDurationSeconds)
         if settings.audioEnabled {
+            try? await client.stopAudioStream()
             try await client.startAudioStream(
                 destinationHost: localIP,
                 port: device.audioPort,
