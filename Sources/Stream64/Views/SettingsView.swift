@@ -264,7 +264,8 @@ struct NetworkSettingsTab: View {
             }
 
             Section {
-                LabeledContent("This Mac's address", value: LocalNetwork.primaryIPv4Address() ?? "Unknown")
+                LabeledContent("This Mac's address",
+                               value: LocalNetwork.primaryIPv4Address() ?? "Unknown")
             } footer: {
                 Text("Streams from the Ultimate are sent to this address. Make sure the device can reach it (same network, no firewall blocking UDP).")
                     .foregroundStyle(.secondary)
