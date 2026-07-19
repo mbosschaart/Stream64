@@ -1,0 +1,113 @@
+import SwiftUI
+import Combine
+
+/// Per-device rendering/display settings, persisted per device ID. Global
+/// AppSettings keeps audio hardware, network, and general preferences;
+/// everything about how a stream *looks* lives here so two devices can
+/// render differently (e.g. one RF, one S-Video).
+@MainActor
+final class DisplaySettings: ObservableObject {
+    let deviceID: UUID
+
+    /// One instance per device, shared by the session (renderer) and the
+    /// Preferences window so edits in either place affect the same object.
+    private static var instances: [UUID: DisplaySettings] = [:]
+    static func shared(for deviceID: UUID) -> DisplaySettings {
+        if let existing = instances[deviceID] { return existing }
+        let created = DisplaySettings(deviceID: deviceID)
+        instances[deviceID] = created
+        return created
+    }
+
+    @Published var scalingMode: ScalingMode { didSet { save() } }
+    @Published var filterMode: FilterMode { didSet { save() } }
+    @Published var palette: PaletteChoice { didSet { save() } }
+    @Published var tubeInput: TubeInput { didSet { save() } }
+    @Published var showFPS: Bool { didSet { save() } }
+    @Published var showBezel: Bool { didSet { save() } }
+    @Published var bezelStyle: BezelChoice { didSet { save() } }
+    @Published var bezelReflection: Bool { didSet { save() } }
+    // Monitor picture controls (1702 front panel), 0...1, neutral 0.5.
+    @Published var monBrightness: Double { didSet { picture.brightness = Float(monBrightness); save() } }
+    @Published var monContrast: Double { didSet { picture.contrast = Float(monContrast); save() } }
+    @Published var monColor: Double { didSet { picture.saturation = Float(monColor); save() } }
+    @Published var monTint: Double { didSet { picture.tint = Float(monTint); save() } }
+
+    /// Live conduit to the renderer (read every frame, bypasses SwiftUI).
+    let picture = PictureControls()
+
+    private struct Snapshot: Codable {
+        var scalingMode: ScalingMode
+        var filterMode: FilterMode
+        var palette: PaletteChoice
+        var tubeInput: TubeInput
+        var showFPS: Bool
+        var showBezel: Bool
+        var bezelStyle: BezelChoice
+        var bezelReflection: Bool
+        var monBrightness: Double
+        var monContrast: Double
+        var monColor: Double
+        var monTint: Double
+    }
+
+    private var storageKey: String { "displaySettings.\(deviceID.uuidString)" }
+    private var loaded = false
+
+    init(deviceID: UUID) {
+        self.deviceID = deviceID
+
+        let defaults = UserDefaults.standard
+        if let raw = defaults.data(forKey: "displaySettings.\(deviceID.uuidString)"),
+           let data = try? JSONDecoder().decode(Snapshot.self, from: raw) {
+            scalingMode = data.scalingMode
+            filterMode = data.filterMode
+            palette = data.palette
+            tubeInput = data.tubeInput
+            showFPS = data.showFPS
+            showBezel = data.showBezel
+            bezelStyle = data.bezelStyle
+            bezelReflection = data.bezelReflection
+            monBrightness = data.monBrightness
+            monContrast = data.monContrast
+            monColor = data.monColor
+            monTint = data.monTint
+        } else {
+            // First run for this device: seed from the legacy global keys so
+            // existing users keep the look they had before settings became
+            // per-device.
+            scalingMode = ScalingMode(rawValue: defaults.string(forKey: "scalingMode") ?? "") ?? .aspectFit
+            filterMode = FilterMode(rawValue: defaults.string(forKey: "filterMode") ?? "") ?? .sharp
+            palette = PaletteChoice(rawValue: defaults.string(forKey: "palette") ?? "") ?? .pepto
+            tubeInput = TubeInput(rawValue: defaults.string(forKey: "tubeInput") ?? "") ?? .svideo
+            showFPS = defaults.bool(forKey: "showFPS")
+            showBezel = defaults.bool(forKey: "showBezel")
+            bezelStyle = BezelChoice(rawValue: defaults.string(forKey: "bezelStyle") ?? "") ?? .c1702
+            bezelReflection = defaults.object(forKey: "bezelReflection") as? Bool ?? true
+            monBrightness = defaults.object(forKey: "monBrightness") as? Double ?? 0.5
+            monContrast = defaults.object(forKey: "monContrast") as? Double ?? 0.5
+            monColor = defaults.object(forKey: "monColor") as? Double ?? 0.5
+            monTint = defaults.object(forKey: "monTint") as? Double ?? 0.5
+        }
+
+        picture.brightness = Float(monBrightness)
+        picture.contrast = Float(monContrast)
+        picture.saturation = Float(monColor)
+        picture.tint = Float(monTint)
+        loaded = true
+    }
+
+    private func save() {
+        guard loaded else { return }
+        let data = Snapshot(
+            scalingMode: scalingMode, filterMode: filterMode,
+            palette: palette, tubeInput: tubeInput,
+            showFPS: showFPS, showBezel: showBezel,
+            bezelStyle: bezelStyle, bezelReflection: bezelReflection,
+            monBrightness: monBrightness, monContrast: monContrast,
+            monColor: monColor, monTint: monTint)
+        if let raw = try? JSONEncoder().encode(data) {
+            UserDefaults.standard.set(raw, forKey: storageKey)
+        }
+    }
+}
