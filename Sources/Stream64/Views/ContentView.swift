@@ -38,7 +38,7 @@ struct ContentView: View {
     @EnvironmentObject var deviceStore: DeviceStore
     @EnvironmentObject var settings: AppSettings
 
-    @StateObject private var sessionManager = SessionManager()
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var showingAddDevice = false
     @State private var isFullscreen = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -428,6 +428,7 @@ struct EmptyStateView: View {
 // MARK: - Viewer pane
 
 struct ViewerPane: View {
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var session: DeviceSession
     /// This device's own rendering settings — observed so toolbar pickers
     /// and the video refresh when they change.
@@ -765,6 +766,13 @@ struct ViewerPane: View {
                 Label("Monitor Bezel", systemImage: "tv")
             }
             .help("Show a Commodore monitor bezel around the picture")
+
+            Button {
+                openWindow(id: "assembly64")
+            } label: {
+                Label("Assembly64", systemImage: "books.vertical")
+            }
+            .help("Search the Assembly64 online library and load programs")
 
             Button {
                 NSApp.keyWindow?.toggleFullScreen(nil)

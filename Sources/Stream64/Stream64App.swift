@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func isMainWindow(_ window: NSWindow) -> Bool {
         if window.identifier?.rawValue.contains("Settings") == true { return false }
         if window.identifier?.rawValue.contains("help") == true { return false }
+        if window.identifier?.rawValue.contains("assembly64") == true { return false }
         if window is NSPanel || window.isSheet { return false }
         return window.canBecomeMain
     }
@@ -38,6 +39,9 @@ struct Stream64App: App {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var deviceStore = DeviceStore()
     @StateObject private var settings = AppSettings()
+    /// App-level so the main window and the Assembly64 browser share the
+    /// same live sessions.
+    @StateObject private var sessionManager = SessionManager()
 
     init() {
         // Needed when launched via `swift run` (no app bundle): become a regular
@@ -51,6 +55,7 @@ struct Stream64App: App {
             ContentView()
                 .environmentObject(deviceStore)
                 .environmentObject(settings)
+                .environmentObject(sessionManager)
                 .frame(minWidth: 900, minHeight: 620)
         }
         .commands {
@@ -73,6 +78,11 @@ struct Stream64App: App {
                     NotificationCenter.default.post(name: .addDeviceRequested, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+                Divider()
+                Button("Search Assembly64…") {
+                    openWindow(id: "assembly64")
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .help) {
                 Button("Stream64 Help") {
@@ -86,6 +96,15 @@ struct Stream64App: App {
             HelpView()
         }
         .defaultSize(width: 860, height: 600)
+
+        Window("Assembly64", id: "assembly64") {
+            Assembly64View { device in
+                sessionManager.session(for: device, settings: settings)
+            }
+            .environmentObject(deviceStore)
+            .environmentObject(settings)
+        }
+        .defaultSize(width: 760, height: 640)
 
         Settings {
             SettingsView()

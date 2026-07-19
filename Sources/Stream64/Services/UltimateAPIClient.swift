@@ -92,6 +92,22 @@ struct UltimateAPIClient {
         try await perform(request)
     }
 
+    /// Upload a SID tune and play it.
+    func playSID(data: Data) async throws {
+        var request = try makeRequest(path: "/v1/runners:sidplay", method: "POST")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        try await perform(request)
+    }
+
+    /// Upload a cartridge image and run it.
+    func runCRT(data: Data) async throws {
+        var request = try makeRequest(path: "/v1/runners:run_crt", method: "POST")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        try await perform(request)
+    }
+
     /// Upload a disk image and mount it. `type` (d64/g64/d71/g71/d81) is
     /// otherwise inferred by the device from the filename.
     func mountDisk(data: Data, filename: String, drive: String = "a", type: String? = nil) async throws {

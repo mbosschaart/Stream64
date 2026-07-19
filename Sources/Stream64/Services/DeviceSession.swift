@@ -292,11 +292,28 @@ final class DeviceSession: ObservableObject {
     /// Load a dropped file: .prg is uploaded and run, disk images are
     /// uploaded and mounted in drive A.
     func loadFile(at url: URL) async {
-        let filename = url.lastPathComponent
-        let ext = url.pathExtension.lowercased()
-        transferStatus = .uploading(filename)
         do {
             let data = try Data(contentsOf: url)
+            await loadData(data, filename: url.lastPathComponent)
+        } catch {
+            transferStatus = .failed("\(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    /// How to treat a disk image after upload.
+    enum MountBehavior {
+        case mountOnly
+        /// Mount, then reset and auto-type LOAD"*",8,1 + RUN.
+        case mountAndRun
+    }
+
+    /// Load in-memory file data (local file or Assembly64 download) onto
+    /// the machine, dispatching on the file extension.
+    func loadData(_ data: Data, filename: String,
+                  mountBehavior: MountBehavior = .mountOnly) async {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        transferStatus = .uploading(filename)
+        do {
             switch ext {
             case "prg":
                 await flushPendingKeys()
@@ -304,7 +321,24 @@ final class DeviceSession: ObservableObject {
                 transferStatus = .done("Running \(filename)")
             case "d64", "g64", "d71", "g71", "d81":
                 try await client.mountDisk(data: data, filename: filename, type: ext)
-                transferStatus = .done("Mounted \(filename) in drive A")
+                if mountBehavior == .mountAndRun {
+                    await flushPendingKeys()
+                    try await client.reset()
+                    // Give BASIC time to come up before typing.
+                    try await Task.sleep(for: .seconds(3))
+                    try await client.typeKeys(PETSCII.encode("load\"*\",8,1\r"))
+                    try await Task.sleep(for: .seconds(1))
+                    try await client.typeKeys(PETSCII.encode("run\r"))
+                    transferStatus = .done("Booting \(filename)")
+                } else {
+                    transferStatus = .done("Mounted \(filename) in drive A")
+                }
+            case "sid":
+                try await client.playSID(data: data)
+                transferStatus = .done("Playing \(filename)")
+            case "crt":
+                try await client.runCRT(data: data)
+                transferStatus = .done("Running \(filename)")
             default:
                 transferStatus = .failed("Unsupported file type: .\(ext)")
                 return

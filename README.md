@@ -16,6 +16,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Monitor bezels** — Commodore 1702 and 1084S, drawn in SwiftUI. The 1702's front-panel door opens to reveal **working knobs** (volume, brightness, color, tint, contrast) that drive the picture live
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing in fullscreen
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
+- **Assembly64 library browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) and load results straight onto a machine: run PRGs, **Mount & Run** or **Mount** disk images, play SIDs, start cartridges
 - **Keyboard input** — type on the C64 from your Mac (KERNAL keyboard-buffer injection over DMA), plus a full on-screen C64 keyboard with PETSCII shift combinations
 - **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, power off
 - **In-app documentation** — Help → Stream64 Help (⌘?)
@@ -78,6 +79,7 @@ Sources/Stream64/
 │   └── PETSCII.swift          ASCII/Unicode → PETSCII encoding for keyboard input
 ├── Services/
 │   ├── UltimateAPIClient.swift  REST client for the Ultimate's /v1 API
+│   ├── Assembly64Client.swift   Assembly64 library API (AQL search, downloads)
 │   ├── DeviceSession.swift      Connection lifecycle, keyboard queue, file loading
 │   ├── VideoReceiver.swift      UDP listener; assembles 4bpp packets into frames
 │   └── AudioReceiver.swift      UDP listener; ring buffer → AVAudioSourceNode; RF filter
@@ -87,6 +89,7 @@ Sources/Stream64/
     ├── ContentView.swift        Split view, viewer pane, multi-device grid, toolbar
     ├── VideoView.swift          NSViewRepresentable MTKView wrapper + key capture
     ├── StreamContextMenu.swift  Right-click menu (full per-stream control set)
+    ├── Assembly64View.swift     Assembly64 search browser window
     ├── MonitorBezelView.swift   1702/1084S bezels; KnobDial rotary control
     ├── OnScreenKeyboardView.swift  Full C64 keyboard layout
     ├── DeviceEditSheet.swift    Add/edit device with connection test
@@ -139,7 +142,13 @@ Limitation inherent to the approach: programs that read the keyboard through the
 
 ### File Loading
 
-Dropped files upload directly over REST: `.prg` via `POST /v1/runners:run_prg` (binary body — reset, DMA-load, run) and disk images via `POST /v1/drives/a:mount` (multipart attachment) with type inferred from the extension. The file never needs to exist on the Ultimate's storage. ⌃-drop fans the upload out to every connected session in parallel.
+Dropped files upload directly over REST: `.prg` via `POST /v1/runners:run_prg` (binary body — reset, DMA-load, run) and disk images via `POST /v1/drives/a:mount` (multipart attachment) with type inferred from the extension. The file never needs to exist on the Ultimate's storage. ⌃-drop fans the upload out to every connected session in parallel. SID tunes go to `runners:sidplay`, cartridges to `runners:run_crt`.
+
+**Mount & Run** (Assembly64 browser) chains mount → machine reset → a 3 s BASIC-boot wait → keyboard-buffer injection of `LOAD"*",8,1` and `RUN` — fully automatic disk boot.
+
+### Assembly64 Integration
+
+`Assembly64Client` talks to the [Assembly64](https://hackerswithstyle.se/leet/swagger-ui/index.html) REST API (requires a registered `client-id` header on every request). Search uses **AQL** — space-separated `key:value` terms (`name:turrican subcat:games sort:name order:asc`); multi-word values must be quoted or the parser rejects the query (errorCode 463, returned as an HTTP 200 with an `{"errorCode": N}` body — the client sniffs small responses for this envelope before decoding). The flow is `search/aql/{offset}/{limit}` → `search/entries/{item}/{category}` (an item's files: disk sides, versions) → `search/bin/{item}/{category}/{file}` (raw bytes), which stream from the library into memory and straight to the device.
 
 ## Design Notes & Learned Constraints
 
@@ -164,6 +173,8 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 | `GET/PUT /v1/machine:readmem / :writemem` | Keyboard-buffer injection ($0277/$C6) |
 | `POST /v1/runners:run_prg` | Upload + run a PRG (binary body) |
 | `POST /v1/drives/a:mount` | Upload + mount a disk image (multipart) |
+| `POST /v1/runners:sidplay` | Upload + play a SID tune |
+| `POST /v1/runners:run_crt` | Upload + run a cartridge image |
 
 Requests carry the `X-Password` header when the device has an API password set.
 

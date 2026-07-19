@@ -46,6 +46,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case monitorBezel
     case keyboard
     case files
+    case assembly64
     case multiDevice
     case machineControl
     case troubleshooting
@@ -61,6 +62,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .monitorBezel: return "Monitor Bezel"
         case .keyboard: return "Keyboard Input"
         case .files: return "Loading Files"
+        case .assembly64: return "Assembly64 Library"
         case .multiDevice: return "Multiple Devices"
         case .machineControl: return "Machine Control"
         case .troubleshooting: return "Troubleshooting"
@@ -76,6 +78,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .monitorBezel: return "tv"
         case .keyboard: return "keyboard"
         case .files: return "arrow.down.doc"
+        case .assembly64: return "books.vertical"
         case .multiDevice: return "square.grid.2x2"
         case .machineControl: return "power"
         case .troubleshooting: return "wrench.and.screwdriver"
@@ -91,6 +94,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .monitorBezel: return Self.monitorBezelText
         case .keyboard: return Self.keyboardText
         case .files: return Self.filesText
+        case .assembly64: return Self.assembly64Text
         case .multiDevice: return Self.multiDeviceText
         case .machineControl: return Self.machineControlText
         case .troubleshooting: return Self.troubleshootingText
@@ -123,6 +127,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     machine controls (reset, reboot, pause, menu, power), display settings \
     (scaling, filter, input signal, bezel), keyboard capture, and full screen. \
     Everything is also available by **right-clicking the picture**.
+
+    To find something to run, open the **Assembly64 browser** (⇧⌘F) and \
+    search the online C64 library — results load straight onto the machine.
     """
 
     private static let devicesText = """
@@ -265,6 +272,43 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     After loading a .d64, type `LOAD"*",8,1` and `RUN` on the C64 (or use \
     the on-screen keyboard) as usual.
+
+    You can also load software directly from the **Assembly64 online \
+    library** without downloading anything first — see the Assembly64 \
+    Library topic.
+    """
+
+    private static let assembly64Text = """
+    **Assembly64** is an online library of C64 software — games, demos, \
+    music, tools — aggregated from CSDB, GameBase64, HVSC, OneLoad64, tape \
+    archives, and more. Stream64 searches it and loads results straight onto \
+    your machine, no files touching your Mac.
+
+    **Open the browser** — the toolbar's Assembly64 button (books icon), \
+    **File → Search Assembly64…**, or ⇧⌘F. It's a separate window, so you \
+    can browse while watching the stream.
+
+    **Searching**
+
+    Type a name and press Return. Multi-word names are fine ("last ninja"). \
+    Use the category picker to narrow to a source and kind — CSDB demos, \
+    GameBase64 games, HVSC music, and so on. Results show name, group, and \
+    year, sorted alphabetically (first 200 matches).
+
+    **Loading**
+
+    Select a result to see its files. Each file offers actions for its type:
+
+    • **Disk images** (.d64/.g64/.d71/.g71/.d81) — **Mount & Run** mounts \
+    the disk, resets the C64, and auto-types `LOAD"*",8,1` + `RUN`; \
+    **Mount** just inserts the disk in drive A
+    • **.prg** — **Run**: uploaded and started immediately
+    • **.sid** — **Play**: sent to the Ultimate's built-in SID player
+    • **.crt** — **Run**: started as a cartridge
+
+    Files load onto the **selected device** — shown in the status bar at the \
+    bottom of the browser. Multi-disk items (side A/B) list every disk; mount \
+    side B when the game asks for it.
     """
 
     private static let multiDeviceText = """
