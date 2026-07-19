@@ -9,6 +9,9 @@ final class DeviceSession: ObservableObject {
     enum ConnectionState: Equatable {
         case disconnected
         case connecting
+        /// Device did not answer the reachability probe. Auto-connect is
+        /// suspended until the user explicitly retries.
+        case unreachable
         case connected(info: String)
         case error(String)
     }
@@ -16,6 +19,9 @@ final class DeviceSession: ObservableObject {
     @Published private(set) var state: ConnectionState = .disconnected
     @Published private(set) var fps: Double = 0
     @Published private(set) var isPaused = false
+    /// True while video packets are actually arriving (measured, not
+    /// assumed from API acknowledgements).
+    @Published private(set) var isStreaming = false
     @Published var transferStatus: TransferStatus?
 
     enum TransferStatus: Equatable {
@@ -60,8 +66,47 @@ final class DeviceSession: ObservableObject {
                 if abs(fps - self.fps) >= 0.5 {
                     self.fps = fps
                 }
+                self.lastStatsAt = Date()
+                let streaming = fps >= 1
+                if streaming != self.isStreaming {
+                    self.isStreaming = streaming
+                }
             }
         }
+        startStreamStalenessMonitor()
+    }
+
+    private var lastStatsAt = Date.distantPast
+    private var stalenessMonitor: Task<Void, Never>?
+
+    /// onStats only fires while frames arrive; when the stream dies the
+    /// callbacks just stop. This watchdog turns isStreaming off after
+    /// three silent seconds.
+    private func startStreamStalenessMonitor() {
+        stalenessMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                if self.isStreaming, Date().timeIntervalSince(self.lastStatsAt) > 3 {
+                    self.isStreaming = false
+                    self.fps = 0
+                }
+            }
+        }
+    }
+
+    /// Reachability probe: can the device answer its REST API at all?
+    /// Two quick attempts (the "2 pings") with a short timeout each.
+    /// Returns the device info on success so connect doesn't re-fetch it.
+    func probeReachability() async -> UltimateAPIClient.DeviceInfo? {
+        let probeClient = UltimateAPIClient(device: device, timeout: 2)
+        for attempt in 0..<2 {
+            if let info = try? await probeClient.fetchInfo() { return info }
+            if attempt == 0 {
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+        }
+        return nil
     }
 
     var isConnected: Bool {
@@ -87,45 +132,55 @@ final class DeviceSession: ObservableObject {
         defer { connecting = false }
 
         state = .connecting
-        do {
-            // Verify the device is reachable and get its identity.
-            let info = try await client.fetchInfo()
-            let description = [info.product, info.firmwareVersion]
-                .compactMap { $0 }
-                .joined(separator: " · ")
 
+        // Reachability first ("2 pings"): a device that doesn't answer gets
+        // the explicit .unreachable state and no further automatic retries —
+        // reconnection is up to the user from there. The probe's info reply
+        // doubles as the identity fetch.
+        guard let info = await probeReachability() else {
+            state = .unreachable
+            return
+        }
+        let description = [info.product, info.firmwareVersion]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+
+        do {
             // Start local UDP receivers first so no packets are dropped.
             try videoReceiver.start(port: UInt16(device.videoPort))
-            var audioFailed: String?
-            if settings.audioEnabled {
-                audioReceiver.volume = Float(settings.volume)
-                audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
-                audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
-                do {
-                    try audioReceiver.start(port: UInt16(device.audioPort))
-                } catch {
-                    // Audio must not take down the connection — video can
-                    // stream fine without it. Report it and carry on.
-                    audioFailed = error.localizedDescription
-                }
+            let audioOK = startAudioIfEnabled()
+
+            // Pick up already-running streams before commanding new ones:
+            // if the device is still sending to us (app restart), don't
+            // disturb it. Video and audio are independent device-side
+            // streams — check each; one being live must not skip
+            // (re)starting the other, or an expired audio stream stays
+            // silently dead behind a working picture.
+            var videoLive = false
+            var audioLive = false
+            for _ in 0..<6 { // up to 600 ms
+                try await Task.sleep(for: .milliseconds(100))
+                videoLive = videoReceiver.packetsReceived > 0
+                audioLive = audioReceiver.packetsReceived > 0
+                if videoLive && (audioLive || !settings.audioEnabled) { break }
             }
 
-            do {
-                try await startStreaming()
-            } catch where error.localizedDescription.contains("Network Host Resolve Error") {
-                // Transient wedge: the stack often accepts the same request
-                // moments later. Retry once before involving the user.
-                try await Task.sleep(for: .seconds(1))
-                try await startStreaming()
+            if !videoLive || (settings.audioEnabled && !audioLive) {
+                do {
+                    try await startStreaming(video: !videoLive,
+                                             audio: settings.audioEnabled && !audioLive)
+                } catch where error.localizedDescription.contains("Network Host Resolve Error") {
+                    // Transient wedge: the stack often accepts the same
+                    // request moments later. Retry once.
+                    try await Task.sleep(for: .seconds(1))
+                    try await startStreaming(video: !videoLive,
+                                             audio: settings.audioEnabled && !audioLive)
+                }
             }
 
             state = .connected(info: description.isEmpty ? device.displayAddress : description)
-            if let audioFailed {
-                transferStatus = .failed("Audio unavailable: \(audioFailed) — video only.")
-                Task {
-                    try? await Task.sleep(for: .seconds(6))
-                    if case .failed = transferStatus { transferStatus = nil }
-                }
+            if !audioOK {
+                recoverAudioQuietly()
             }
             watchForSilentStream()
         } catch {
@@ -144,6 +199,43 @@ final class DeviceSession: ObservableObject {
         }
     }
 
+    /// Configure and start the audio receiver. Returns false on failure
+    /// (audio never blocks the connection).
+    private func startAudioIfEnabled() -> Bool {
+        guard settings.audioEnabled else { return true }
+        audioReceiver.volume = Float(settings.volume)
+        audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
+        audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
+        do {
+            try audioReceiver.start(port: UInt16(device.audioPort))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// CoreAudio start failures are almost always transient (engine
+    /// restarted in quick succession). Retry in the background for a few
+    /// seconds before bothering the user with a banner.
+    private func recoverAudioQuietly() {
+        Task { [weak self] in
+            for _ in 0..<4 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.isConnected else { return }
+                if self.startAudioIfEnabled() { return }
+            }
+            self?.transferStatus = .failed("Audio unavailable — video only. Reconnect to retry.")
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                if let self, case .failed = self.transferStatus { self.transferStatus = nil }
+            }
+        }
+    }
+
+    /// User explicitly stopped the streams; the silent-stream watchdog
+    /// must not fight them by re-kicking.
+    private var streamsStoppedByUser = false
+
     /// After connect, verify frames actually arrive. The device sometimes
     /// acknowledges stream-start without sending packets (notably right
     /// after a cold power-on); one stop/start re-kick fixes it. Bounded to
@@ -151,7 +243,7 @@ final class DeviceSession: ObservableObject {
     private func watchForSilentStream(attempt: Int = 0) {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
-            guard let self, self.isConnected else { return }
+            guard let self, self.isConnected, !self.streamsStoppedByUser else { return }
             if self.fps < 1 {
                 if attempt < 2 {
                     try? await self.startStreaming()
@@ -168,19 +260,21 @@ final class DeviceSession: ObservableObject {
     /// address. Streams stop on the device side after a reboot or when a
     /// configured stream duration expires — call this to (re)start them
     /// without tearing down the local receivers.
-    func startStreaming() async throws {
+    func startStreaming(video: Bool = true, audio: Bool? = nil) async throws {
         guard let localIP = LocalNetwork.primaryIPv4Address() else {
             throw UltimateAPIClient.APIError.invalidURL
         }
         // Always stop before starting: after a cold power-on the device
         // accepts a bare start (HTTP 200) but silently sends no packets —
         // a stop/start cycle reliably kicks the generator into streaming.
-        try? await client.stopVideoStream()
-        try await client.startVideoStream(
-            destinationHost: localIP,
-            port: device.videoPort,
-            durationSeconds: settings.streamDurationSeconds)
-        if settings.audioEnabled {
+        if video {
+            try? await client.stopVideoStream()
+            try await client.startVideoStream(
+                destinationHost: localIP,
+                port: device.videoPort,
+                durationSeconds: settings.streamDurationSeconds)
+        }
+        if audio ?? settings.audioEnabled {
             try? await client.stopAudioStream()
             try await client.startAudioStream(
                 destinationHost: localIP,
@@ -191,7 +285,20 @@ final class DeviceSession: ObservableObject {
 
     /// startStreaming for UI call sites: failures surface in `state`.
     func restartStreams() async {
+        streamsStoppedByUser = false
         await run { try await self.startStreaming() }
+        watchForSilentStream()
+    }
+
+    /// Ask the device to stop sending streams, keeping the session (REST
+    /// control, keyboard, file loading) alive. Counterpart of
+    /// restartStreams; the picture freezes on the last received frame.
+    func stopStreams() async {
+        streamsStoppedByUser = true
+        try? await client.stopVideoStream()
+        try? await client.stopAudioStream()
+        fps = 0
+        isStreaming = false
     }
 
     func disconnect() async {

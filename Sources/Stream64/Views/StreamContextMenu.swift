@@ -35,8 +35,14 @@ struct StreamContextMenu: View {
             Button("Disconnect", systemImage: "bolt.slash") {
                 Task { await session.disconnect() }
             }
-            Button("Restart Streams", systemImage: "dot.radiowaves.left.and.right") {
-                Task { await session.restartStreams() }
+            if session.isStreaming {
+                Button("Stop Streaming", systemImage: "stop.circle") {
+                    Task { await session.stopStreams() }
+                }
+            } else {
+                Button("Start Streaming", systemImage: "dot.radiowaves.left.and.right") {
+                    Task { await session.restartStreams() }
+                }
             }
         } else {
             Button("Connect", systemImage: "bolt") {

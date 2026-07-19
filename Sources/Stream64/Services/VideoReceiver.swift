@@ -16,6 +16,11 @@ final class VideoReceiver {
     var onFrame: ((Data) -> Void)?
     var onStats: ((_ fps: Double) -> Void)?
 
+    /// Total packets received since start() — cheap liveness signal for
+    /// "is a stream already arriving?" checks. Written on the receive
+    /// queue; racy reads from other threads are fine for polling.
+    private(set) var packetsReceived: Int = 0
+
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "video-receiver")
 
@@ -62,6 +67,7 @@ final class VideoReceiver {
     private var dbgFrames = 0
 
     private func handlePacket(_ data: Data) {
+        packetsReceived += 1
         if Self.debug {
             dbgPackets += 1
             if dbgPackets % 500 == 1 {

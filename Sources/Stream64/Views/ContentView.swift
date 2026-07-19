@@ -335,6 +335,15 @@ struct ViewerTile: View {
         switch session.state {
         case .connecting:
             ProgressView()
+        case .unreachable:
+            VStack(spacing: 6) {
+                Image(systemName: "wifi.slash")
+                Text("Unreachable")
+                    .font(.caption.weight(.semibold))
+                Button("Retry") { Task { await session.connect() } }
+                    .controlSize(.small)
+            }
+            .padding(8)
         case .error(let message):
             VStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle")
@@ -356,10 +365,52 @@ struct ViewerTile: View {
     }
 }
 
+/// Small status dot + label: Unreachable / Offline / Connecting /
+/// Online (API up, no packets) / Streaming (packets flowing).
+struct DeviceStatusBadge: View {
+    @ObservedObject var session: DeviceSession
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            if !compact {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help(label)
+    }
+
+    private var label: String {
+        switch session.state {
+        case .unreachable: return "Unreachable"
+        case .disconnected: return "Offline"
+        case .connecting: return "Connecting…"
+        case .error: return "Error"
+        case .connected: return session.isStreaming ? "Streaming" : "Online"
+        }
+    }
+
+    private var color: Color {
+        switch session.state {
+        case .unreachable, .error: return .red
+        case .disconnected: return .gray
+        case .connecting: return .yellow
+        case .connected: return session.isStreaming ? .green : .blue
+        }
+    }
+}
+
 // MARK: - Sidebar
 
 struct DeviceSidebar: View {
     @EnvironmentObject var deviceStore: DeviceStore
+    @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var sessionManager: SessionManager
     @Binding var showingAddDevice: Bool
     @State private var deviceToEdit: UltimateDevice?
 
@@ -368,11 +419,17 @@ struct DeviceSidebar: View {
             Section("Devices") {
                 ForEach(deviceStore.devices) { device in
                     Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(device.name)
-                            Text(device.displayAddress)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.name)
+                                Text(device.displayAddress)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            DeviceStatusBadge(
+                                session: sessionManager.session(for: device, settings: settings),
+                                compact: true)
                         }
                     } icon: {
                         Image(systemName: "desktopcomputer")
@@ -556,6 +613,23 @@ struct ViewerPane: View {
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .frame(maxWidth: 360)
+        case .unreachable:
+            VStack(spacing: 12) {
+                Image(systemName: "wifi.slash")
+                    .font(.largeTitle)
+                Text("\(session.device.name) is unreachable")
+                Text("The device did not respond at \(session.device.displayAddress). Check that it is powered on and on the network.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Try Again") {
+                    Task { await session.connect() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: 380)
         case .disconnected:
             VStack(spacing: 12) {
                 Image(systemName: "bolt.slash")
@@ -640,8 +714,10 @@ struct ViewerPane: View {
 
     private var subtitle: String {
         switch session.state {
-        case .connected(let info): return info
+        case .connected(let info):
+            return session.isStreaming ? "\(info) — Streaming" : "\(info) — Online"
         case .connecting: return "Connecting…"
+        case .unreachable: return "Unreachable"
         case .error: return "Error"
         case .disconnected: return "Disconnected"
         }
@@ -669,13 +745,23 @@ struct ViewerPane: View {
 
             Divider()
 
-            Button {
-                Task { await session.restartStreams() }
-            } label: {
-                Label("Restart Streams", systemImage: "dot.radiowaves.left.and.right")
+            if session.isStreaming {
+                Button {
+                    Task { await session.stopStreams() }
+                } label: {
+                    Label("Stop Streaming", systemImage: "stop.circle")
+                }
+                .help("Stop the video/audio streams (the connection stays up)")
+                .disabled(!session.isConnected)
+            } else {
+                Button {
+                    Task { await session.restartStreams() }
+                } label: {
+                    Label("Start Streaming", systemImage: "dot.radiowaves.left.and.right")
+                }
+                .help("Ask the Ultimate to stream to this Mac")
+                .disabled(!session.isConnected)
             }
-            .help("Ask the Ultimate to stream to this Mac again (use if the picture froze)")
-            .disabled(!session.isConnected)
 
             Button {
                 Task { await session.reset() }

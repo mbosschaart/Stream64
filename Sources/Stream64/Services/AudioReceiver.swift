@@ -42,6 +42,10 @@ final class AudioReceiver {
     /// audio is buffered; backlog beyond target + slack is dropped.
     var bufferSeconds: Double = 0.06
 
+    /// Packets received since start() — liveness signal for stream pickup.
+    /// Written on the receive queue; racy polling reads are fine.
+    private(set) var packetsReceived: Int = 0
+
     /// RF mode: filter playback like a TV speaker fed from the antenna —
     /// mono, band-limited, with a bed of static. Written from the main
     /// thread, read on the audio thread (a torn read is harmless here).
@@ -152,6 +156,7 @@ final class AudioReceiver {
     }
 
     private func handlePacket(_ data: Data) {
+        packetsReceived += 1
         guard started, data.count > 2 else { return }
         let payload = data.dropFirst(2)
         let frameCount = payload.count / 4 // 2 channels × 2 bytes
