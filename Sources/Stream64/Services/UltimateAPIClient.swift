@@ -175,7 +175,7 @@ struct UltimateAPIClient {
 
     /// Fetch device version/info — also used as a connectivity test.
     func fetchInfo() async throws -> DeviceInfo {
-        let request = try makeRequest(path: "/v1/version", method: "GET")
+        let request = try makeRequest(path: "/v1/info", method: "GET")
         let data = try await perform(request)
         return try JSONDecoder().decode(DeviceInfo.self, from: data)
     }
