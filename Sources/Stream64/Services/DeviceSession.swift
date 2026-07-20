@@ -1,6 +1,9 @@
 import Foundation
 import Combine
 import Network
+import AppKit
+import CoreGraphics
+import UniformTypeIdentifiers
 
 /// Manages the live connection to one Ultimate device: REST control,
 /// video/audio stream lifecycle, and connection state.
@@ -38,6 +41,13 @@ final class DeviceSession: ObservableObject {
     private let settings: AppSettings
     private var client: UltimateAPIClient
     private var displayObserver: AnyCancellable?
+    /// Wired up by whichever VideoView currently owns this session's
+    /// renderer (single view or a grid tile). Weakly captures the
+    /// renderer, so it naturally goes nil if that view is torn down.
+    /// Completion-based (rather than a plain synchronous getter) because
+    /// capturing the actual filtered picture requires an extra GPU render
+    /// pass on the next draw() — see MetalFrameRenderer.requestFilteredScreenshot.
+    var captureFrame: ((@escaping (CGImage?) -> Void) -> Void)?
 
     init(device: UltimateDevice, settings: AppSettings) {
         self.display = DisplaySettings.shared(for: device.id)
@@ -74,6 +84,7 @@ final class DeviceSession: ObservableObject {
             }
         }
         startStreamStalenessMonitor()
+        startHealthMonitor()
     }
 
     private var lastStatsAt = Date.distantPast
@@ -91,6 +102,78 @@ final class DeviceSession: ObservableObject {
                     self.isStreaming = false
                     self.fps = 0
                 }
+            }
+        }
+    }
+
+    // MARK: - Mid-session disconnect detection & automatic reconnect
+    //
+    // watchForSilentStream only catches "device streams start but send no
+    // packets" — it still assumes the REST API is reachable. This monitor
+    // catches the other failure mode: the device (or the network path to
+    // it) drops out entirely while `state == .connected`. It runs for the
+    // lifetime of the session, polling only while connected, so it costs
+    // nothing while disconnected/unreachable.
+
+    private var healthMonitor: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+
+    private func startHealthMonitor() {
+        healthMonitor = Task { [weak self] in
+            var consecutiveFailures = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self else { return }
+                guard self.isConnected else { consecutiveFailures = 0; continue }
+                let probe = UltimateAPIClient(device: self.device, timeout: 3)
+                if (try? await probe.fetchInfo()) != nil {
+                    consecutiveFailures = 0
+                } else {
+                    consecutiveFailures += 1
+                    // Two misses (~10s) before acting — a single dropped
+                    // probe on a flaky network is not a disconnection.
+                    if consecutiveFailures >= 2 {
+                        consecutiveFailures = 0
+                        self.handleConnectionLost()
+                    }
+                }
+            }
+        }
+    }
+
+    /// The device stopped answering while we were connected. Tear down the
+    /// local receivers (their packets are stale) and either hand off to the
+    /// automatic reconnect loop or surface an error for the user to retry.
+    private func handleConnectionLost() {
+        guard isConnected else { return }
+        videoReceiver.stop()
+        audioReceiver.stop()
+        fps = 0
+        isStreaming = false
+        if settings.reconnectAutomatically {
+            state = .connecting
+            startReconnectLoop()
+        } else {
+            state = .error("Connection to the device was lost.")
+        }
+    }
+
+    /// Repeatedly calls the normal `connect()` flow with backoff until it
+    /// succeeds, the setting is turned off, or a manual disconnect/retry
+    /// supersedes it. `connect()`'s own reentrancy guard makes this safe to
+    /// race against user-initiated connects.
+    private func startReconnectLoop() {
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            var delaySeconds = 2.0
+            while !Task.isCancelled {
+                guard let self else { return }
+                if self.isConnected { return }
+                await self.connect()
+                if self.isConnected { return }
+                guard self.settings.reconnectAutomatically else { return }
+                try? await Task.sleep(for: .seconds(delaySeconds))
+                delaySeconds = min(delaySeconds * 1.5, 30)
             }
         }
     }
@@ -130,6 +213,9 @@ final class DeviceSession: ObservableObject {
         guard !connecting else { return }
         connecting = true
         defer { connecting = false }
+        // A user-initiated connect (Retry button, device selection)
+        // supersedes any automatic reconnect loop already in flight.
+        reconnectTask?.cancel()
 
         state = .connecting
 
@@ -302,6 +388,8 @@ final class DeviceSession: ObservableObject {
     }
 
     func disconnect() async {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         keyWorker?.cancel()
         keyWorker = nil
         keyQueue.removeAll()
@@ -504,12 +592,77 @@ final class DeviceSession: ObservableObject {
             transferStatus = .failed("\(filename): \(error.localizedDescription)")
             return
         }
-        // Clear the confirmation after a few seconds.
+        scheduleClearTransferStatus()
+    }
+
+    /// Clear the transfer banner after a few seconds, unless it has already
+    /// changed to something newer in the meantime.
+    private func scheduleClearTransferStatus(after seconds: Double = 4) {
         let shown = transferStatus
         Task {
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(seconds))
             if transferStatus == shown { transferStatus = nil }
         }
+    }
+
+    // MARK: - Screenshot
+
+    /// Captures exactly what's on screen right now — CRT tube curvature,
+    /// scanlines, phosphor mask, composite/RF artifacts, and picture
+    /// controls all included, since this re-runs the same GPU pipeline
+    /// that renders the live view — and prompts the user to save it as a
+    /// PNG. The renderer call is asynchronous (one frame of latency): it
+    /// hooks into the *next* draw() to encode an extra offscreen pass.
+    func saveScreenshot() {
+        guard let captureFrame else {
+            transferStatus = .failed("No frame available to capture yet.")
+            scheduleClearTransferStatus()
+            return
+        }
+        captureFrame { [weak self] image in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard let image else {
+                    self.transferStatus = .failed("No frame available to capture yet.")
+                    self.scheduleClearTransferStatus()
+                    return
+                }
+                self.presentScreenshotSavePanel(for: image)
+            }
+        }
+    }
+
+    private func presentScreenshotSavePanel(for image: CGImage) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = Self.screenshotFilename(for: device.name)
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let url = panel.url else { return }
+            guard let data = Self.pngData(from: image) else {
+                self.transferStatus = .failed("Could not encode screenshot.")
+                self.scheduleClearTransferStatus()
+                return
+            }
+            do {
+                try data.write(to: url)
+                self.transferStatus = .done("Saved \(url.lastPathComponent)")
+            } catch {
+                self.transferStatus = .failed("Save failed: \(error.localizedDescription)")
+            }
+            self.scheduleClearTransferStatus()
+        }
+    }
+
+    private static func screenshotFilename(for deviceName: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return "\(deviceName) \(formatter.string(from: Date()))"
+    }
+
+    private static func pngData(from image: CGImage) -> Data? {
+        let rep = NSBitmapImageRep(cgImage: image)
+        return rep.representation(using: .png, properties: [:])
     }
 
     func applyAudioSettings() {

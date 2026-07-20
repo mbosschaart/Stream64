@@ -31,6 +31,13 @@ struct VideoView: NSViewRepresentable {
         context.coordinator.session.videoReceiver.onFrame = { [weak renderer] frame in
             renderer?.submitFrame(frame)
         }
+        context.coordinator.session.captureFrame = { [weak renderer] completion in
+            guard let renderer else {
+                completion(nil)
+                return
+            }
+            renderer.requestFilteredScreenshot(completion: completion)
+        }
         return view
     }
 

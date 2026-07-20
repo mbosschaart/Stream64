@@ -80,6 +80,11 @@ struct StreamContextMenu: View {
             .disabled(!session.isConnected)
         }
 
+        Button("Save Screenshot…", systemImage: "camera") {
+            session.saveScreenshot()
+        }
+        .disabled(!session.isConnected)
+
         Divider()
 
         // Display settings — this stream only

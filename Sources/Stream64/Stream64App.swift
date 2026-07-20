@@ -83,6 +83,11 @@ struct Stream64App: App {
                     openWindow(id: "assembly64")
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
+                Divider()
+                Button("Save Screenshot…") {
+                    NotificationCenter.default.post(name: .saveScreenshotRequested, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .help) {
                 Button("Stream64 Help") {
@@ -104,7 +109,19 @@ struct Stream64App: App {
             .environmentObject(deviceStore)
             .environmentObject(settings)
         }
-        .defaultSize(width: 760, height: 640)
+        .defaultSize(width: 900, height: 640)
+        // Default resizability ties the window's size to its content's
+        // *ideal* size — so the moment the files pane grows wider (an
+        // entry row with filename/size/action buttons has a wider ideal
+        // width than the "No Item Selected" placeholder it replaces), the
+        // window snaps outward to match, and never shrinks back. Pinning
+        // to just a minimum keeps the window at whatever size it already
+        // is (or whatever the user set) as long as that's big enough —
+        // it only grows if genuinely necessary, never because a subview's
+        // ideal size changed. Paired with a wide-enough defaultSize above
+        // and minWidth in Assembly64View, the window now opens already at
+        // the size it used to only reach after your first selection.
+        .windowResizability(.contentMinSize)
 
         Settings {
             SettingsView()
@@ -116,4 +133,5 @@ struct Stream64App: App {
 
 extension Notification.Name {
     static let addDeviceRequested = Notification.Name("addDeviceRequested")
+    static let saveScreenshotRequested = Notification.Name("saveScreenshotRequested")
 }

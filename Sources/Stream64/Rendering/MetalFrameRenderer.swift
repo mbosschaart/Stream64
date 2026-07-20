@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import MetalKit
+import CoreGraphics
 import simd
 
 /// Renders indexed-color C64 frames using a Metal fragment shader that performs
@@ -24,6 +25,15 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
     private let textureLock = NSLock()
     private var pendingFrame: Data?
+    /// Set by `requestFilteredScreenshot`, consumed on the next `draw(in:)`.
+    /// Both are only ever touched on the main thread (MTKView's display
+    /// link — and the occlusion-fallback timer — always call draw() there),
+    /// so no locking is needed, unlike `pendingFrame` above.
+    private var pendingScreenshotCompletion: ((CGImage?) -> Void)?
+    /// Offscreen render target for screenshot capture, sized to match the
+    /// live drawable. Reused across requests; recreated only if the view
+    /// resizes.
+    private var screenshotTexture: MTLTexture?
 
     // Render settings, updated from the UI.
     var scalingMode: ScalingMode = .aspectFit
@@ -251,8 +261,15 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             // Snow: animated per-pixel luma noise.
             float snow = hash21(pixelPos + fract(time) * float2(731.0, 447.0));
             y += (snow - 0.5) * 0.10;
-            // A single interference line drifting down the picture.
-            float bandPos = fract(time * 0.13);
+            // A single interference line drifting down the picture. Speed
+            // is 8/60 rather than a rounder-looking 0.13: `time` itself
+            // loops every 60s (frameIndex % 3600, see draw()), and 8/60
+            // divides that evenly into exactly 8 whole sweeps with zero
+            // remainder. 0.13 doesn't divide 60s evenly, so `time` was
+            // resetting to 0 mid-sweep roughly once a minute, cutting the
+            // line off before it reached the bottom instead of completing
+            // its descent.
+            float bandPos = fract(time * (8.0 / 60.0));
             float band = 1.0 - smoothstep(0.0, 0.012, abs(uv.y - bandPos));
             y += band * 0.05;
             // Chroma noise: color flecks, subtler than luma snow.
@@ -524,6 +541,97 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             bytesPerRow: 64)
     }
 
+    /// Requests a screenshot of exactly what's on screen — the active
+    /// filter (CRT tube curvature, scanlines, phosphor mask, composite/RF
+    /// artifacts), palette, and picture controls all included. Captured on
+    /// the *next* draw() by re-running the same pipeline and uniforms into
+    /// an offscreen texture (the live drawable can't be read back directly:
+    /// MTKView's default `framebufferOnly = true` disallows it), so the
+    /// completion arrives one frame later, off the main thread — hop back
+    /// before touching anything else.
+    func requestFilteredScreenshot(completion: @escaping (CGImage?) -> Void) {
+        pendingScreenshotCompletion = completion
+    }
+
+    /// Encodes an extra render pass — same pipeline, uniforms, and source
+    /// textures as the frame just drawn — into an offscreen texture sized
+    /// to match the live drawable. Matching that size matters: the phosphor
+    /// mask and scanline shading key off destination pixel coordinates
+    /// (`in.position.xy`), so rendering at a different resolution would
+    /// produce a different-looking result than what's actually on screen.
+    private func encodeScreenshotPass(commandBuffer: MTLCommandBuffer,
+                                      pipeline: MTLRenderPipelineState,
+                                      uniforms: Uniforms,
+                                      indexTexture: MTLTexture,
+                                      drawableSize: CGSize,
+                                      completion: @escaping (CGImage?) -> Void) {
+        let width = max(1, Int(drawableSize.width))
+        let height = max(1, Int(drawableSize.height))
+        if screenshotTexture == nil || screenshotTexture!.width != width || screenshotTexture!.height != height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget]
+            descriptor.storageMode = .shared
+            screenshotTexture = device.makeTexture(descriptor: descriptor)
+        }
+        guard let target = screenshotTexture else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+
+        let passDescriptor = MTLRenderPassDescriptor()
+        passDescriptor.colorAttachments[0].texture = target
+        passDescriptor.colorAttachments[0].loadAction = .clear
+        passDescriptor.colorAttachments[0].storeAction = .store
+        passDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        var u = uniforms
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentTexture(indexTexture, index: 0)
+        encoder.setFragmentTexture(paletteTexture, index: 1)
+        encoder.setFragmentSamplerState(filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            let image = self?.readScreenshotTexture(width: width, height: height)
+            DispatchQueue.main.async { completion(image) }
+        }
+    }
+
+    /// Reads the offscreen texture back to CPU. Called from the command
+    /// buffer's completion handler (an arbitrary Metal-internal thread) —
+    /// safe because that handler only fires once the GPU has finished
+    /// writing, and nothing else touches this texture concurrently for the
+    /// brief window between encoding and readback.
+    private func readScreenshotTexture(width: Int, height: Int) -> CGImage? {
+        guard let texture = screenshotTexture else { return nil }
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        texture.getBytes(&pixels, bytesPerRow: bytesPerRow,
+                         from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        // bgra8Unorm stores B,G,R,A per pixel. premultipliedFirst +
+        // byteOrder32Little is the standard CGImage recipe for describing a
+        // BGRA buffer without a manual channel-swap pass (alpha is always
+        // 1.0 here, so "premultiplied" vs. "none" makes no visible difference).
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                     | CGBitmapInfo.byteOrder32Little.rawValue)
+        return CGImage(width: width, height: height,
+                        bitsPerComponent: 8, bitsPerPixel: 32,
+                        bytesPerRow: bytesPerRow,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: bitmapInfo,
+                        provider: provider, decode: nil,
+                        shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     private static let debug = ProcessInfo.processInfo.environment["UV_DEBUG"] == "1"
     private var dbgSubmitted = 0
     private var dbgDrawn = 0
@@ -601,6 +709,13 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentSamplerState(filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
+
+        if let shotCompletion = pendingScreenshotCompletion {
+            pendingScreenshotCompletion = nil
+            encodeScreenshotPass(commandBuffer: commandBuffer, pipeline: pipeline, uniforms: uniforms,
+                                 indexTexture: indexTextures[currentTextureIndex],
+                                 drawableSize: view.drawableSize, completion: shotCompletion)
+        }
 
         commandBuffer.present(drawable)
         commandBuffer.commit()

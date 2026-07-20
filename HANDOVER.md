@@ -4,7 +4,7 @@
 **GitHub:** https://github.com/mbosschaart/Stream64  
 **Local path:** `~/UltimateViewer`  
 **Author:** Martijn Bosschaart, 2026  
-**Last updated:** 2026-07-19
+**Last updated:** 2026-07-20
 
 This document is the primary reference for a developer picking up Stream64 cold. It covers every design decision, every non-obvious constraint, and everything discovered the hard way. Read it before touching anything.
 
@@ -535,6 +535,53 @@ After `connect()` succeeds, a bounded watchdog Task waits 4 seconds and checks i
 
 `connect()` has a `connecting: Bool` flag (not `@Published`) that prevents interleaved runs. Without this, auto-connect from grid tiles + user Retry + the connect watchdog could all fire simultaneously. Concurrent `AudioReceiver.start()` calls raced on the CoreAudio engine and produced error 35 (kAudioHardwareIllegalOperationError).
 
+### Mid-session disconnect detection & automatic reconnect
+
+Everything above (`watchForSilentStream`, cold-boot stop/start, etc.) assumes the REST API stays reachable — it only handles "streams start but no packets arrive." None of it catches the device (or the network path to it) dropping out entirely while `state == .connected`. This is what `AppSettings.reconnectAutomatically` now drives.
+
+`DeviceSession` runs a `healthMonitor: Task` for its entire lifetime (started in `init()`, never cancelled — cheap to leave running since it no-ops while not connected):
+
+```swift
+while !Task.isCancelled {
+    try? await Task.sleep(for: .seconds(5))
+    guard isConnected else { consecutiveFailures = 0; continue }
+    let probe = UltimateAPIClient(device: device, timeout: 3)
+    if (try? await probe.fetchInfo()) != nil {
+        consecutiveFailures = 0
+    } else {
+        consecutiveFailures += 1
+        if consecutiveFailures >= 2 { consecutiveFailures = 0; handleConnectionLost() }
+    }
+}
+```
+
+Two consecutive misses (~10 seconds) before acting — a single dropped probe on a flaky network is not a disconnection, and firing on the first miss would false-positive constantly on a home Wi-Fi link.
+
+`handleConnectionLost()` stops both receivers (their packets are now stale) and branches on the setting:
+- `reconnectAutomatically == true`: sets `state = .connecting` (reusing the existing UI, which already renders a spinner/"Connecting…" for that case — no new `ConnectionState` was added) and starts `reconnectTask`.
+- `reconnectAutomatically == false`: sets `state = .error("Connection to the device was lost.")`, same as any other failure — the user clicks Retry, exactly like before this feature existed.
+
+`reconnectTask` is a loop that repeatedly calls the *existing* `connect()` (full reachability probe, receiver setup, stream pickup — no duplicate logic) with exponential backoff (2s → 3s → 4.5s… capped at 30s):
+
+```swift
+while !Task.isCancelled {
+    if isConnected { return }
+    await connect()
+    if isConnected { return }
+    guard settings.reconnectAutomatically else { return }
+    try? await Task.sleep(for: .seconds(delaySeconds))
+    delaySeconds = min(delaySeconds * 1.5, 30)
+}
+```
+
+Checking `isConnected` both before and after the `connect()` call (not just after) matters: it closes a race where a user-initiated Retry succeeds while `reconnectTask` is asleep — without the pre-check, the loop would wake up and call `connect()` again on an already-good connection, which would flash `.connecting` and briefly restart the receivers for no reason.
+
+Two cancellation points keep the automatic loop from fighting a manual action:
+- `connect()` cancels `reconnectTask` at entry — a user-initiated Retry (or the grid's auto-connect `.task`) always supersedes a pending automatic attempt. (Cancelling the task from inside a closure that task itself is running is safe here — see the loop's `Task.isCancelled` checks.)
+- `disconnect()` cancels `reconnectTask` — an explicit Disconnect must stick; the health monitor won't refight it because `isConnected` is now false.
+
+This is deliberately layered on top of the existing state machine rather than adding a `.reconnecting` case: the UI, the retry buttons, and the reboot-recovery path all already handle `.connecting` correctly, and a distinct state would mean touching every view that switches on `ConnectionState` for no real behavioral gain.
+
 ### Audio startup resilience
 
 `startAudioIfEnabled()` returns `Bool` (success/failure). If audio fails to start, `connect()` proceeds with video-only and calls `recoverAudioQuietly()`, which retries `startAudioIfEnabled()` four times at 1-second intervals in the background. Only after all retries fail does it show a `transferStatus = .failed(...)` banner.
@@ -704,6 +751,20 @@ Called from `crtShade()` when `signal > 0.5`. Works in YIQ color space.
 - Per-scanline horizontal jitter: `jitter = (r - 0.5) * 0.14 + step(0.985, r) * 0.5` — most lines jitter slightly, occasional lines slip by half a texel. Applied to `uv.x` before all sampling.
 - Chroma noise: 2D noise vector added to IQ at 0.03 amplitude
 
+### Screenshot capture
+
+"Save Screenshot…" (toolbar camera button, context menu, ⇧⌘S) captures the **raw decoded picture**, not the filtered GPU output — i.e. what a capture card would see off the S-Video/composite/RF signal, without the CRT tube, scanlines, phosphor mask, or composite/RF artifacts baked in. This was a deliberate simplification: reading back the actual drawable after the fragment shader runs would need a blit into a CPU-readable texture and synchronizing with the command buffer's completion, for a feature whose main use case is "grab an image of what's running," not "reproduce the tube look in a file."
+
+Implementation is entirely CPU-side and independent of the draw loop:
+
+- `MetalFrameRenderer` keeps a `lastFrame: Data?` — set alongside `pendingFrame` in `submitFrame()`, but never cleared by `draw()` (unlike `pendingFrame`, which is consumed every frame). This guarantees a screenshot can always grab the latest picture regardless of when it's requested relative to the display link.
+- It also keeps a CPU-side `currentPalette: [SIMD4<UInt8>]`, updated in `setPalette()` alongside the GPU texture write. Screenshots convert palette indices to RGB on the CPU rather than reading back `paletteTexture` from the GPU.
+- `captureFrameImage() -> CGImage?` walks the 384×272 index buffer, looks up each pixel in `currentPalette`, and wraps the resulting RGBA bytes in a `CGImage` via `CGDataProvider` — no Core Image, no GPU round-trip.
+
+Wiring the renderer (owned by `VideoView`'s `Coordinator`, one per NSView instance) back to something the SwiftUI layer can call without holding a reference to the view itself: `DeviceSession` has a plain (non-`@Published`) closure property `captureFrame: (() -> CGImage?)?`, assigned in `VideoView.makeNSView` with `[weak renderer]`. This mirrors the `PictureControls` bypass pattern (§6) — a deliberate escape hatch from SwiftUI's observation model for a leaf wiring detail. Whichever `VideoView` currently exists for a session's UUID (the single pane's or a grid tile's — never both, since only one mode is displayed at a time) owns the assignment; if that view is torn down, the weak reference goes nil and `captureFrame` fails soft — `saveScreenshot()` reports "No frame available to capture yet." rather than crashing.
+
+`DeviceSession.saveScreenshot()` calls `captureFrame?()`, then drives an `NSSavePanel` (PNG only) directly — this is the one place a `DeviceSession` method reaches into AppKit UI rather than staying a pure controller, matching how other file-picker-adjacent code in this app (`DeviceEditSheet`) already sits at the view/AppKit boundary. Encoding is `NSBitmapImageRep(cgImage:).representation(using: .png, properties:)`. Success/failure surfaces through the existing `transferStatus` banner (`.done("Saved <filename>")` / `.failed(...)`), auto-cleared after 4 seconds via a small `scheduleClearTransferStatus()` helper factored out of the same pattern already used by `loadData()`.
+
 ### `applyPicture()`
 
 Applied to every output in every filter mode:
@@ -756,9 +817,17 @@ This bug manifested as searches for single-word names working fine and multi-wor
 
 ### Search → entries → download flow
 
-1. **Search**: `GET /search/aql/{offset}/{limit}?query=...` → `[SearchResult]` (max 200 per page; the UI requests 200 and shows "First 200 results" if that count is reached)
+1. **Search**: `GET /search/aql/{offset}/{limit}?query=...` → `[SearchResult]` (`pageSize` = 200 per page; see "Search pagination" below for what happens past the first page)
 2. **Entries**: when user selects a result, `GET /search/entries/{itemID}/{categoryID}` → `EntriesResponse { contentEntry: [FileEntry] }`. An item can have multiple files (disk side A, disk side B, different versions, etc.)
 3. **Download**: when user clicks an action, `GET /search/bin/{itemID}/{categoryID}/{fileID}` → raw `Data`. The data goes straight from the HTTP response body to `DeviceSession.loadData()` — never touches the filesystem.
+
+### Search pagination (Load More)
+
+The API has no total-count field — the only way to know whether a query has more results is that a page comes back exactly full (`count == pageSize`). `Assembly64View` tracks this with `hasMoreResults: Bool`, set after every page fetch (initial search or "Load More") to `found.count == Self.pageSize`. A short page, or an empty one, is the only reliable end-of-results signal, so it's treated as definitive rather than probabilistic.
+
+`runSearch()` (fired on Enter, category change, etc.) always starts a fresh query at `offset: 0` and replaces `results` entirely; it also stashes the built AQL query string in `loadedQuery`. `loadMoreResults()` (bound to the status bar's "Load More" button, shown only while `hasMoreResults` and not already loading) re-issues the *same* `loadedQuery` at `offset: results.count` and appends. Keying the offset off `results.count` rather than a separately tracked counter is safe only because results are exclusively grown by appending same-query pages — a `runSearch()` always clears them first, so there's no path where `results.count` could drift from "how many rows of this query have been fetched so far."
+
+A failed "Load More" (network hiccup mid-scroll) leaves the existing results on screen and reports the failure via `loadStatus` rather than clobbering `searchState` to `.failed` — losing 200 already-loaded rows over a transient error on page 2 would be a worse experience than just letting the user retry the button.
 
 ### Mount & Run boot chain
 
@@ -1031,21 +1100,26 @@ The `.gitignore` excludes `.build/`, `.DS_Store`, `*.xcodeproj`, `.swiftpm/`. Th
 
 ### Known issues not yet addressed
 
-- **Reconnect automatically setting**: `AppSettings.reconnectAutomatically` is stored but never acted upon. If the session drops (e.g. network interruption), the connection does not automatically recover — the user must click Retry. Implementing this would require detecting mid-session disconnection (the REST API going down while state is `.connected`) and re-running `connect()`.
 - **Integer scaling in fullscreen**: In integer scale mode at large screen sizes, the picture can appear very small if no integer multiple of 272 fits the screen nicely. A "largest integer that fills at least 80%" heuristic might be better.
-- **Assembly64 pagination**: The search fetches the first 200 results. If a query returns exactly 200, there may be more. Infinite scroll or pagination buttons were not implemented.
 - **SID file playback UI**: There's no "stop SID" command in the app (no such API endpoint exists). The user has to reset the machine.
 
 ### Things discussed but not built
 
-- **Snapshots/screenshots**: Saving the current frame as a PNG. Straightforward: read `pendingFrame` from the renderer, convert palette to RGB, write as PNG.
 - **Recording**: Capturing a session to video. Complex: would need CoreMedia encoding, significant CPU overhead for encoding concurrent with rendering.
 - **Full-screen per-device cursor**: In fullscreen with multiple devices, showing a mini stream label when hovering over the channel-switch arrows.
-- **Device reorder**: The sidebar has no drag-to-reorder. The device array in `DeviceStore` could support this; the `List` would need `onMove`.
 - **mDNS discovery**: Auto-discovering Ultimate devices on the local network via Bonjour/mDNS rather than requiring manual IP entry. The Ultimate firmware may advertise via mDNS (untested).
 - **Keyboard shortcuts per device**: In single view, macOS keyboard shortcuts (⌘R for Reset, etc.) conflict with the viewer sending ⌘ as a modifier to the C64. Currently ⌘ key presses are swallowed (`if event.modifierFlags.contains(.command) { return nil }`). A separate shortcut layer would be needed.
 - **Pixel shader customization**: Exposing the barrel distortion coefficient, scanline strength, phosphor mask intensity, and bloom amount as per-device settings rather than hardcoded shader constants.
 - **WebSocket streaming**: The Ultimate firmware may eventually support WebSocket-based streaming as an alternative to UDP. No current plans to implement.
+
+### Recently implemented (2026-07-20)
+
+Four items from the lists above have since been built:
+
+- **Automatic reconnect** — see the new subsection in §5, "Mid-session disconnect detection & automatic reconnect."
+- **Screenshot export** — see the new subsection in §7, "Screenshot capture."
+- **Assembly64 pagination** — see the updated §8, "Search pagination (Load More)."
+- **Sidebar drag-to-reorder** — `DeviceStore.move(fromOffsets:toOffset:)` plus `.onMove` on the sidebar's `ForEach`. Purely cosmetic list ordering, persisted the same way as the rest of the device list (`devices.json`); doesn't touch ports, UUIDs, or sessions.
 
 ---
 

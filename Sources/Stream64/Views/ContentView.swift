@@ -443,6 +443,9 @@ struct DeviceSidebar: View {
                         }
                     }
                 }
+                .onMove { source, destination in
+                    deviceStore.move(fromOffsets: source, toOffset: destination)
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -578,6 +581,9 @@ struct ViewerPane: View {
         }
         .onChange(of: display.filterMode) {
             session.applyAudioSettings()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveScreenshotRequested)) { _ in
+            session.saveScreenshot()
         }
         .confirmationDialog(
             "Power off \(session.device.name)?",
@@ -852,6 +858,14 @@ struct ViewerPane: View {
                 Label("Monitor Bezel", systemImage: "tv")
             }
             .help("Show a Commodore monitor bezel around the picture")
+
+            Button {
+                session.saveScreenshot()
+            } label: {
+                Label("Save Screenshot", systemImage: "camera")
+            }
+            .help("Save the current frame as a PNG")
+            .disabled(!session.isConnected)
 
             Button {
                 openWindow(id: "assembly64")

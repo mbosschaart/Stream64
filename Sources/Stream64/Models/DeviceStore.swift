@@ -59,6 +59,12 @@ final class DeviceStore: ObservableObject {
         }
     }
 
+    /// Reorders the sidebar list (drag-to-reorder). Purely cosmetic — it
+    /// doesn't touch ports, UUIDs, or any live session.
+    func move(fromOffsets source: IndexSet, toOffset destination: Int) {
+        devices.move(fromOffsets: source, toOffset: destination)
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: Self.storeURL) else { return }
         if let decoded = try? JSONDecoder().decode([UltimateDevice].self, from: data) {
