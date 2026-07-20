@@ -264,7 +264,7 @@ Also defines:
 - `TransferStatus` enum: `.uploading(String)`, `.done(String)`, `.failed(String)` — shown in the transfer banner overlay
 - `MountBehavior` enum: Codable/Equatable `.mountOnly`, `.mountAndRun`
 - `LoadOutcome` enum: successful `.running`, `.mounted`, `.booting`, `.playing` result returned by `loadData()` so library history/preferences are never recorded after failed device operations
-- `LocalNetwork.primaryIPv4Address()` — walks `getifaddrs`, prefers `en0`, falls back to any `en*` interface. Used to determine where to tell the device to stream.
+- `LocalNetwork.primaryIPv4Address(reachingDevice:)` — walks `getifaddrs`, excludes loopback/link-local, prefers an `en*` interface on the device subnet, then another same-subnet interface, then other routable `en*`/non-loopback candidates.
 
 ### `Services/SingleInstanceLock.swift`
 
@@ -354,7 +354,7 @@ The 1702 control door is a `@State private var doorOpen: Bool` toggled by `onTap
 - `live: (Double) -> Void` — called every drag tick, updates `PictureControls` directly (no SwiftUI publish)
 - `commit: (Double) -> Void` — called once on drag end, writes to `DisplaySettings` (triggers save)
 
-This split is the key to smooth knob response. If `commit` were called on every tick, every write to `DisplaySettings.monBrightness` would publish `AppSettings` changes and re-render the entire window — far too slow for 60 Hz drag.
+This split is the key to smooth knob response. If `commit` were called on every tick, every write to `DisplaySettings.monBrightness` would publish `DisplaySettings` changes and re-render the entire window — far too slow for 60 Hz drag. Volume remains global in `AppSettings`; the four picture knobs are per-device.
 
 ### `Views/Assembly64View.swift`
 `struct Assembly64View` — the Assembly64 browser window.
@@ -524,7 +524,7 @@ The 3-second delay is empirical. BASIC needs time to print the startup banner an
     ▼
 .connecting
     │
-    ├── probeReachability() fails (no REST response in 2 × 2 attempts)
+    ├── probeReachability() fails (two attempts, each with 2 s timeout)
     │       ▼
     │   .unreachable   ← no automatic retries; user must act
     │
@@ -618,7 +618,7 @@ Two consecutive misses (~10 seconds) before acting — a single dropped probe on
 ```swift
 while !Task.isCancelled {
     if isConnected { return }
-    await connect()
+    await connect(cancelReconnectTask: false)
     if isConnected { return }
     guard settings.reconnectAutomatically else { return }
     try? await Task.sleep(for: .seconds(delaySeconds))
@@ -629,7 +629,7 @@ while !Task.isCancelled {
 Checking `isConnected` both before and after the `connect()` call (not just after) matters: it closes a race where a user-initiated Retry succeeds while `reconnectTask` is asleep — without the pre-check, the loop would wake up and call `connect()` again on an already-good connection, which would flash `.connecting` and briefly restart the receivers for no reason.
 
 Two cancellation points keep the automatic loop from fighting a manual action:
-- `connect()` cancels `reconnectTask` at entry — a user-initiated Retry (or the grid's auto-connect `.task`) always supersedes a pending automatic attempt. (Cancelling the task from inside a closure that task itself is running is safe here — see the loop's `Task.isCancelled` checks.)
+- `connect(cancelReconnectTask:)` defaults to `true`, so user-initiated Retry/auto-connect supersedes a pending loop. The loop itself passes `false`; otherwise its own call to `connect()` would cancel the task that owns the retry/backoff sequence before the first throwing suspension point.
 - `disconnect()` cancels `reconnectTask` — an explicit Disconnect must stick; the health monitor won't refight it because `isConnected` is now false.
 
 This is deliberately layered on top of the existing state machine rather than adding a `.reconnecting` case: the UI, the retry buttons, and the reboot-recovery path all already handle `.connecting` correctly, and a distinct state would mean touching every view that switches on `ConnectionState` for no real behavioral gain.
@@ -658,7 +658,7 @@ FPS publishes only on changes ≥ 0.5 (`if abs(fps - self.fps) >= 0.5`). This av
 
 `AppSettings` holds settings that apply globally: audio hardware (volume, buffer size, enabled), network (timeout, stream duration), and general preferences (reconnect, keyboard capture, confirm destructive actions). All backed by `@AppStorage` (UserDefaults).
 
-`DisplaySettings` holds settings that are specific to how one device's stream looks: filter mode, scaling, palette, input signal, bezel style and visibility, reflection, and the five picture-control values. Persisted per device UUID as a JSON blob in UserDefaults under `"displaySettings.<UUID>"`.
+`DisplaySettings` holds settings specific to one stream: filter/scaling/palette/input, CRT phosphor and dirty-glass mode, bezel style/visibility/reflection, and four picture controls (brightness, contrast, color, tint). Volume is global in `AppSettings`. Display state is persisted per device UUID as JSON under `"displaySettings.<UUID>"`.
 
 The split matters for multi-device: one machine can run CRT Tube + RF while another runs Sharp + S-Video. `AppSettings` changes (volume slider) affect all devices; `DisplaySettings` changes affect only the device that owns that instance.
 
@@ -703,7 +703,7 @@ Instead, `KnobDial.live` writes directly to `display.picture.brightness` (the pl
 
 ### Pipeline architecture
 
-All shader code lives in `MetalFrameRenderer.shaderSource` (a static String constant), compiled at app launch via `device.makeLibrary(source:options:)`. There is no separate `.metal` file. Four `MTLRenderPipelineState` objects are compiled from the same vertex function and four different fragment functions.
+All shader code lives in `MetalFrameRenderer.shaderSource` (a static String constant), compiled when each `MetalFrameRenderer` is created via `device.makeLibrary(source:options:)` — one renderer per active view/tile, not one global app-launch compilation. There is no separate `.metal` file. XCTest constructs a renderer to compile-check the source. Four `MTLRenderPipelineState` objects share one vertex and four fragment functions.
 
 The vertex shader (`vertexMain`) generates a fullscreen quad from a triangle strip of 4 vertices (positions hardcoded in the shader, indexed by `vid`). It applies a 2D scale from `uniforms.scale` so the output is letterboxed/scaled correctly without needing vertex buffers.
 
@@ -721,11 +721,15 @@ struct Uniforms {
     var tint: Float              // 0.5 = neutral
     var phosphorColor: Float     // 0 = color, 1 = amber, 2 = green, 3 = B&W
     var dirtyGlass: Float        // 1 = years-of-neglect grime layer
+    var maskPitch: Float         // selected monitor dot pitch in drawable pixels
+    var historyHead: Float       // newest slice in 12-frame indexed history
+    var historyValidCount: Float // initialized source-history slices
+    var historyPhase: Float      // fractional 50 Hz frame age for analog decay
     var padding: Float           // alignment
 }
 ```
 
-Uniforms are passed via `setVertexBytes` and `setFragmentBytes` (both). The vertex shader uses only `scale`; the fragment shaders use all fields.
+Uniforms are passed via `setVertexBytes` and `setFragmentBytes`. The vertex shader uses only `scale`. Sharp/Smooth use picture controls; CRT paths additionally consume signal/time, phosphor, dirt, dot pitch and history fields, with several values conditional on the selected mode.
 
 `time` is `Float(frameIndex % 3600) / 60.0`, giving a 60-second floating-point cycle. The modulo prevents eventual float precision loss and keeps the animation loop finite. RF artifacts (snow, interference line) are animated using `time`.
 
@@ -829,7 +833,7 @@ The overlay runs after phosphor coloring/vignette, while refraction runs before 
 
 ### Screenshot capture
 
-"Save Screenshot…" (toolbar camera button, context menu, ⇧⌘S) captures the **actual filtered GPU output**: selected palette, monitor controls, CRT scanlines/tube curvature, Composite/RF artifacts, reflection, and CRT screen color.
+"Save Screenshot…" (toolbar camera button, context menu, File command, ⇧⌘S) captures the **actual filtered GPU output**: palette/picture controls, CRT scanlines/tube curvature/dot pitch, Composite/RF artifacts, reflection, phosphor color/history afterglow, and dirty glass.
 
 `requestFilteredScreenshot()` stores a completion consumed by the next `draw(in:)`. That draw encodes a second pass with the same pipeline, uniforms and source textures into a reusable shared `.bgra8Unorm` offscreen texture sized exactly like the live drawable (destination pixel size matters for scanlines/phosphor mask). A command-buffer completion handler reads the finished texture into a BGRA `CGImage` and returns on the main queue.
 
@@ -971,7 +975,7 @@ Each tile has its own `VideoView` with its own `MetalFrameRenderer`, its own `Vi
 
 ### Port assignment
 
-Each device has its own `videoPort` and `audioPort` (local UDP ports on the Mac). The device is told to stream to `<primaryIPv4>:<videoPort>` and `<primaryIPv4>:<audioPort>`. Devices can never share a port.
+Each device stores `videoPort` and `audioPort` (local UDP ports on the Mac), and is told to stream to `<primaryIPv4>:<port>`. Defaults allocate unique pairs, but manual device edits are not collision-validated; duplicate ports can split/misdirect delivery and must be corrected by the user.
 
 `UltimateDevice.makeDefault(avoiding:)` walks upward from port 11000 in steps of 2, skipping any pair used by existing devices. Standard assignments for the three configured devices: 11000/11001, 11002/11003, 11004/11005.
 
@@ -1158,7 +1162,8 @@ cd ~/UltimateViewer
 # Command line:
 swift run
 
-# Unit tests (Assembly64 query/identity/persistence/ZIP safety):
+# 14 tests: AQL/CSDB, persistence/migration, ZIP safety, CRT constants,
+# single-instance locking, and embedded Metal compilation:
 swift test
 
 # With debug logging:
@@ -1176,7 +1181,7 @@ open .
 `VERSION=1.0.0 BUILD_NUMBER=1 ARCH=<arm64|x86_64> ./Scripts/build-release.sh` performs the complete local distribution pipeline. `ARCH` defaults to arm64; artifacts are isolated under `dist/<architecture>/`.
 
 1. Cross-compiles the optimized SwiftPM executable for `<architecture>-apple-macosx14.0` and verifies the Mach-O architecture with `lipo`.
-2. Creates `dist/<architecture>/Stream64.app` with `Packaging/Info.plist`, GPL license, privacy manifest and `dirty-glass-mask.png` under standard `Contents/Resources`.
+2. Creates `dist/<architecture>/Stream64.app` with `Packaging/Info.plist`, GPL license and `dirty-glass-mask.png` under standard `Contents/Resources`; ZIPFoundation's privacy manifest is copied when its generated bundle contains one.
 3. Replaces version/build placeholders using PlistBuddy.
 4. Applies an ad-hoc signature (`codesign --sign -`) and verifies the app with `--deep --strict`.
 5. Creates a ZIP and drag-to-Applications UDZO DMG.
@@ -1184,6 +1189,8 @@ open .
 7. Writes SHA-256 checksums for both distributable files.
 
 `MetalFrameRenderer` first looks for its dirt texture through `Bundle.main` (packaged app) and only evaluates `Bundle.module` as a fallback under `swift run`. Do not copy SwiftPM resource bundles into the `.app` root: codesign rejects those as unsealed root contents.
+
+The script intentionally produces separate thin arm64 and x86_64 bundles, not a universal binary. It assumes SwiftPM's generated bundle names `Stream64_Stream64.bundle` and `ZIPFoundation_ZIPFoundation.bundle`, and explicitly copies the known dirt texture/privacy resource; new package resources must be added to the script.
 
 Ad-hoc signing proves bundle integrity but does not establish an Apple-trusted developer identity and cannot be notarized. Downloaded copies require Control-click → Open or approval under Privacy & Security on first launch. `dist/` is ignored by Git.
 
@@ -1219,7 +1226,7 @@ The `.gitignore` excludes `.build/`, `.DS_Store`, `*.xcodeproj`, `.swiftpm/`, an
 ### Confirmed limitations (not bugs, inherent constraints)
 
 - **Games that scan the keyboard matrix** cannot receive injected keystrokes. This is a fundamental limitation of the KERNAL buffer injection approach. The firmware has no hardware matrix injection endpoint. A future firmware version could add this; the app would need a new API call.
-- **Stream duration auto-stop**: When `streamDurationSeconds > 0`, the device stops streaming after the configured time. The user must manually click "Restart Streams". There is no push notification from the device — detecting expiry requires noticing the watchdog fires (fps drops to 0), which the app already does. The watchdog recovery path could be smarter here.
+- **Stream duration auto-stop**: When `streamDurationSeconds > 0`, the device stops streaming after the configured time. The user must click **Start Streaming**. There is no push notification from the device — detecting expiry requires noticing the watchdog fires (fps drops to 0), which the app already does. The watchdog recovery path could be smarter here.
 - **No audio output device selection**: Audio always goes to the system default output device. `AVAudioEngine` could be extended to support device selection, but the UI has no surface for it.
 
 ### Known issues not yet addressed

@@ -169,7 +169,9 @@ final class DeviceSession: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 if self.isConnected { return }
-                await self.connect()
+                // This call is the reconnect task itself; it must not cancel
+                // the task that owns the retry/backoff loop.
+                await self.connect(cancelReconnectTask: false)
                 if self.isConnected { return }
                 guard self.settings.reconnectAutomatically else { return }
                 try? await Task.sleep(for: .seconds(delaySeconds))
@@ -201,7 +203,14 @@ final class DeviceSession: ObservableObject {
 
     private var connecting = false
 
-    func connect() async {
+    func connect(cancelReconnectTask: Bool = true) async {
+        // Manual connect/retry supersedes an automatic loop. Automatic loop
+        // attempts pass false so they do not self-cancel before their first
+        // throwing suspension point.
+        if cancelReconnectTask {
+            reconnectTask?.cancel()
+            reconnectTask = nil
+        }
         guard !device.host.isEmpty else {
             state = .error("Device has no address configured.")
             return
@@ -213,9 +222,6 @@ final class DeviceSession: ObservableObject {
         guard !connecting else { return }
         connecting = true
         defer { connecting = false }
-        // A user-initiated connect (Retry button, device selection)
-        // supersedes any automatic reconnect loop already in flight.
-        reconnectTask?.cancel()
 
         state = .connecting
         streamsStoppedByUser = false
@@ -346,7 +352,7 @@ final class DeviceSession: ObservableObject {
                     self.watchForSilentStream(attempt: attempt + 1)
                 } else {
                     self.transferStatus = .failed(
-                        "No video arriving — check firewall/UDP path, or Restart Streams.")
+                        "No video arriving — check firewall/UDP path, or use Start Streaming.")
                 }
             }
         }

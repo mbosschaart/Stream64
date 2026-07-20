@@ -1,6 +1,6 @@
 # Stream64
 
-A native macOS viewer and remote control for the **Commodore 64 Ultimate** family (Ultimate 64, Ultimate 64 Elite, Ultimate-II+). Stream64 receives the device's live video and audio streams over the network and renders them with Metal — with authentic CRT simulation, working monitor bezels, full keyboard input, drag-and-drop file loading, and simultaneous multi-device viewing.
+A native macOS viewer and remote control for the **Commodore 64 Ultimate** family (C64 Ultimate, Ultimate 64, Ultimate 64 Elite, Ultimate-II+). Stream64 receives the device's live video and audio streams over the network and renders them with Metal — with authentic CRT simulation, working monitor bezels, full keyboard input, drag-and-drop file loading, and simultaneous multi-device viewing.
 
 Designed by Martijn Bosschaart, 2026.
 
@@ -10,7 +10,7 @@ Designed by Martijn Bosschaart, 2026.
 
 ## Features
 
-- **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with sub-frame latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
+- **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
 - **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, and long analog Amber afterglow sourced from the C64's indexed 16-color history
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
@@ -20,7 +20,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Assembly64 discovery browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with repository/type/year/rating/recency filters, favorites, recent history, saved searches, Assembly64/CSDB previews and source links; safely inspect or save complete ZIPs, remember successful disk actions, and load files straight onto a machine
 - **Keyboard input** — type on the C64 from your Mac (KERNAL keyboard-buffer injection over DMA), plus a full on-screen C64 keyboard with PETSCII shift combinations
 - **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, power off
-- **Filtered screenshots** — save exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
+- **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **In-app documentation** — Help → Stream64 Help (⌘?)
 
@@ -59,6 +59,8 @@ Artifacts are written to `dist/<architecture>/`:
 - `Stream64-<version>-macos-<architecture>.dmg`
 - `Stream64-<version>-SHA256.txt`
 
+These are separate thin arm64 and x86_64 builds, not one universal binary.
+
 The bundle is ad-hoc signed and integrity-verified, but not Apple-notarized. \
 After downloading it, users must Control-click **Stream64 → Open** the first \
 time (or approve it under **System Settings → Privacy & Security**). Never \
@@ -70,7 +72,7 @@ disable Gatekeeper globally.
 2. Enter the device's IP address or hostname; **Test Connection**; **Add**
 3. The viewer connects automatically: it verifies the device over REST, opens local UDP listeners, and asks the device to stream to your Mac
 
-Right-click the picture for every control; the same options live in the toolbar.
+Right-click the picture for stream, machine and display controls. The toolbar additionally provides the on-screen keyboard, Assembly64 browser, screenshots and fullscreen.
 
 ---
 
@@ -91,7 +93,7 @@ Right-click the picture for every control; the same options live in the toolbar.
                      SessionManager / SwiftUI views / DisplaySettings
 ```
 
-Each configured device gets one `DeviceSession` owning its own receivers, API client, and display settings. Sessions are cached in a `SessionManager` and survive view rebuilds; devices stream to distinct local UDP port pairs so any number can run simultaneously.
+Each configured device gets one `DeviceSession` owning its receivers, API client and display settings. Sessions are cached in `SessionManager` and survive view rebuilds. Suggested device defaults allocate distinct UDP port pairs, but manual edits are not collision-validated. `SingleInstanceLock` prevents separate Stream64 processes from competing for the same listeners. `Assembly64LibraryStore` and `Assembly64Cache` separate persistent user intent from regenerable metadata. Health monitoring, reconnect/backoff, screenshot GPU readback and resource lookup operate around the core stream path.
 
 ## Source Layout
 
@@ -130,9 +132,11 @@ Sources/Stream64/
     ├── DeviceEditSheet.swift    Add/edit device with connection test
     ├── SettingsView.swift       Preferences window (per-device video tab)
     └── HelpView.swift           In-app documentation window
-Tests/Stream64Tests/             Query, persistence, ZIP, lock and Metal compile tests
+Tests/Stream64Tests/             AQL/CSDB, persistence/migration, ZIP safety, CRT constants, lock and Metal compile tests
 Scripts/build-release.sh         arm64/x86_64 ad-hoc app/ZIP/DMG packaging
 Packaging/Info.plist             macOS application-bundle metadata
+Package.swift / Package.resolved SwiftPM targets, ZIPFoundation and pinned resolution
+LICENSE / CHANGELOG.md           License and release history
 ```
 
 ## The Data Path
@@ -153,7 +157,7 @@ The **RF audio filter** (active when a stream's input signal is RF and a CRT fil
 
 ### Rendering & Shaders
 
-All shaders live as source in `MetalFrameRenderer.swift` and compile at app launch. The pipeline per filter mode:
+All shaders live as source in `MetalFrameRenderer.swift` and compile whenever a renderer is created (one per active view/tile). XCTest instantiates a renderer to catch Metal-source failures. The pipeline per filter mode:
 
 | Mode | Shader work |
 |---|---|
@@ -184,7 +188,7 @@ Limitation inherent to the approach: programs that read the keyboard through the
 
 ### File Loading
 
-Dropped files upload directly over REST: `.prg` via `POST /v1/runners:run_prg` (binary body — reset, DMA-load, run) and disk images via `POST /v1/drives/a:mount` (multipart attachment) with type inferred from the extension. The file never needs to exist on the Ultimate's storage. ⌃-drop fans the upload out to every connected session in parallel. SID tunes go to `runners:sidplay`, cartridges to `runners:run_crt`.
+Drag-and-drop accepts PRG and disk images: `.prg` uses `POST /v1/runners:run_prg` (reset, DMA-load, run); D64/G64/D71/G71/D81 use multipart `POST /v1/drives/a:mount`. The file never needs to exist on Ultimate storage, and ⌃-drop fans it out to connected sessions. SID and CRT runner support is used by Assembly64 and safe archive loading, not the current drag target.
 
 **Mount & Run** (Assembly64 browser) chains mount → machine reset → a 3 s BASIC-boot wait → keyboard-buffer injection of `LOAD"*",8,1` and `RUN` — fully automatic disk boot.
 

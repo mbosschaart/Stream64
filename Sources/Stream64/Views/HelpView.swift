@@ -126,7 +126,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **The toolbar** holds everything for the current stream: connect/disconnect, \
     machine controls (reset, reboot, pause, menu, power), display settings \
     (scaling, filter, input signal, bezel), keyboard capture, and full screen. \
-    Everything is also available by **right-clicking the picture**.
+    Right-clicking the picture provides stream, machine and display controls; \
+    the toolbar additionally provides the on-screen keyboard, Assembly64, \
+    screenshots and fullscreen.
 
     To find something to run, open the **Assembly64 browser** (⇧⌘F) and \
     search the online C64 library — results load straight onto the machine.
@@ -142,6 +144,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     the streams arrive — each device must use its own pair. The app suggests \
     free ports automatically when adding a device.
 
+    Devices can be reordered by dragging rows in the sidebar. Defaults avoid \
+    port collisions, but manual edits are not collision-validated.
+
     **Connection flow**
 
     When you select a device (with auto-connect on), the app verifies the \
@@ -154,9 +159,13 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     Only one Stream64 process can run at once. A repeated launch activates the \
     existing window instead of competing for the same UDP ports.
 
+    With **Reconnect automatically** enabled in Settings → General, two failed \
+    five-second health checks trigger reconnect attempts with backoff up to \
+    30 seconds. Manual Disconnect cancels that loop.
+
     **Stream duration** (Settings → Network) can auto-stop streams on the \
     device after a fixed time — a safety net if the viewer loses connectivity. \
-    Use **Restart Streams** in the toolbar or right-click menu if the picture \
+    Use **Start Streaming** in the toolbar or right-click menu if the picture \
     freezes after the duration expires.
     """
 
@@ -245,7 +254,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     adjust this stream in real time. CRT filters use its coarser **0.64 mm \
     shadow-mask dot pitch**.
     • **Commodore 1084S** — the grey-beige Amiga-era monitor with front \
-    buttons, a green power LED, and a finer **0.42 mm dot pitch**.
+    buttons, a green power LED, and a finer **0.42 mm dot pitch**. The selected \
+    monitor style controls shader dot pitch even when the drawn bezel is hidden.
 
     **Tube Reflection** (with the CRT Tube filter) renders the picture's own \
     light onto the black mask around the tube face — geometrically correct, \
@@ -267,8 +277,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     work. RUN/STOP is Escape.
 
     **On-screen keyboard** (toolbar, next to capture) — a full C64-layout \
-    keyboard with every key clickable, including SHIFT combinations for \
-    PETSCII graphics characters. SHIFT is sticky: click it, then the key.
+    keyboard with clickable KERNAL-buffer keys, including SHIFT combinations \
+    for PETSCII graphics characters. SHIFT is sticky: click it, then the key. \
+    CTRL and RESTORE are shown disabled because they have no character code \
+    that can be injected through the KERNAL buffer.
 
     **A note on games** — keystrokes arrive through the C64's KERNAL buffer, \
     which BASIC and most utilities read. Games that scan the keyboard \
@@ -295,8 +307,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     single view) and the file loads on **every connected device \
     simultaneously**. Perfect for synchronized two-player starts.
 
-    After loading a .d64, type `LOAD"*",8,1` and `RUN` on the C64 (or use \
-    the on-screen keyboard) as usual.
+    After loading a supported disk image (.d64/.g64/.d71/.g71/.d81), type \
+    `LOAD"*",8,1` and `RUN` on the C64 (or use the on-screen keyboard) as usual.
 
     You can also load software directly from the **Assembly64 online \
     library** without downloading anything first — see the Assembly64 \
@@ -307,7 +319,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Assembly64** is an online library of C64 software — games, demos, \
     music, tools — aggregated from CSDB, GameBase64, HVSC, OneLoad64, tape \
     archives, and more. Stream64 searches it and loads results straight onto \
-    your machine, no files touching your Mac.
+    your machine without permanent local files. **Save ZIP…** intentionally \
+    writes locally, and archive inspection uses a temporary URLSession download.
 
     **Open the browser** — the toolbar's Assembly64 button (books icon), \
     **File → Search Assembly64…**, or ⇧⌘F. It's a separate window, so you \
@@ -369,9 +382,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     monitor knobs are stored per device. One machine can look like RF on a \
     1702 while another is pixel-sharp.
 
-    **Ports** — each device streams to its own pair of local UDP ports. The \
-    Add Device sheet picks free ports automatically; two devices can never \
-    share a port.
+    **Ports** — each device should stream to its own pair of local UDP ports. \
+    The Add Device sheet picks free defaults automatically, but manual edits \
+    can create collisions and should be checked.
 
     In **full screen**, ← and → cycle through your devices.
     """
@@ -386,8 +399,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **Menu** — presses the Ultimate's menu button
     • **Power Off** — powers down the machine (asks for confirmation; \
     configurable in Settings → General)
-    • **Restart Streams** — re-arms video/audio to this Mac without a \
+    • **Stop Streaming** — stops video/audio while leaving REST control alive
+    • **Start Streaming** — re-arms video/audio to this Mac without a \
     reconnect, for when the picture froze but the device is fine
+
+    Closing any main viewer window fully quits Stream64 and closes every \
+    Assembly64, Help, Settings and additional viewer window.
 
     **Settings → Audio** — volume (also on the 1702 bezel's VOLUME knob) and \
     the jitter buffer. A larger buffer smooths playback on busy networks at \
@@ -395,7 +412,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let troubleshootingText = """
-    **Black screen after connecting** — use **Restart Streams** (toolbar or \
+    **Black screen after connecting** — use **Start Streaming** (toolbar or \
     right-click). If that fails, check that no firewall blocks inbound UDP \
     on the device's video/audio ports.
 
