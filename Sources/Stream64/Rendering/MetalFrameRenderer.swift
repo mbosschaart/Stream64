@@ -20,11 +20,24 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// slow fragment shader (the CRT modes) is still reading it.
     private var indexTextures: [MTLTexture]
     private var currentTextureIndex = 0
+    private static let historyFrameCount = 12
+    /// Indexed source-frame history for amber phosphor persistence
+    /// (~240 ms at the PAL stream's 50 fps).
+    private let historyTexture: MTLTexture
+    private var historyHead = 0
+    private var historyValidCount = 0
+    private var historyLastUploadUptime: UInt64 = 0
     /// 16-entry RGBA palette texture.
     private var paletteTexture: MTLTexture
+    /// Photographic RGBA dirt/lint mask generated for the neglected-glass
+    /// mode. Procedural detail is layered on top so repeated installations
+    /// share material realism without looking perfectly uniform.
+    private let dirtyGlassTexture: MTLTexture
 
     private let textureLock = NSLock()
     private var pendingFrame: Data?
+    private var resetHistoryOnNextFrame = false
+    private var lastFrameSubmission: DispatchTime?
     /// Set by `requestFilteredScreenshot`, consumed on the next `draw(in:)`.
     /// Both are only ever touched on the main thread (MTKView's display
     /// link — and the occlusion-fallback timer — always call draw() there),
@@ -41,6 +54,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     var reflectionEnabled: Bool = true
     /// 0 = S-Video, 1 = Composite, 2 = RF.
     var signalLevel: Float = 0
+    var crtScreenColor: CRTScreenColor = .color
+    var crtDirtyGlass: Bool = false
+    var monitorDotPitchMillimeters: Float = BezelChoice.c1702.dotPitchMillimeters
     /// Frame counter driving RF noise animation.
     private var frameIndex: UInt32 = 0
     /// Live picture controls, read every frame (bypasses SwiftUI updates
@@ -56,6 +72,12 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         var contrast: Float
         var saturation: Float
         var tint: Float
+        var phosphorColor: Float
+        var dirtyGlass: Float
+        var maskPitch: Float
+        var historyHead: Float
+        var historyValidCount: Float
+        var historyPhase: Float
         var padding: Float = 0
     }
 
@@ -86,25 +108,103 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float contrast;
         float saturation;
         float tint;
+        float phosphorColor;
+        float dirtyGlass;
+        float maskPitch;
+        float historyHead;
+        float historyValidCount;
+        float historyPhase;
         float padding;
     };
 
     // Monitor picture controls, all neutral at 0.5. Saturation and tint
     // work on the chroma plane (YIQ), like the color/tint pots on a real
     // composite monitor.
+    static float brightnessOffset(constant Uniforms &u) {
+        // Preserve a useful darkening range, but provide substantially more
+        // headroom above neutral for a deliberately overdriven CRT picture.
+        return u.brightness < 0.5
+             ? (u.brightness - 0.5) * 0.70
+             : (u.brightness - 0.5) * 1.30;
+    }
+
+    static float saturationScale(constant Uniforms &u) {
+        // 0...0.5 remains a conventional 0...1 saturation control.
+        // Above neutral, ramp much harder to 4x chroma at the end stop.
+        return u.saturation <= 0.5
+             ? u.saturation * 2.0
+             : 1.0 + (u.saturation - 0.5) * 6.0;
+    }
+
     static float3 applyPicture(float3 c, constant Uniforms &u) {
-        c = (c - 0.5) * mix(0.4, 1.6, u.contrast) + 0.5 + (u.brightness - 0.5) * 0.5;
+        c = (c - 0.5) * mix(0.4, 1.6, u.contrast)
+          + 0.5 + brightnessOffset(u);
         float3 yiq = float3(dot(c, float3(0.299,  0.587,  0.114)),
                             dot(c, float3(0.596, -0.274, -0.322)),
                             dot(c, float3(0.211, -0.523,  0.312)));
         float angle = (u.tint - 0.5) * 1.0;   // ~±28 degrees of hue
         float sn = sin(angle), cs = cos(angle);
         float2 iq = float2(yiq.y * cs - yiq.z * sn,
-                           yiq.y * sn + yiq.z * cs) * (u.saturation * 2.0);
+                           yiq.y * sn + yiq.z * cs) * saturationScale(u);
         float3 rgb = float3(yiq.x + 0.956 * iq.x + 0.621 * iq.y,
                             yiq.x - 0.272 * iq.x - 0.647 * iq.y,
                             yiq.x - 1.106 * iq.x + 1.703 * iq.y);
         return clamp(rgb, 0.0, 1.0);
+    }
+
+    // Physical CRT phosphor color applied after picture controls. Color mode
+    // leaves RGB intact; amber/green/monochrome convert the decoded picture
+    // to luminance, then excite a single-color or white phosphor.
+    static float3 applyPhosphorColor(float3 c, constant Uniforms &u) {
+        if (u.phosphorColor < 0.5) {
+            return c;
+        }
+        // applyPicture intentionally lifts/lowers the entire signal with the
+        // monitor controls. A monochrome phosphor should not turn that lifted
+        // black level into a glowing amber/green background, so subtract the
+        // exact output level that a true RGB black receives from those same
+        // controls before tinting. Signal noise above black remains visible.
+        float contrastScale = mix(0.4, 1.6, u.contrast);
+        float blackLevel = clamp(0.5 - 0.5 * contrastScale
+                               + brightnessOffset(u), 0.0, 0.98);
+        float luminance = dot(c, float3(0.299, 0.587, 0.114));
+        luminance = max(0.0, (luminance - blackLevel)
+                             / max(1.0 - blackLevel, 0.001));
+        if (u.phosphorColor > 0.5 && u.phosphorColor < 2.5) {
+            // A real monochrome tube's "black" is not absolute once its
+            // brightness is driven: the raster becomes a faint phosphor-
+            // colored haze. Low contrast lifts it a little more; high
+            // contrast suppresses the floor while bright phosphor remains
+            // strongly driven. Neutral controls still produce true black.
+            float brightnessDrive = clamp((u.brightness - 0.5) * 2.0,
+                                          0.0, 1.0);
+            float lowContrastLift = clamp((0.5 - u.contrast) * 2.0,
+                                          0.0, 1.0);
+            float highContrastCrush = clamp((u.contrast - 0.5) * 2.0,
+                                            0.0, 1.0);
+            float phosphorFloor = (brightnessDrive * 0.18
+                                 + lowContrastLift * 0.07)
+                                * (1.0 - highContrastCrush * 0.65);
+            luminance += phosphorFloor * (1.0 - luminance);
+        }
+        if (u.phosphorColor < 1.5) {
+            float glow = min(1.0, luminance * 1.08
+                                  + luminance * luminance * 0.20);
+            // Period amber phosphor is not one fixed RGB color: low emission
+            // reads brown/orange, while strong emission shifts toward a
+            // golden yellow. Interpolate by beam intensity to reproduce that
+            // characteristic palette from real monochrome monitors.
+            float amberMix = smoothstep(0.08, 0.82, glow);
+            float3 darkAmber = float3(0.82, 0.34, 0.01);
+            float3 brightAmber = float3(1.0, 0.76, 0.06);
+            return glow * mix(darkAmber, brightAmber, amberMix);
+        }
+        if (u.phosphorColor < 2.5) {
+            float glow = min(1.0, luminance * 1.08
+                                  + luminance * luminance * 0.20);
+            return glow * float3(0.20, 1.0, 0.32);
+        }
+        return float3(luminance);
     }
 
     vertex VertexOut vertexMain(uint vid [[vertex_id]],
@@ -176,6 +276,27 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return mix(top, bottom, f.y);
     }
 
+    static float3 sampleHistoryColor(
+        float2 uv, uint slice,
+        texture2d_array<uint> historyTex,
+        texture2d<float> paletteTex) {
+        uint2 size = uint2(historyTex.get_width(), historyTex.get_height());
+        uint2 coord = min(uint2(clamp(uv, 0.0, 1.0) * float2(size)),
+                          size - 1);
+        uint index = historyTex.read(coord, slice).r;
+        return paletteTex.read(uint2(index, 0)).rgb;
+    }
+
+    static float3 sampleIndexedColorNearest(
+        float2 uv, texture2d<uint> indexTex,
+        texture2d<float> paletteTex) {
+        uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
+        uint2 coord = min(uint2(clamp(uv, 0.0, 1.0) * float2(size)),
+                          size - 1);
+        uint index = indexTex.read(coord).r;
+        return paletteTex.read(uint2(index, 0)).rgb;
+    }
+
     static float3 toYIQ(float3 c) {
         return float3(dot(c, float3(0.299,  0.587,  0.114)),
                       dot(c, float3(0.596, -0.274, -0.322)),
@@ -190,6 +311,159 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
     static float hash21(float2 p) {
         return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+    }
+
+    static float dirtNoise(float2 p) {
+        float2 i = floor(p);
+        float2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i);
+        float b = hash21(i + float2(1.0, 0.0));
+        float c = hash21(i + float2(0.0, 1.0));
+        float d = hash21(i + float2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
+    static float2 rotateDirt(float2 p, float angle) {
+        float sn = sin(angle), cs = cos(angle);
+        return float2(p.x * cs - p.y * sn, p.x * sn + p.y * cs);
+    }
+
+    static float dirtEllipse(float2 uv, float2 center,
+                             float2 radius, float angle) {
+        float2 p = rotateDirt(uv - center, angle) / radius;
+        return 1.0 - smoothstep(0.65, 1.25, length(p));
+    }
+
+    static float moistureRing(float2 uv, float2 center, float radius) {
+        float d = length(uv - center);
+        float ringWidth = max(0.0012, radius * 0.16);
+        float ring = 1.0 - smoothstep(ringWidth * 0.30, ringWidth,
+                                     abs(d - radius));
+        float driedCenter = (1.0 - smoothstep(0.0, radius, d)) * 0.22;
+        return max(ring, driedCenter);
+    }
+
+    static float2 dropletRefraction(float2 uv, float2 center,
+                                    float radius, float strength) {
+        float2 delta = uv - center;
+        float distance = length(delta);
+        float inside = 1.0 - smoothstep(radius * 0.30, radius, distance);
+        float rim = 1.0 - smoothstep(0.0, radius,
+                                     abs(distance - radius * 0.72));
+        float2 direction = delta / max(distance, 0.0001);
+        return direction * (inside * 0.00065 + rim * 0.00040) * strength;
+    }
+
+    // Years of grime refract the source picture locally before phosphor and
+    // glass overlays are evaluated. The pattern is static in screen space so
+    // it stays attached to the physical tube rather than the video content.
+    static float2 dirtyGlassUV(float2 uv, constant Uniforms &u) {
+        if (u.dirtyGlass < 0.5) {
+            return uv;
+        }
+        float2 offset = float2(0.0);
+        offset += dropletRefraction(uv, float2(0.73, 0.28), 0.009, 1.0);
+        offset += dropletRefraction(uv, float2(0.31, 0.72), 0.006, 0.8);
+        offset += dropletRefraction(uv, float2(0.56, 0.57), 0.0035, 0.55);
+        return clamp(uv + offset, 0.0, 1.0);
+    }
+
+    static float3 applyDirtyGlass(float3 color, float2 uv,
+                                  float2 pixelPos, constant Uniforms &u,
+                                  texture2d<float> dirtTexture) {
+        if (u.dirtyGlass < 0.5) {
+            return color;
+        }
+
+        // Uneven nicotine/dust film at two scales.
+        float broadFilm = dirtNoise(uv * 3.2 + float2(1.7, 4.1));
+        float fineFilm = dirtNoise(uv * 13.0 + float2(8.3, 2.2));
+        float film = broadFilm * 0.68 + fineFilm * 0.32;
+
+        // Finger wipes, palm smears and a long dried cleaning streak.
+        float smudge = 0.0;
+        smudge += dirtEllipse(uv, float2(0.21, 0.25),
+                              float2(0.18, 0.040), -0.22) * 0.72;
+        smudge += dirtEllipse(uv, float2(0.79, 0.68),
+                              float2(0.16, 0.034), 0.36) * 0.58;
+        smudge += dirtEllipse(uv, float2(0.43, 0.82),
+                              float2(0.22, 0.022), -0.08) * 0.40;
+        smudge = clamp(smudge, 0.0, 1.0);
+
+        // Dried moisture spots: pale mineral rings with cloudy centers.
+        float moisture = 0.0;
+        moisture += moistureRing(uv, float2(0.73, 0.28), 0.015);
+        moisture += moistureRing(uv, float2(0.31, 0.72), 0.010) * 0.78;
+        moisture += moistureRing(uv, float2(0.56, 0.57), 0.006) * 0.62;
+        moisture = clamp(moisture, 0.0, 1.0);
+
+        // Photographic material mask generated specifically for neglected CRT
+        // glass. Crop its 3:2 source to the centered 4:3 screen area. Strong
+        // opacity is limited to a small area in the extreme corners; the
+        // source mask is heavily attenuated everywhere else.
+        constexpr sampler dirtSampler(coord::normalized, filter::linear,
+                                       address::clamp_to_edge);
+        // Shift the photographed buildup down so it sits directly in the
+        // glass/case seam rather than floating above the bottom edge.
+        float2 dirtUV = float2(
+            uv.x * 0.8888889 + 0.0555556,
+            clamp(uv.y - 0.035, 0.0, 1.0));
+        float4 materialDirt = dirtTexture.sample(dirtSampler, dirtUV);
+        float leftWeight = 1.0 - smoothstep(
+            0.35, 1.0,
+            length((uv - float2(0.0, 1.0)) / float2(0.22, 0.11)));
+        float rightWeight = 1.0 - smoothstep(
+            0.35, 1.0,
+            length((uv - float2(1.0, 1.0)) / float2(0.22, 0.11)));
+        float cornerWeight = max(leftWeight, rightWeight);
+        float materialOpacity = materialDirt.a
+                              * mix(0.02, 0.32, cornerWeight);
+
+        // Thousands of fixed dust motes, each placed within a 6-pixel cell.
+        float2 cell = floor(pixelPos / 6.0);
+        float2 local = fract(pixelPos / 6.0);
+        float random = hash21(cell + float2(19.1, 7.7));
+        float2 motePosition = float2(
+            hash21(cell + float2(2.3, 5.9)),
+            hash21(cell + float2(11.7, 3.1)));
+        float mote = (1.0 - smoothstep(0.025, 0.13,
+                                      length(local - motePosition)))
+                   * step(0.70, random);
+
+        // A separate sparse population of 1–2 pixel embedded grime flecks.
+        // These are darker and slightly brown/olive rather than neutral dust,
+        // with enough spacing that each reads as an isolated particle.
+        float2 fleckCell = floor(pixelPos / 10.0);
+        float2 fleckLocal = fract(pixelPos / 10.0);
+        float fleckRandom = hash21(fleckCell + float2(31.7, 13.9));
+        float2 fleckPosition = float2(
+            hash21(fleckCell + float2(6.1, 17.3)),
+            hash21(fleckCell + float2(23.9, 4.7)));
+        float darkFleck = (1.0 - smoothstep(0.025, 0.11,
+                                           length(fleckLocal - fleckPosition)))
+                        * step(0.94, fleckRandom);
+        float fleckHue = hash21(fleckCell + float2(41.3, 29.1));
+        float3 brownFleck = float3(0.18, 0.10, 0.045);
+        float3 oliveFleck = float3(0.10, 0.17, 0.055);
+        float3 fleckTransmission = mix(brownFleck, oliveFleck, fleckHue);
+
+        float grime = 0.055 + film * 0.11 + smudge * 0.20
+                    + moisture * 0.10;
+        float luminance = dot(color, float3(0.299, 0.587, 0.114));
+        // Dirty glass lowers contrast, warms transmitted light, and reflects
+        // a tiny amount of ambient room light even over a black picture.
+        color = mix(color, float3(luminance) * float3(0.92, 0.84, 0.68),
+                    grime * 0.42);
+        color *= 1.0 - grime * 0.34;
+        color += float3(0.10, 0.085, 0.055)
+               * (film * 0.025 + smudge * 0.055 + moisture * 0.045);
+        color *= 1.0 - mote * 0.58;
+        color *= mix(float3(1.0), fleckTransmission, darkFleck * 0.88);
+        color *= 1.0 - materialOpacity * 0.30;
+        color = mix(color, materialDirt.rgb, materialOpacity * 0.62);
+        color += float3(0.18, 0.15, 0.10) * moisture * 0.028;
+        return clamp(color, 0.0, 1.0);
     }
 
     // Composite/RF video: luma and chroma share one wire, so chroma
@@ -213,8 +487,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             uv.x += jitter * texelX;
         }
 
-        float lumaSoft = rf > 0.5 ? 0.75 : 0.45; // tap spacing; wider on RF
-        float chromaStep = rf > 0.5 ? 1.5 : 0.9; // wider chroma smear on RF
+        float lumaSoft = rf > 0.5 ? 0.85 : 0.55; // tap spacing; wider on RF
+        float chromaStep = rf > 0.5 ? 1.85 : 1.35; // broad color bleed
 
         // Luma: 5-tap gaussian soften — on RF the taps sit far enough
         // apart that individual C64 pixels melt together.
@@ -232,16 +506,18 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         // Ghosting — a faint displaced copy from impedance mismatch.
         // Present on both cable inputs, stronger over the antenna.
-        float ghostAmount = rf > 0.5 ? 0.06 : 0.025;
+        float ghostAmount = rf > 0.5 ? 0.07 : 0.035;
         float3 ghost = sampleBilinear(uv + float2(texelX * 5.0, 0), indexTex, paletteTex).rgb;
         y = mix(y, dot(ghost, float3(0.299, 0.587, 0.114)), ghostAmount);
 
-        // Chroma: wide asymmetric horizontal average (~1.5 MHz bandwidth
-        // feel) — color arrives late and smeared relative to luma.
+        // Chroma: very wide asymmetric horizontal average — color bandwidth
+        // collapses, arrives late and bleeds well beyond sharp luma edges.
         float2 iq = float2(0.0);
         float wsum = 0.0;
-        for (int k = -1; k <= 4; k++) {
-            float w = exp(-0.35 * float(k * k));
+        float chromaFalloff = rf > 0.5 ? 0.16 : 0.20;
+        for (int k = -2; k <= 6; k++) {
+            float shifted = float(k) - 0.7;
+            float w = exp(-chromaFalloff * shifted * shifted);
             float3 s = sampleBilinear(uv + float2(texelX * float(k) * chromaStep, 0), indexTex, paletteTex).rgb;
             float3 yiq = toYIQ(s);
             iq += w * yiq.yz;
@@ -253,7 +529,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         // checkerboard of residual subcarrier climbs the edge.
         float3 yiqL = toYIQ(cl), yiqR = toYIQ(cr);
         float chromaEdge = length(yiqR.yz - yiqL.yz);
-        float crawl = chromaEdge * (rf > 0.5 ? 0.16 : 0.10) *
+        float crawl = chromaEdge * (rf > 0.5 ? 0.18 : 0.12) *
             ((int(pixelPos.x) + int(pixelPos.y)) % 2 == 0 ? 1.0 : -1.0);
         y += crawl;
 
@@ -286,7 +562,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     static float3 crtShade(float2 uv, float2 pixelPos,
                            texture2d<uint> indexTex,
                            texture2d<float> paletteTex,
-                           float signal, float time) {
+                           texture2d_array<uint> historyTex,
+                           float signal, float time, float phosphorColor,
+                           float brightness, float maskPitch,
+                           float historyHead, float historyValidCount,
+                           float historyPhase) {
         uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
         float3 color;
         if (signal > 0.5) {
@@ -296,25 +576,82 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             color = sampleBilinear(uv, indexTex, paletteTex).rgb;
         }
 
+        // Long-persistence amber phosphor: retain bright luminance from the
+        // previous 11 PAL source frames with exponential decay. Source-frame
+        // history keeps moving objects trailing for ~240 ms without feeding
+        // back dither/noise from the rendered framebuffer.
+        if (phosphorColor > 0.5 && phosphorColor < 1.5
+            && historyValidCount > 1.0) {
+            // Initial emission is read directly from the indexed source
+            // texel: exactly one of the C64's 16 palette luminances, with no
+            // interpolation or invented digital shade.
+            float3 indexedCurrent = sampleIndexedColorNearest(
+                uv, indexTex, paletteTex);
+            float currentEmission = dot(
+                indexedCurrent, float3(0.299, 0.587, 0.114));
+            float persistentLuma = currentEmission;
+            for (int age = 1; age < 12; age++) {
+                if (float(age) >= historyValidCount) {
+                    break;
+                }
+                int slice = int(historyHead) - age;
+                if (slice < 0) {
+                    slice += 12;
+                }
+                float3 oldColor = sampleHistoryColor(
+                    uv, uint(slice), historyTex, paletteTex);
+                float oldLuma = dot(oldColor, float3(0.299, 0.587, 0.114));
+                // historyPhase advances continuously between incoming 50 Hz
+                // frames, so the temporal decay is analog rather than 12
+                // frame-quantized intensity steps.
+                float decay = exp(-(float(age) + historyPhase) * 0.16);
+                persistentLuma = max(persistentLuma, oldLuma * decay);
+            }
+            float filteredLuma = dot(color, float3(0.299, 0.587, 0.114));
+            color += float3(max(0.0, persistentLuma - filteredLuma));
+        }
+
         // Soft horizontal bloom: neighbours bleed slightly.
         float2 texel = 1.0 / float2(size);
         float3 blur = sampleBilinear(uv + float2(texel.x, 0), indexTex, paletteTex).rgb
                     + sampleBilinear(uv - float2(texel.x, 0), indexTex, paletteTex).rgb;
-        color = mix(color, blur * 0.5, 0.25);
+        float bloomAmount = phosphorColor > 0.5 && phosphorColor < 2.5
+                          ? 0.38 : 0.25;
+        color = mix(color, blur * 0.5, bloomAmount);
 
         // Scanlines: darken between source rows, gently, luminance-dependent.
         float row = uv.y * float(size.y);
         float scan = sin(row * 3.14159265 * 2.0) * 0.5 + 0.5;   // 1 at row centers
         float lum = dot(color, float3(0.299, 0.587, 0.114));
         float scanStrength = mix(0.35, 0.15, lum);              // bright areas mask lines
+        // Near the top of the brightness control, amber/green tubes emulate
+        // beam-current bloom: phosphor light spills vertically into the dark
+        // gap and the scanline structure starts glowing together. Keep the
+        // normal scanline look through most of the knob's range.
+        float monoPhosphor = phosphorColor > 0.5 && phosphorColor < 2.5
+                           ? 1.0 : 0.0;
+        float beamDrive = smoothstep(0.62, 1.0, brightness)
+                        * monoPhosphor;
+        scanStrength *= mix(1.0, 0.22, beamDrive);
         color *= mix(1.0 - scanStrength, 1.0, scan);
+        color += blur * 0.5 * (1.0 - scan) * beamDrive * 0.18;
 
-        // Phosphor triads: mild RGB stripe mask in device pixels.
-        int px = int(pixelPos.x) % 3;
-        float3 mask = px == 0 ? float3(1.05, 0.95, 0.95)
-                    : px == 1 ? float3(0.95, 1.05, 0.95)
-                              : float3(0.95, 0.95, 1.05);
-        color *= mask;
+        // Shadow-mask phosphor triads at the selected monitor's physical dot
+        // pitch. Alternate rows are staggered and vertically modulated into
+        // soft oval dots rather than an aperture-grille stripe pattern.
+        float pitch = max(maskPitch, 3.0);
+        float maskRow = floor(pixelPos.y / (pitch * 0.52));
+        float stagger = fmod(maskRow, 2.0) * (pitch / 6.0);
+        float phase = fmod(pixelPos.x + stagger, pitch) / pitch;
+        int channel = min(2, int(floor(phase * 3.0)));
+        float verticalPhase = fract(pixelPos.y / (pitch * 0.52));
+        float dotAperture = 0.95 + 0.07
+                          * (cos((verticalPhase - 0.5) * 6.2831853)
+                             * 0.5 + 0.5);
+        float3 mask = channel == 0 ? float3(1.06, 0.95, 0.95)
+                    : channel == 1 ? float3(0.95, 1.06, 0.95)
+                                   : float3(0.95, 0.95, 1.06);
+        color *= mask * dotAperture;
 
         return color;
     }
@@ -323,9 +660,21 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                 constant Uniforms &uniforms [[buffer(0)]],
                                 texture2d<uint> indexTex [[texture(0)]],
                                 texture2d<float> paletteTex [[texture(1)]],
+                                texture2d<float> dirtTex [[texture(2)]],
+                                texture2d_array<uint> historyTex [[texture(3)]],
                                 sampler smp [[sampler(0)]]) {
-        float3 color = crtShade(in.texCoord, in.position.xy, indexTex, paletteTex, uniforms.signal, uniforms.time);
-        return float4(dither(applyPicture(color, uniforms), in.position.xy), 1.0);
+        float2 sourceUV = dirtyGlassUV(in.texCoord, uniforms);
+        float3 color = crtShade(sourceUV, in.position.xy, indexTex,
+                                paletteTex, historyTex,
+                                uniforms.signal, uniforms.time,
+                                uniforms.phosphorColor, uniforms.brightness,
+                                uniforms.maskPitch, uniforms.historyHead,
+                                uniforms.historyValidCount,
+                                uniforms.historyPhase);
+        color = applyPhosphorColor(applyPicture(color, uniforms), uniforms);
+        color = applyDirtyGlass(color, in.texCoord, in.position.xy,
+                                uniforms, dirtTex);
+        return float4(dither(color, in.position.xy), 1.0);
     }
 
     // Signed distance to the tube face: a rounded rect of half-extent 1.
@@ -340,6 +689,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                     constant Uniforms &uniforms [[buffer(0)]],
                                     texture2d<uint> indexTex [[texture(0)]],
                                     texture2d<float> paletteTex [[texture(1)]],
+                                    texture2d<float> dirtTex [[texture(2)]],
+                                    texture2d_array<uint> historyTex [[texture(3)]],
                                     sampler smp [[sampler(0)]]) {
         // Center coordinates in [-1, 1].
         float2 cc = in.texCoord * 2.0 - 1.0;
@@ -400,7 +751,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             }
             refl /= wsum;
 
-            refl = applyPicture(refl, uniforms);
+            refl = applyPhosphorColor(applyPicture(refl, uniforms), uniforms);
 
             // Bloom: soft-knee boost so bright content flares while dark
             // content stays subtle.
@@ -416,14 +767,26 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         // ---- Tube face ----
         float2 uv = curved * 0.5 + 0.5;
+        float2 sourceUV = dirtyGlassUV(uv, uniforms);
         // Soft antialiased edge just inside the border.
         float edge = 1.0 - smoothstep(-0.012, 0.0, sd);
 
-        float3 color = applyPicture(crtShade(uv, in.position.xy, indexTex, paletteTex, uniforms.signal, uniforms.time), uniforms);
+        float3 color = applyPhosphorColor(
+            applyPicture(crtShade(sourceUV, in.position.xy, indexTex,
+                                  paletteTex, historyTex,
+                                  uniforms.signal, uniforms.time,
+                                  uniforms.phosphorColor, uniforms.brightness,
+                                  uniforms.maskPitch, uniforms.historyHead,
+                                  uniforms.historyValidCount,
+                                  uniforms.historyPhase),
+                         uniforms),
+            uniforms);
 
         // Vignette: gentle darkening toward edges, like a lit tube face.
         float vig = 1.0 - 0.22 * dot(cc, cc);
         color *= vig;
+        color = applyDirtyGlass(color, uv, in.position.xy,
+                                uniforms, dirtTex);
 
         return float4(dither(color * edge, in.position.xy), 1.0);
     }
@@ -512,6 +875,22 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
         self.indexTextures = textures
 
+        let historyDesc = MTLTextureDescriptor()
+        historyDesc.textureType = .type2DArray
+        historyDesc.pixelFormat = .r8Uint
+        historyDesc.width = VideoReceiver.width
+        historyDesc.height = VideoReceiver.height
+        historyDesc.depth = 1
+        historyDesc.mipmapLevelCount = 1
+        historyDesc.arrayLength = Self.historyFrameCount
+        historyDesc.sampleCount = 1
+        historyDesc.storageMode = .shared
+        historyDesc.usage = [.shaderRead]
+        guard let history = device.makeTexture(descriptor: historyDesc) else {
+            return nil
+        }
+        self.historyTexture = history
+
         // Palette texture: 16x1 RGBA.
         let paletteDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba8Unorm,
@@ -521,6 +900,42 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         paletteDesc.usage = [.shaderRead]
         guard let paletteTex = device.makeTexture(descriptor: paletteDesc) else { return nil }
         self.paletteTexture = paletteTex
+
+        let dirtLoader = MTKTextureLoader(device: device)
+        // A packaged .app places the texture in Contents/Resources. `swift
+        // run` keeps it in SwiftPM's generated resource bundle instead.
+        var dirtURL = Bundle.main.url(
+            forResource: "dirty-glass-mask", withExtension: "png")
+        if dirtURL == nil {
+            dirtURL = Bundle.module.url(
+                forResource: "dirty-glass-mask", withExtension: "png")
+        }
+        if let url = dirtURL,
+           let texture = try? dirtLoader.newTexture(
+            URL: url,
+            options: [
+                .SRGB: false,
+                .origin: MTKTextureLoader.Origin.topLeft,
+            ]) {
+            self.dirtyGlassTexture = texture
+        } else {
+            // Missing resources must not make the entire renderer fail. A
+            // transparent fallback leaves the procedural dirt layers active.
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm,
+                width: 1, height: 1, mipmapped: false)
+            descriptor.usage = [.shaderRead]
+            guard let fallback = device.makeTexture(descriptor: descriptor) else {
+                return nil
+            }
+            var transparent: UInt32 = 0
+            fallback.replace(
+                region: MTLRegionMake2D(0, 0, 1, 1),
+                mipmapLevel: 0,
+                withBytes: &transparent,
+                bytesPerRow: 4)
+            self.dirtyGlassTexture = fallback
+        }
 
         super.init()
         setPalette(C64Palette.pepto)
@@ -595,6 +1010,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentTexture(indexTexture, index: 0)
         encoder.setFragmentTexture(paletteTexture, index: 1)
+        encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
+        encoder.setFragmentTexture(historyTexture, index: 3)
         encoder.setFragmentSamplerState(filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
@@ -639,6 +1056,13 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// Called from the receiver thread with a new frame of palette indices.
     func submitFrame(_ frame: Data) {
         textureLock.lock()
+        let now = DispatchTime.now()
+        if let lastFrameSubmission,
+           now.uptimeNanoseconds - lastFrameSubmission.uptimeNanoseconds
+                > 500_000_000 {
+            resetHistoryOnNextFrame = true
+        }
+        lastFrameSubmission = now
         pendingFrame = frame
         if Self.debug {
             dbgSubmitted += 1
@@ -658,6 +1082,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         textureLock.lock()
         let frame = pendingFrame
         pendingFrame = nil
+        let resetHistory = resetHistoryOnNextFrame
+        resetHistoryOnNextFrame = false
         textureLock.unlock()
 
         if let frame {
@@ -670,12 +1096,28 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             // Rotate to the next texture in the ring before uploading: the
             // previous one may still be read by an in-flight command buffer.
             currentTextureIndex = (currentTextureIndex + 1) % indexTextures.count
+            if resetHistory {
+                historyHead = 0
+                historyValidCount = 0
+            }
+            historyHead = (historyHead + 1) % Self.historyFrameCount
+            historyValidCount = min(
+                historyValidCount + 1, Self.historyFrameCount)
+            historyLastUploadUptime = DispatchTime.now().uptimeNanoseconds
             frame.withUnsafeBytes { raw in
                 indexTextures[currentTextureIndex].replace(
                     region: MTLRegionMake2D(0, 0, VideoReceiver.width, VideoReceiver.height),
                     mipmapLevel: 0,
                     withBytes: raw.baseAddress!,
                     bytesPerRow: VideoReceiver.width)
+                historyTexture.replace(
+                    region: MTLRegionMake2D(
+                        0, 0, VideoReceiver.width, VideoReceiver.height),
+                    mipmapLevel: 0,
+                    slice: historyHead,
+                    withBytes: raw.baseAddress!,
+                    bytesPerRow: VideoReceiver.width,
+                    bytesPerImage: VideoReceiver.width * VideoReceiver.height)
             }
         }
 
@@ -693,19 +1135,41 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
 
         frameIndex &+= 1
-        var uniforms = Uniforms(scale: computeScale(drawableSize: view.drawableSize),
+        let scale = computeScale(drawableSize: view.drawableSize)
+        // Both monitors use a nominal 13-inch 4:3 tube (~264.2 mm visible
+        // width). Convert physical dot pitch to destination pixels after
+        // letterboxing; clamp to one RGB triad when the view is too small to
+        // resolve the requested pitch without severe aliasing.
+        let pictureWidthPixels = Float(view.drawableSize.width) * scale.x
+        let maskPitch = max(
+            3.0,
+            monitorDotPitchMillimeters * pictureWidthPixels / 264.2)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsedSinceSourceFrame = historyLastUploadUptime == 0
+            ? 0
+            : Float(now - historyLastUploadUptime) / 1_000_000_000
+        let historyPhase = min(elapsedSinceSourceFrame * 50.0, 100.0)
+        var uniforms = Uniforms(scale: scale,
                                 reflection: reflectionEnabled ? 1 : 0,
                                 signal: signalLevel,
                                 time: Float(frameIndex % 3600) / 60.0,
                                 brightness: picture?.brightness ?? 0.5,
                                 contrast: picture?.contrast ?? 0.5,
                                 saturation: picture?.saturation ?? 0.5,
-                                tint: picture?.tint ?? 0.5)
+                                tint: picture?.tint ?? 0.5,
+                                phosphorColor: crtScreenColor.shaderValue,
+                                dirtyGlass: crtDirtyGlass ? 1 : 0,
+                                maskPitch: maskPitch,
+                                historyHead: Float(historyHead),
+                                historyValidCount: Float(historyValidCount),
+                                historyPhase: historyPhase)
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentTexture(indexTextures[currentTextureIndex], index: 0)
         encoder.setFragmentTexture(paletteTexture, index: 1)
+        encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
+        encoder.setFragmentTexture(historyTexture, index: 3)
         encoder.setFragmentSamplerState(filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()

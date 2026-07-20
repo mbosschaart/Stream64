@@ -42,7 +42,8 @@ final class AudioReceiver {
     /// audio is buffered; backlog beyond target + slack is dropped.
     var bufferSeconds: Double = 0.06
 
-    /// Packets received since start() — liveness signal for stream pickup.
+    /// Lifetime packet count for this receiver instance. Stream pickup uses
+    /// a per-connect baseline rather than comparing this value with zero.
     /// Written on the receive queue; racy polling reads are fine.
     private(set) var packetsReceived: Int = 0
 
@@ -108,6 +109,14 @@ final class AudioReceiver {
         framesAvailable = 0
         primed = false
         os_unfair_lock_unlock(lock)
+
+        // A stopped engine has no active render callback, so it is safe to
+        // reset the TV-speaker filter before starting a fresh stream.
+        rfLowState = (0, 0)
+        rfLowState2 = 0
+        rfHighState = (0, 0)
+        rfHighPrev = (0, 0)
+        rfHumPhase = 0
 
         do {
             try engine.start()
@@ -233,13 +242,13 @@ final class AudioReceiver {
 
     /// TV-speaker-over-antenna simulation:
     /// - mono (the RF modulator carries one channel)
-    /// - ~200 Hz high-pass (small speaker has no bass)
+    /// - ~330 Hz high-pass, double pole (small TV speaker has very little bass)
     /// - ~3 kHz low-pass, double pole (narrow broadcast audio + paper cone)
     /// - constant hiss bed + faint 50 Hz hum
     private func applyRFFilter(left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frames: Int) {
         // One-pole coefficients for the fixed stream rate.
         let lpAlpha: Float = 0.30   // ~3.3 kHz per pole at 47983 Hz
-        let hpAlpha: Float = 0.974  // ~200 Hz high-pass
+        let hpAlpha: Float = 0.958  // ~330 Hz high-pass per pole
         let humStep = Float(2 * Double.pi * 50.0 / Self.sampleRate)
 
         for i in 0..<frames {
@@ -252,11 +261,16 @@ final class AudioReceiver {
             rfLowState2 += lpAlpha * (rfLowState.l - rfLowState2)
             s = rfLowState2
 
-            // High-pass (one pole).
-            let hp = hpAlpha * (rfHighState.l + s - rfHighPrev.l)
+            // High-pass, two cascaded poles (12 dB/oct). This removes far
+            // more SID bass than the old single ~200 Hz pole and better
+            // resembles the small internal speaker in an inexpensive TV.
+            let hp1 = hpAlpha * (rfHighState.l + s - rfHighPrev.l)
             rfHighPrev.l = s
-            rfHighState.l = hp
-            s = hp
+            rfHighState.l = hp1
+            let hp2 = hpAlpha * (rfHighState.r + hp1 - rfHighPrev.r)
+            rfHighPrev.r = hp1
+            rfHighState.r = hp2
+            s = hp2
 
             // Drive into soft clip — small TV amps distort early.
             s = tanh(s * 2.2) * 0.85

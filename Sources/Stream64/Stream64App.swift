@@ -4,16 +4,52 @@ import SwiftUI
 /// Settings window keeps the process alive, looking like the app refused
 /// to exit.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let instanceLock = SingleInstanceLock()
+    private var isTerminatingCompletely = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard case .alreadyRunning(let pid) = instanceLock.acquire() else {
+            return
+        }
+
+        // Repeated `swift run` launches otherwise create multiple UDP
+        // listeners with endpoint reuse enabled. Packets may be delivered to
+        // the older process while the new window reports "No video arriving."
+        if let pid, let existing = NSRunningApplication(processIdentifier: pid) {
+            existing.activate(options: [.activateAllWindows])
+        }
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
-            guard let window = note.object as? NSWindow, Self.isMainWindow(window) else { return }
-            // Closing the viewer means quitting: take Settings (and any
-            // other panel) down with it.
-            DispatchQueue.main.async {
-                NSApp.terminate(nil)
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main) { [weak self] note in
+            guard let self,
+                  !self.isTerminatingCompletely,
+                  let window = note.object as? NSWindow,
+                  Self.isMainWindow(window) else {
+                return
             }
+            self.terminateCompletely(excluding: window)
         }
+    }
+
+    /// Closing the viewer is equivalent to Quit. Hide and close every
+    /// auxiliary SwiftUI scene before asking AppKit to terminate, so an
+    /// Assembly64/Help/Settings window can never remain as an orphan.
+    private func terminateCompletely(excluding closingWindow: NSWindow? = nil) {
+        guard !isTerminatingCompletely else { return }
+        isTerminatingCompletely = true
+
+        for window in NSApp.windows where window !== closingWindow {
+            window.orderOut(nil)
+            window.close()
+        }
+        NSApp.terminate(nil)
     }
 
     /// The viewer window, as opposed to Settings (identified by SwiftUI's
@@ -25,11 +61,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if window.identifier?.rawValue.contains("help") == true { return false }
         if window.identifier?.rawValue.contains("assembly64") == true { return false }
         if window is NSPanel || window.isSheet { return false }
-        return window.canBecomeMain
+        // Do not consult `canBecomeMain` here: AppKit may already set it to
+        // false by the time willClose is posted, which caused the viewer to
+        // be missed and left Assembly64 alive as an orphan process.
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        // Also cover Command-Q / Dock Quit, not only red-close on the viewer.
+        if !isTerminatingCompletely {
+            isTerminatingCompletely = true
+            for window in sender.windows {
+                window.orderOut(nil)
+                window.close()
+            }
+        }
+        return .terminateNow
     }
 }
 
@@ -42,6 +95,8 @@ struct Stream64App: App {
     /// App-level so the main window and the Assembly64 browser share the
     /// same live sessions.
     @StateObject private var sessionManager = SessionManager()
+    /// Persistent library state survives Assembly64 window reconstruction.
+    @StateObject private var assembly64Library = Assembly64LibraryStore()
 
     init() {
         // Needed when launched via `swift run` (no app bundle): become a regular
@@ -108,8 +163,9 @@ struct Stream64App: App {
             }
             .environmentObject(deviceStore)
             .environmentObject(settings)
+            .environmentObject(assembly64Library)
         }
-        .defaultSize(width: 900, height: 640)
+        .defaultSize(width: 980, height: 680)
         // Default resizability ties the window's size to its content's
         // *ideal* size — so the moment the files pane grows wider (an
         // entry row with filename/size/action buttons has a wider ideal

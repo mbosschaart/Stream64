@@ -173,6 +173,16 @@ private struct DeviceVideoSettings: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
+                Picker("CRT screen color", selection: $display.crtScreenColor) {
+                    ForEach(CRTScreenColor.allCases) { color in
+                        Text(color.rawValue).tag(color)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .disabled(!isCRTFilter)
+                Toggle("Years of dirt and grime on the CRT glass",
+                       isOn: $display.crtDirtyGlass)
+                    .disabled(!isCRTFilter)
             }
 
             Section("Monitor Bezel") {
@@ -191,6 +201,10 @@ private struct DeviceVideoSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var isCRTFilter: Bool {
+        display.filterMode == .crt || display.filterMode == .crtTube
     }
 }
 

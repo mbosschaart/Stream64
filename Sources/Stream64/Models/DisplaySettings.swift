@@ -23,6 +23,8 @@ final class DisplaySettings: ObservableObject {
     @Published var filterMode: FilterMode { didSet { save() } }
     @Published var palette: PaletteChoice { didSet { save() } }
     @Published var tubeInput: TubeInput { didSet { save() } }
+    @Published var crtScreenColor: CRTScreenColor { didSet { save() } }
+    @Published var crtDirtyGlass: Bool { didSet { save() } }
     @Published var showFPS: Bool { didSet { save() } }
     @Published var showBezel: Bool { didSet { save() } }
     @Published var bezelStyle: BezelChoice { didSet { save() } }
@@ -41,6 +43,9 @@ final class DisplaySettings: ObservableObject {
         var filterMode: FilterMode
         var palette: PaletteChoice
         var tubeInput: TubeInput
+        /// Optional for backward compatibility with existing per-device JSON.
+        var crtScreenColor: CRTScreenColor?
+        var crtDirtyGlass: Bool?
         var showFPS: Bool
         var showBezel: Bool
         var bezelStyle: BezelChoice
@@ -64,6 +69,8 @@ final class DisplaySettings: ObservableObject {
             filterMode = data.filterMode
             palette = data.palette
             tubeInput = data.tubeInput
+            crtScreenColor = data.crtScreenColor ?? .color
+            crtDirtyGlass = data.crtDirtyGlass ?? false
             showFPS = data.showFPS
             showBezel = data.showBezel
             bezelStyle = data.bezelStyle
@@ -80,6 +87,10 @@ final class DisplaySettings: ObservableObject {
             filterMode = FilterMode(rawValue: defaults.string(forKey: "filterMode") ?? "") ?? .sharp
             palette = PaletteChoice(rawValue: defaults.string(forKey: "palette") ?? "") ?? .pepto
             tubeInput = TubeInput(rawValue: defaults.string(forKey: "tubeInput") ?? "") ?? .svideo
+            crtScreenColor = CRTScreenColor(
+                rawValue: defaults.string(forKey: "crtScreenColor") ?? "") ?? .color
+            crtDirtyGlass = defaults.object(
+                forKey: "crtDirtyGlass") as? Bool ?? false
             showFPS = defaults.bool(forKey: "showFPS")
             showBezel = defaults.bool(forKey: "showBezel")
             bezelStyle = BezelChoice(rawValue: defaults.string(forKey: "bezelStyle") ?? "") ?? .c1702
@@ -102,6 +113,8 @@ final class DisplaySettings: ObservableObject {
         let data = Snapshot(
             scalingMode: scalingMode, filterMode: filterMode,
             palette: palette, tubeInput: tubeInput,
+            crtScreenColor: crtScreenColor,
+            crtDirtyGlass: crtDirtyGlass,
             showFPS: showFPS, showBezel: showBezel,
             bezelStyle: bezelStyle, bezelReflection: bezelReflection,
             monBrightness: monBrightness, monContrast: monContrast,

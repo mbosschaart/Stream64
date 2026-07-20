@@ -6,25 +6,28 @@ Designed by Martijn Bosschaart, 2026.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
-![Architecture](https://img.shields.io/badge/arch-Apple%20Silicon-green)
+![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
 
 ## Features
 
-- **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with sub-frame latency
-- **CRT simulation** — scanlines, phosphor mask, bloom, curved-glass tube with rounded corners, vignette, and a geometrically correct reflection of the picture on the tube's black mask
-- **Signal-path simulation** — S-Video (clean), Composite (chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, ghosting — plus matching TV-speaker audio: mono, band-limited, static, mains hum)
-- **Monitor bezels** — Commodore 1702 and 1084S, drawn in SwiftUI. The 1702's front-panel door opens to reveal **working knobs** (volume, brightness, color, tint, contrast) that drive the picture live
-- **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing in fullscreen
+- **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with sub-frame latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
+- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, and long analog Amber afterglow sourced from the C64's indexed 16-color history
+- **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
+- **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
+- **Monitor bezels** — Commodore 1702 and 1084S, drawn in SwiftUI. The 1702's front-panel door opens to reveal **working knobs** (volume, brightness, 4× color overdrive, tint, contrast) that drive the picture live
+- **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
-- **Assembly64 library browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) and load results straight onto a machine: run PRGs, **Mount & Run** or **Mount** disk images, play SIDs, start cartridges
+- **Assembly64 discovery browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with repository/type/year/rating/recency filters, favorites, recent history, saved searches, Assembly64/CSDB previews and source links; safely inspect or save complete ZIPs, remember successful disk actions, and load files straight onto a machine
 - **Keyboard input** — type on the C64 from your Mac (KERNAL keyboard-buffer injection over DMA), plus a full on-screen C64 keyboard with PETSCII shift combinations
 - **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, power off
+- **Filtered screenshots** — save exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
+- **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **In-app documentation** — Help → Stream64 Help (⌘?)
 
 ## Requirements
 
-- macOS 14 (Sonoma) or newer, Apple Silicon
-- A C64 Ultimate device with firmware **3.11+** on the same network
+- macOS 14 (Sonoma) or newer, Apple Silicon or Intel with a Metal-capable GPU
+- Ultimate 64/Elite firmware **3.11+**, or C64 Ultimate firmware **1.1+**, on the same network
 - UDP path from device to Mac (no firewall blocking the stream ports)
 
 ## Building & Running
@@ -36,6 +39,30 @@ swift run
 ```
 
 Or open the folder in Xcode and run the `Stream64` scheme.
+
+### Ad-hoc signed app and DMG
+
+Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
+
+```sh
+# Apple Silicon (default)
+VERSION=1.0.0 BUILD_NUMBER=1 ARCH=arm64 ./Scripts/build-release.sh
+
+# Intel
+VERSION=1.0.0 BUILD_NUMBER=1 ARCH=x86_64 ./Scripts/build-release.sh
+```
+
+Artifacts are written to `dist/<architecture>/`:
+
+- `Stream64.app`
+- `Stream64-<version>-macos-<architecture>.zip`
+- `Stream64-<version>-macos-<architecture>.dmg`
+- `Stream64-<version>-SHA256.txt`
+
+The bundle is ad-hoc signed and integrity-verified, but not Apple-notarized. \
+After downloading it, users must Control-click **Stream64 → Open** the first \
+time (or approve it under **System Settings → Privacy & Security**). Never \
+disable Gatekeeper globally.
 
 ## Quick Start
 
@@ -76,15 +103,23 @@ Sources/Stream64/
 │   ├── DeviceStore.swift      Persistence (Application Support/Stream64/devices.json)
 │   ├── AppSettings.swift      Global prefs (audio, network, general) — @AppStorage
 │   ├── DisplaySettings.swift  Per-device rendering settings, persisted by device UUID
+│   ├── Assembly64LibraryStore.swift  Favorites, recents, saved searches/actions
+│   ├── Assembly64SearchQuery.swift   Tested AQL query composition
 │   └── PETSCII.swift          ASCII/Unicode → PETSCII encoding for keyboard input
 ├── Services/
 │   ├── UltimateAPIClient.swift  REST client for the Ultimate's /v1 API
-│   ├── Assembly64Client.swift   Assembly64 library API (AQL search, downloads)
+│   ├── Assembly64Client.swift   Assembly64 search, metadata, archive/download API
+│   ├── Assembly64ArchiveInspector.swift  Safe in-memory ZIP inspection/extraction
+│   ├── Assembly64Cache.swift    Bounded regenerable metadata/preview cache
+│   ├── CSDBPreviewClient.swift  CSDB screenshot/source fallback
+│   ├── SingleInstanceLock.swift Process lock preventing duplicate UDP listeners
 │   ├── DeviceSession.swift      Connection lifecycle, keyboard queue, file loading
 │   ├── VideoReceiver.swift      UDP listener; assembles 4bpp packets into frames
 │   └── AudioReceiver.swift      UDP listener; ring buffer → AVAudioSourceNode; RF filter
 ├── Rendering/
-│   └── MetalFrameRenderer.swift Metal pipeline + all shaders (palette, CRT, signal sim)
+│   └── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)
+├── Resources/
+│   └── dirty-glass-mask.png     Photographic RGBA glass-contamination material
 └── Views/
     ├── ContentView.swift        Split view, viewer pane, multi-device grid, toolbar
     ├── VideoView.swift          NSViewRepresentable MTKView wrapper + key capture
@@ -95,6 +130,9 @@ Sources/Stream64/
     ├── DeviceEditSheet.swift    Add/edit device with connection test
     ├── SettingsView.swift       Preferences window (per-device video tab)
     └── HelpView.swift           In-app documentation window
+Tests/Stream64Tests/             Query, persistence, ZIP, lock and Metal compile tests
+Scripts/build-release.sh         arm64/x86_64 ad-hoc app/ZIP/DMG packaging
+Packaging/Info.plist             macOS application-bundle metadata
 ```
 
 ## The Data Path
@@ -111,7 +149,7 @@ The scaling math targets a **4:3 display aspect** (the C64's pixels are not squa
 
 The audio stream is 16-bit stereo at 47983 Hz (the Ultimate's actual PAL-derived rate), 192 sample pairs per packet. `AudioReceiver` uses a **pull model**: an `AVAudioSourceNode` render callback pulls from a lock-guarded ring buffer. A jitter buffer (default 60 ms, configurable) absorbs network variance; backlog beyond the target is trimmed so latency is bounded and can never ratchet upward — network hiccups produce a brief silence, not permanent delay.
 
-The **RF audio filter** (active when a stream's input signal is RF and a CRT filter is rendering) runs inside the render callback: mono fold, two-pole ~3 kHz low-pass, ~200 Hz high-pass, tanh soft-clip drive, low-passed hiss bed and 50 Hz hum. All per-sample with no allocations on the audio thread.
+The **RF audio filter** (active when a stream's input signal is RF and a CRT filter is rendering) runs inside the render callback: mono fold, two-pole ~3.3 kHz low-pass, two-pole ~330 Hz high-pass, tanh soft-clip drive, low-passed hiss bed and 50 Hz hum. All per-sample with no allocations on the audio thread.
 
 ### Rendering & Shaders
 
@@ -121,10 +159,14 @@ All shaders live as source in `MetalFrameRenderer.swift` and compile at app laun
 |---|---|
 | Sharp | Nearest-neighbor palette lookup |
 | Smooth | Manual bilinear blend of palette-expanded texels |
-| CRT | `crtShade`: luminance-dependent scanlines, RGB phosphor stripe, horizontal bloom |
+| CRT | `crtShade`: luminance/brightness-dependent scanlines, physical monitor dot pitch, bloom and optional dirty glass |
 | CRT Tube | Everything above + barrel distortion, rounded-corner SDF mask, vignette, and mask reflection |
 
 Signal simulation (`compositeSample`) runs before the CRT treatment, in **YIQ space**: gaussian luma soften, wide asymmetric chroma smear (bandwidth collapse), comb-filter dot crawl on chroma edges, displaced-copy ghosting. RF adds animated snow, per-scanline jitter, a drifting interference line, and stronger everything, driven by a frame-counter time uniform.
+
+CRT screen color is per device. Color preserves RGB; Green/Black & White use luminance phosphors; Amber shifts from brown/orange at low emission to golden yellow at high emission. Amber also samples a 12-frame indexed history (~240 ms): each C64 pixel starts at one of 16 palette-derived luminances, while fractional-frame exponential decay produces smooth analog temporal persistence.
+
+Dirty Glass combines a packaged photographic lint material with static procedural grime, smudges, tiny mineral deposits/refraction, fine dust and isolated dark flecks. It is fixed in glass space while video moves underneath and is included in filtered screenshots.
 
 The **tube reflection** mirrors each mask pixel's position across the nearest point of the curved face edge (via the SDF gradient), so every strip of the black mask reflects the picture content directly adjacent to it — a bright sprite at the screen edge glows onto the mask beside it. Falloff is exponential with distance from the glass; a gaussian tangential blur stands in for matte plastic.
 
@@ -148,7 +190,7 @@ Dropped files upload directly over REST: `.prg` via `POST /v1/runners:run_prg` (
 
 ### Assembly64 Integration
 
-`Assembly64Client` talks to the [Assembly64](https://hackerswithstyle.se/leet/swagger-ui/index.html) REST API (requires a registered `client-id` header on every request). Search uses **AQL** — space-separated `key:value` terms (`name:turrican subcat:games sort:name order:asc`); multi-word values must be quoted or the parser rejects the query (errorCode 463, returned as an HTTP 200 with an `{"errorCode": N}` body — the client sniffs small responses for this envelope before decoding). The flow is `search/aql/{offset}/{limit}` → `search/entries/{item}/{category}` (an item's files: disk sides, versions) → `search/bin/{item}/{category}/{file}` (raw bytes), which stream from the library into memory and straight to the device.
+`Assembly64Client` talks to the [Assembly64](https://hackerswithstyle.se/leet/swagger-ui/index.html) REST API (requires `client-id: assembly64`). Search facets are loaded from `/search/aql/presets`; tested AQL composition handles quoting, repository/type/year/rating/recency filters, sorting and pagination. Composite release identity prevents cross-repository collisions. Selecting a result concurrently loads files and cached metadata, with CSDB preview/source fallback. Favorites, recents, saved searches and successful remembered actions persist locally. Complete release ZIPs can be saved or safely inspected: traversal, symlinks, duplicates, suspicious ratios and size/count limits are rejected before selective in-memory extraction and device loading.
 
 ## Design Notes & Learned Constraints
 
@@ -159,15 +201,19 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 - **fps publishes only on ≥0.5 changes.** Per-second `@Published` updates re-rendered every observer — including rebuilding (and collapsing) any open context menu.
 - **Context menus snapshot state rather than observe it.** A menu that observes live objects gets rebuilt mid-traversal.
 - **`VideoView` observes `DisplaySettings` directly.** The renderer receives settings in `updateNSView`, which only runs when that view re-renders — hosts (grid tiles) don't necessarily re-render on settings changes.
-- **The device-side streaming stack can transiently refuse** `streams/*:start` with "Network Host Resolve Error" (firmware 3.14) while its web server stays healthy. The app retries once after 1 s; persistent refusal gets a Reboot & Retry recovery path. A genuinely wedged stack survives until device reboot.
+- **Stream pickup compares lifetime-counter baselines.** Receiver packet totals survive listener restarts; comparing them with zero skipped `stream:start` after reconnect. Each connect now requires post-baseline packet growth.
+- **Stop, settle, then start.** C64 Ultimate 1.1.0 can report "Network Host Resolve Error" if start immediately follows stop. The app stops requested streams, waits one second, then starts them; persistent failure retains Reboot & Retry.
+- **REST errors can arrive inside HTTP 2xx.** Non-empty device `errors` arrays are treated as failures instead of trusting status code alone.
+- **Only one Stream64 process may own UDP ports.** A POSIX lock activates the existing process and exits duplicate launches.
 - **Occluded windows stop MTKView's display link.** A timer-driven `draw()` fallback keeps background playback smooth (e.g. grid + overlapping window).
 - **One audible device at a time**, enforced centrally by the session manager on selection/mode changes — per-tile mute juggling left orphaned unmuted streams after view teardown.
+- **Closing a viewer means full termination.** SwiftUI root-view disappearance and AppKit termination both close every Assembly64/Help/Settings/extra-viewer window before exit.
 
 ## The Ultimate REST API (as used)
 
 | Endpoint | Use |
 |---|---|
-| `GET /v1/version`, `/v1/info` | Connectivity check, product/firmware display |
+| `GET /v1/info` | Connectivity check, product/firmware display |
 | `PUT /v1/streams/video:start?ip=<mac>:<port>` | Start VIC stream to this Mac (same for audio) |
 | `PUT /v1/machine:reset / :reboot / :pause / :resume / :poweroff / :menu_button` | Machine control |
 | `GET/PUT /v1/machine:readmem / :writemem` | Keyboard-buffer injection ($0277/$C6) |
@@ -181,3 +227,5 @@ Requests carry the `X-Password` header when the device has an API password set.
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).
+
+Release history: [CHANGELOG.md](CHANGELOG.md).

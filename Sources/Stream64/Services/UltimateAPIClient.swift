@@ -1,6 +1,7 @@
 import Foundation
 
-/// Client for the Ultimate 64 / Ultimate-II+ REST API (firmware 3.11+).
+/// Client for the Ultimate 64 / Ultimate-II+ REST API (firmware 3.11+) and
+/// the C64 Ultimate API-compatible firmware line (1.1+).
 /// Endpoints follow the official `/v1/...` API.
 struct UltimateAPIClient {
     let device: UltimateDevice
@@ -14,6 +15,7 @@ struct UltimateAPIClient {
     enum APIError: LocalizedError {
         case invalidURL
         case httpError(Int, String)
+        case deviceErrors([String])
 
         var errorDescription: String? {
             switch self {
@@ -21,8 +23,14 @@ struct UltimateAPIClient {
                 return "Invalid device address."
             case .httpError(let code, let body):
                 return "Device returned HTTP \(code): \(body)"
+            case .deviceErrors(let errors):
+                return errors.joined(separator: "; ")
             }
         }
+    }
+
+    private struct ErrorEnvelope: Decodable {
+        let errors: [String]
     }
 
     // MARK: - Machine control
@@ -211,6 +219,14 @@ struct UltimateAPIClient {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw APIError.httpError(http.statusCode, body)
+        }
+        // Current C64 Ultimate firmware can report command failures inside a
+        // successful HTTP response. Treat a non-empty errors array as a real
+        // failure so connect/retry logic does not accept a stream:start that
+        // the device rejected.
+        if let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data),
+           !envelope.errors.isEmpty {
+            throw APIError.deviceErrors(envelope.errors)
         }
         return data
     }

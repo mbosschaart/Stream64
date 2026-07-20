@@ -119,6 +119,21 @@ struct StreamContextMenu: View {
         }
         .disabled(!isCRTFilter)
 
+        Menu("Screen Color", systemImage: "circle.lefthalf.filled") {
+            Picker("Screen Color", selection: bind(\.crtScreenColor)) {
+                ForEach(CRTScreenColor.allCases) { color in
+                    Text(color.rawValue).tag(color)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        }
+        .disabled(!isCRTFilter)
+
+        Toggle("Dirty Glass", systemImage: "aqi.medium",
+               isOn: bind(\.crtDirtyGlass))
+            .disabled(!isCRTFilter)
+
         Menu("Palette", systemImage: "paintpalette") {
             Picker("Palette", selection: bind(\.palette)) {
                 ForEach(PaletteChoice.allCases) { palette in

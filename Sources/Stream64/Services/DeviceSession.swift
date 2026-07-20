@@ -218,6 +218,9 @@ final class DeviceSession: ObservableObject {
         reconnectTask?.cancel()
 
         state = .connecting
+        streamsStoppedByUser = false
+        fps = 0
+        isStreaming = false
 
         // Reachability first ("2 pings"): a device that doesn't answer gets
         // the explicit .unreachable state and no further automatic retries —
@@ -235,6 +238,13 @@ final class DeviceSession: ObservableObject {
             // Start local UDP receivers first so no packets are dropped.
             try videoReceiver.start(port: UInt16(device.videoPort))
             let audioOK = startAudioIfEnabled()
+            // Receivers expose lifetime packet counters. Snapshot after
+            // opening them and only treat packets arriving *after this
+            // connection attempt* as proof of an already-running stream.
+            // Comparing against zero caused reconnects to mistake packets
+            // from a previous session for a live stream and skip stream:start.
+            let videoPacketBaseline = videoReceiver.packetsReceived
+            let audioPacketBaseline = audioReceiver.packetsReceived
 
             // Pick up already-running streams before commanding new ones:
             // if the device is still sending to us (app restart), don't
@@ -246,8 +256,8 @@ final class DeviceSession: ObservableObject {
             var audioLive = false
             for _ in 0..<6 { // up to 600 ms
                 try await Task.sleep(for: .milliseconds(100))
-                videoLive = videoReceiver.packetsReceived > 0
-                audioLive = audioReceiver.packetsReceived > 0
+                videoLive = videoReceiver.packetsReceived > videoPacketBaseline
+                audioLive = audioReceiver.packetsReceived > audioPacketBaseline
                 if videoLive && (audioLive || !settings.audioEnabled) { break }
             }
 
@@ -350,18 +360,32 @@ final class DeviceSession: ObservableObject {
         guard let localIP = LocalNetwork.primaryIPv4Address(reachingDevice: device.host) else {
             throw UltimateAPIClient.APIError.invalidURL
         }
-        // Always stop before starting: after a cold power-on the device
+        let startAudio = audio ?? settings.audioEnabled
+        // Always stop, settle, then start: after a cold power-on the device
         // accepts a bare start (HTTP 200) but silently sends no packets —
         // a stop/start cycle reliably kicks the generator into streaming.
+        //
+        // Do not send start immediately after stop. C64 Ultimate firmware
+        // 1.1.0 needs time to tear down the old stream destination; an
+        // immediate start can fail with "Network Host Resolve Error" even
+        // for a literal IP. Stop all requested streams first, wait once,
+        // then start them.
         if video {
             try? await client.stopVideoStream()
+        }
+        if startAudio {
+            try? await client.stopAudioStream()
+        }
+        if video || startAudio {
+            try await Task.sleep(for: .seconds(1))
+        }
+        if video {
             try await client.startVideoStream(
                 destinationHost: localIP,
                 port: device.videoPort,
                 durationSeconds: settings.streamDurationSeconds)
         }
-        if audio ?? settings.audioEnabled {
-            try? await client.stopAudioStream()
+        if startAudio {
             try await client.startAudioStream(
                 destinationHost: localIP,
                 port: device.audioPort,
@@ -539,31 +563,43 @@ final class DeviceSession: ObservableObject {
     func loadFile(at url: URL) async {
         do {
             let data = try Data(contentsOf: url)
-            await loadData(data, filename: url.lastPathComponent)
+            _ = await loadData(data, filename: url.lastPathComponent)
         } catch {
             transferStatus = .failed("\(url.lastPathComponent): \(error.localizedDescription)")
         }
     }
 
     /// How to treat a disk image after upload.
-    enum MountBehavior {
+    enum MountBehavior: Codable, Equatable {
         case mountOnly
         /// Mount, then reset and auto-type LOAD"*",8,1 + RUN.
         case mountAndRun
     }
 
+    enum LoadOutcome: Equatable {
+        case running(String)
+        case mounted(String)
+        case booting(String)
+        case playing(String)
+    }
+
     /// Load in-memory file data (local file or Assembly64 download) onto
-    /// the machine, dispatching on the file extension.
+    /// the machine, dispatching on the file extension. Returning an outcome
+    /// lets library/history callers persist intent only after the Ultimate
+    /// accepted the operation; drag-and-drop callers may ignore it.
+    @discardableResult
     func loadData(_ data: Data, filename: String,
-                  mountBehavior: MountBehavior = .mountOnly) async {
+                  mountBehavior: MountBehavior = .mountOnly) async -> LoadOutcome? {
         let ext = (filename as NSString).pathExtension.lowercased()
         transferStatus = .uploading(filename)
+        let outcome: LoadOutcome
         do {
             switch ext {
             case "prg":
                 await flushPendingKeys()
                 try await client.runPRG(data: data)
                 transferStatus = .done("Running \(filename)")
+                outcome = .running(filename)
             case "d64", "g64", "d71", "g71", "d81":
                 try await client.mountDisk(data: data, filename: filename, type: ext)
                 if mountBehavior == .mountAndRun {
@@ -575,24 +611,29 @@ final class DeviceSession: ObservableObject {
                     try await Task.sleep(for: .seconds(1))
                     try await client.typeKeys(PETSCII.encode("run\r"))
                     transferStatus = .done("Booting \(filename)")
+                    outcome = .booting(filename)
                 } else {
                     transferStatus = .done("Mounted \(filename) in drive A")
+                    outcome = .mounted(filename)
                 }
             case "sid":
                 try await client.playSID(data: data)
                 transferStatus = .done("Playing \(filename)")
+                outcome = .playing(filename)
             case "crt":
                 try await client.runCRT(data: data)
                 transferStatus = .done("Running \(filename)")
+                outcome = .running(filename)
             default:
                 transferStatus = .failed("Unsupported file type: .\(ext)")
-                return
+                return nil
             }
         } catch {
             transferStatus = .failed("\(filename): \(error.localizedDescription)")
-            return
+            return nil
         }
         scheduleClearTransferStatus()
+        return outcome
     }
 
     /// Clear the transfer banner after a few seconds, unless it has already

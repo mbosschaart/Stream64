@@ -1,0 +1,38 @@
+# Changelog
+
+## Unreleased
+
+### Added
+
+- Automatic mid-session health checks and reconnect with exponential backoff.
+- Filtered PNG screenshots that reproduce the active Metal pipeline.
+- Assembly64 discovery filters, pagination, favorites, recents, saved searches, metadata/CSDB previews, complete-entry ZIP download, and safe archive inspection/extraction.
+- Persistent Assembly64 library state and bounded metadata/preview caches.
+- Per-device CRT screen colors: Color, Amber, Green, and Black & White.
+- Monitor-specific 0.42 mm (1084S) and 0.64 mm (1702) shadow-mask pitch.
+- Amber phosphor history with 16-color indexed emission and continuous analog decay.
+- Dirty Glass CRT mode with photographic corner material, procedural dust, dark flecks, smudges, mineral residue, and subtle refraction.
+- Fullscreen pointer auto-hide after five seconds of inactivity.
+- Single-instance process locking to prevent competing UDP listeners.
+- Ad-hoc signed arm64/x86_64 app, ZIP, and DMG packaging workflow.
+- XCTest coverage for AQL, persistence, archive safety, CSDB parsing, display migration, process locking, and embedded Metal compilation.
+
+### Changed
+
+- Composite has stronger asymmetric chroma bleed, softness, ghosting, and dot crawl.
+- RF audio uses two-pole high/low filtering for a smaller 1980s TV-speaker sound.
+- Brightness and color controls have extended overdrive ranges.
+- C64 Ultimate 1.1 stream startup now uses stop → one-second settle → start.
+- Stream pickup requires packet growth from a per-connect baseline.
+- Assembly64 uses a compact ten-row result layout and fixed-size metadata panel.
+- Device ordering is drag-adjustable and persisted.
+- Closing any viewer closes all auxiliary windows and terminates Stream64.
+
+### Fixed
+
+- HTTP 2xx responses with non-empty Ultimate `errors` arrays are treated as failures.
+- Stale receiver counters no longer suppress stream startup after reconnect.
+- Duplicate app processes can no longer split UDP delivery.
+- RF interference sweeps complete before the renderer time loop resets.
+- Assembly64 columns and window sizing no longer jump after selection.
+- Filtered screenshots include CRT effects, phosphor color, afterglow, and dirty glass.

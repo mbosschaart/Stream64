@@ -16,9 +16,10 @@ final class VideoReceiver {
     var onFrame: ((Data) -> Void)?
     var onStats: ((_ fps: Double) -> Void)?
 
-    /// Total packets received since start() — cheap liveness signal for
-    /// "is a stream already arriving?" checks. Written on the receive
-    /// queue; racy reads from other threads are fine for polling.
+    /// Lifetime packet count for this receiver instance. Connection pickup
+    /// snapshots a baseline and looks for increases; the value deliberately
+    /// survives listener restarts. Written on the receive queue; racy reads
+    /// from other threads are fine for polling.
     private(set) var packetsReceived: Int = 0
 
     private var listener: NWListener?

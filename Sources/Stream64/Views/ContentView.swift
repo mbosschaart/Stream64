@@ -43,6 +43,11 @@ struct ContentView: View {
     @State private var isFullscreen = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var arrowKeyMonitor: Any?
+    @State private var mouseMoveMonitor: Any?
+    @State private var cursorHideTask: Task<Void, Never>?
+    @State private var cursorHidden = false
+    @State private var fullscreenWindow: NSWindow?
+    @State private var previousAcceptsMouseMovedEvents = false
     @AppStorage("showAllScreens") private var showAllScreens = false
 
     var body: some View {
@@ -83,15 +88,44 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .addDeviceRequested)) { _ in
             showingAddDevice = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { note in
             isFullscreen = true
             columnVisibility = .detailOnly
             installArrowKeyMonitor()
+            if let window = note.object as? NSWindow {
+                installCursorAutoHide(in: window)
+            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { note in
+            guard fullscreenWindow == nil
+                    || note.object as? NSWindow === fullscreenWindow else {
+                return
+            }
             isFullscreen = false
             columnVisibility = .all
             removeArrowKeyMonitor()
+            removeCursorAutoHide()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didResignActiveNotification)) { _ in
+            cursorHideTask?.cancel()
+            showCursorIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            if isFullscreen { scheduleCursorHide() }
+        }
+        .onDisappear {
+            removeArrowKeyMonitor()
+            removeCursorAutoHide()
+            // Root ContentView disappears only when the main viewer scene is
+            // closed. SwiftUI can remove its NSWindow before AppKit's
+            // willClose observer can classify it, so terminate from the view
+            // lifecycle as the authoritative fallback. The app delegate then
+            // orders out and closes Assembly64/Help/Settings before exit.
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -118,6 +152,64 @@ struct ContentView: View {
             NSEvent.removeMonitor(monitor)
             arrowKeyMonitor = nil
         }
+    }
+
+    // MARK: - Fullscreen cursor auto-hide
+
+    private func installCursorAutoHide(in window: NSWindow) {
+        removeCursorAutoHide()
+        fullscreenWindow = window
+        previousAcceptsMouseMovedEvents = window.acceptsMouseMovedEvents
+        window.acceptsMouseMovedEvents = true
+
+        mouseMoveMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .mouseMoved) { event in
+            guard isFullscreen else { return event }
+            showCursorIfNeeded()
+            scheduleCursorHide()
+            return event
+        }
+        showCursorIfNeeded()
+        scheduleCursorHide()
+    }
+
+    private func scheduleCursorHide() {
+        cursorHideTask?.cancel()
+        guard isFullscreen, NSApp.isActive else { return }
+        cursorHideTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            guard isFullscreen, NSApp.isActive, !Task.isCancelled else { return }
+            hideCursorIfNeeded()
+        }
+    }
+
+    private func hideCursorIfNeeded() {
+        guard !cursorHidden else { return }
+        NSCursor.hide()
+        cursorHidden = true
+    }
+
+    private func showCursorIfNeeded() {
+        guard cursorHidden else { return }
+        NSCursor.unhide()
+        cursorHidden = false
+    }
+
+    private func removeCursorAutoHide() {
+        cursorHideTask?.cancel()
+        cursorHideTask = nil
+        if let monitor = mouseMoveMonitor {
+            NSEvent.removeMonitor(monitor)
+            mouseMoveMonitor = nil
+        }
+        showCursorIfNeeded()
+        fullscreenWindow?.acceptsMouseMovedEvents =
+            previousAcceptsMouseMovedEvents
+        fullscreenWindow = nil
     }
 
     private func switchStream(by offset: Int) {
@@ -852,6 +944,24 @@ struct ViewerPane: View {
             .help(isCRTFilter
                   ? "CRT input signal (affects picture, and sound in RF mode)"
                   : "CRT input signal — only applies to the CRT filters")
+            .disabled(!isCRTFilter)
+
+            Picker("Screen", selection: displayBinding(\.crtScreenColor)) {
+                ForEach(CRTScreenColor.allCases) { color in
+                    Text(color.rawValue).tag(color)
+                }
+            }
+            .help(isCRTFilter
+                  ? "CRT screen phosphor color"
+                  : "Screen color — only applies to the CRT filters")
+            .disabled(!isCRTFilter)
+
+            Toggle(isOn: displayBinding(\.crtDirtyGlass)) {
+                Label("Dirty Glass", systemImage: "aqi.medium")
+            }
+            .help(isCRTFilter
+                  ? "Simulate years of dust, grime, smudges and moisture on the tube"
+                  : "Dirty glass — only applies to the CRT filters")
             .disabled(!isCRTFilter)
 
             Toggle(isOn: displayBinding(\.showBezel)) {

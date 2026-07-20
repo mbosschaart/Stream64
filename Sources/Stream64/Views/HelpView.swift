@@ -110,7 +110,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **Requirements**
 
-    • A C64 Ultimate device with firmware 3.11 or newer on the same network as this Mac
+    • Ultimate 64/Elite firmware 3.11+, or C64 Ultimate firmware 1.1+, on the same network
     • The device's data streams reach this Mac over UDP — no firewall blocking inbound UDP
 
     **First connection**
@@ -146,8 +146,13 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     When you select a device (with auto-connect on), the app verifies the \
     device over its REST API, opens local UDP listeners, then asks the device \
-    to stream to this Mac's address. The toolbar subtitle shows the device's \
-    product name and firmware version once connected.
+    to stream to this Mac's address. Stream64 stops requested streams, waits \
+    one second for firmware teardown, then starts them. Receiver packet \
+    baselines prevent stale traffic from suppressing reconnect. The toolbar \
+    subtitle shows product and firmware once connected.
+
+    Only one Stream64 process can run at once. A repeated launch activates the \
+    existing window instead of competing for the same UDP ports.
 
     **Stream duration** (Settings → Network) can auto-stop streams on the \
     device after a fixed time — a safety net if the viewer loses connectivity. \
@@ -169,7 +174,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     Press ⌃⌘F (or the toolbar button). All interface chrome disappears — pure \
     picture on black. Move the pointer to the top of the screen for the menu \
-    bar, or press ⌃⌘F again to exit.
+    bar, or press ⌃⌘F again to exit. The pointer hides after five seconds \
+    without mouse movement and appears immediately when you move the mouse.
 
     With multiple devices configured, **← and → switch between streams** in \
     full screen, like changing channels. (The arrows pass through to the C64 \
@@ -177,6 +183,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **Frame rate overlay** — enable per device via right-click → Show Frame \
     Rate. Shows the live stream rate (~50 fps for PAL).
+
+    **Screenshot** — the toolbar camera, right-click → Save Screenshot…, or \
+    ⇧⌘S saves the actual filtered Metal output as PNG, including signal \
+    artifacts, CRT curvature, phosphor color/afterglow, reflection and dirt.
     """
 
     private static let renderingText = """
@@ -202,13 +212,27 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     drifting interference line, stronger ghosting — plus matching **audio**: \
     mono, band-limited like a small TV speaker, with static and mains hum.
 
+    **Screen color** (CRT filters only) — **Color** preserves the C64 palette; \
+    **Amber**, **Green**, and **Black & White** convert the decoded picture to \
+    luminance and emulate those physical CRT phosphors. The same color is \
+    reflected onto the curved tube mask. Amber has long phosphor persistence: \
+    bright moving objects leave decaying golden trails for roughly 240 ms.
+
+    **Dirty Glass** (CRT filters only) — simulates a tube that has not been \
+    cleaned in years: photographic corner lint plus uneven grime film, fixed \
+    dust motes, isolated dark flecks, separated fingerprint/palm smears, tiny \
+    moisture/mineral deposits, warm haze, contrast loss, and subtle refraction \
+    of the picture underneath.
+
     **Palette** — Pepto (default), Colodore, or VICE color tables.
 
     **Picture controls** — with the Commodore 1702 bezel visible, click its \
     front panel to open the door: real VOLUME, BRIGHT, COLOR, TINT, and \
     CONTRAST knobs drive the picture live (drag up/down; double-click to \
     center). These work like the real monitor's pots — color at zero gives a \
-    black-and-white picture, tint rotates hues, contrast crushes or flattens.
+    black-and-white picture, tint rotates hues, contrast crushes or flattens. \
+    BRIGHT has extended highlight headroom; COLOR rises to extreme 4× chroma \
+    at its end stop for intentionally overdriven CRT color.
     """
 
     private static let monitorBezelText = """
@@ -218,9 +242,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **Commodore 1702** — the classic cream monitor with its dark control \
     strip. Click the strip to flip down the door and reveal **working \
     front-panel knobs** (volume, brightness, color, tint, contrast) that \
-    adjust this stream in real time.
+    adjust this stream in real time. CRT filters use its coarser **0.64 mm \
+    shadow-mask dot pitch**.
     • **Commodore 1084S** — the grey-beige Amiga-era monitor with front \
-    buttons and a green power LED.
+    buttons, a green power LED, and a finer **0.42 mm dot pitch**.
 
     **Tube Reflection** (with the CRT Tube filter) renders the picture's own \
     light onto the black mask around the tube face — geometrically correct, \
@@ -291,13 +316,26 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Searching**
 
     Type a name and press Return. Multi-word names are fine ("last ninja"). \
-    Use the category picker to narrow to a source and kind — CSDB demos, \
-    GameBase64 games, HVSC music, and so on. Results show name, group, and \
-    year, sorted alphabetically (first 200 matches).
+    A search can also be driven entirely by filters: repository, file type, \
+    year, minimum rating, recently updated, sort field, and sort order. The \
+    category picker narrows to CSDB demos, GameBase64 games, HVSC music, and \
+    more. Use **Load More** when a query has over 200 matches.
+
+    **Your library**
+
+    Star any result to keep it under **Favorites**. Selecting an item adds it \
+    to **Recent**. The bookmark menu saves the current text, category, and \
+    filters as a named search. Favorites, history, saved searches, metadata \
+    previews, and remembered disk actions persist between launches.
 
     **Loading**
 
-    Select a result to see its files. Each file offers actions for its type:
+    Select a result to see its metadata, preview/source link when available, \
+    and every file in the entry. If Assembly64 has no preview for a CSDB \
+    release, Stream64 asks CSDB directly. **Save ZIP…** downloads the complete \
+    entry for local archiving. **Inspect ZIP…** safely lists its members and \
+    lets you run one supported file without extracting paths onto your Mac. \
+    Each file offers actions for its type:
 
     • **Disk images** (.d64/.g64/.d71/.g71/.d81) — **Mount & Run** mounts \
     the disk, resets the C64, and auto-types `LOAD"*",8,1` + `RUN`; \
@@ -308,7 +346,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     Files load onto the **selected device** — shown in the status bar at the \
     bottom of the browser. Multi-disk items (side A/B) list every disk; mount \
-    side B when the game asks for it.
+    side B when the game asks for it. Stream64 remembers whether you last used \
+    **Mount** or **Mount & Run** as quiet history beside the file size; both \
+    buttons always keep the same neutral appearance.
     """
 
     private static let multiDeviceText = """
@@ -359,11 +399,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     right-click). If that fails, check that no firewall blocks inbound UDP \
     on the device's video/audio ports.
 
-    **"Network stack appears stuck" error** — the Ultimate's streaming stack \
-    occasionally wedges and refuses all stream destinations while its web \
-    interface still works. The app retries automatically; if the error \
-    persists, use **Reboot Device & Retry** in the error panel. This is a \
-    firmware quirk, not a network problem.
+    **"Network stack appears stuck" error** — an immediate start after stop can \
+    trigger a misleading firmware error. Stream64 uses a proven stop → one \
+    second wait → start sequence and retries automatically. If the settled \
+    retry still fails, use **Reboot Device & Retry**; a genuinely wedged stack \
+    can remain reachable over REST while refusing stream destinations.
 
     **Choppy or stuttering audio** — raise the jitter buffer in Settings → \
     Audio (try 100 ms). Wi-Fi is the usual culprit; wired Ethernet on either \

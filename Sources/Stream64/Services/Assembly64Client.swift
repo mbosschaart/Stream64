@@ -8,20 +8,44 @@ import Foundation
 struct Assembly64Client {
     static let baseURL = URL(string: "https://hackerswithstyle.se/leet")!
     static let clientID = "assembly64"
+    static let maximumArchiveBytes: Int64 = 100 * 1024 * 1024
 
-    struct SearchResult: Decodable, Identifiable, Hashable {
-        let id: String
+    struct SearchResult: Codable, Identifiable, Hashable {
+        let itemID: String
         let name: String
         let category: Int
         let group: String?
         let handle: String?
         let year: Int?
         let rating: Int?
+        let siteRating: Double?
+        let country: String?
+        let event: String?
+        let updated: String?
         let released: String?
+
+        var id: String { libraryKey }
+        var libraryKey: String { "\(category):\(itemID)" }
+
+        private enum CodingKeys: String, CodingKey {
+            case itemID = "id"
+            case name, category, group, handle, year, rating, siteRating
+            case country, event, updated, released
+        }
 
         var displayGroup: String {
             let g = (group ?? "").replacingOccurrences(of: "_", with: " ")
             return g.isEmpty ? (handle ?? "") : g
+        }
+
+        var displayRating: String {
+            if let siteRating, siteRating > 0 {
+                return String(format: "%.1f", siteRating)
+            }
+            if let rating, rating > 0 {
+                return String(rating)
+            }
+            return ""
         }
     }
 
@@ -56,6 +80,73 @@ struct Assembly64Client {
         let type: String?
     }
 
+    struct AQLPreset: Decodable, Hashable {
+        let type: String
+        let description: String
+        let values: [AQLPresetValue]
+    }
+
+    struct AQLPresetValue: Decodable, Hashable {
+        let id: Int?
+        let aqlKey: String
+        let name: String?
+
+        var displayName: String { name ?? aqlKey.uppercased() }
+    }
+
+    struct Metadata: Codable, Hashable {
+        let name: String?
+        let group: String?
+        let handle: String?
+        let releaseDate: String?
+        let event: String?
+        let eventType: String?
+        let rating: String?
+        let place: String?
+        let url: String?
+        let images: [TargetAndPath]?
+        let siteImage: String?
+
+        var sourceURL: URL? {
+            guard let url, let candidate = URL(string: url),
+                  candidate.scheme != nil else { return nil }
+            return candidate
+        }
+
+        var imageURLs: [URL] {
+            var values: [URL] = []
+
+            if let siteImage, let url = Self.resolve(siteImage, relativeTo: nil) {
+                values.append(url)
+            }
+            for image in images ?? [] {
+                if let url = Self.resolve(image.path, relativeTo: image.target) {
+                    values.append(url)
+                }
+            }
+            return Array(Set(values))
+        }
+
+        private static func resolve(_ path: String?, relativeTo target: String?) -> URL? {
+            guard let path, !path.isEmpty else { return nil }
+            if let direct = URL(string: path), direct.scheme != nil {
+                return direct
+            }
+            if let target, let base = URL(string: target), base.scheme != nil {
+                return base.appendingPathComponent(path)
+            }
+            if path.hasPrefix("/") {
+                return URL(string: "https://hackerswithstyle.se\(path)")
+            }
+            return Assembly64Client.baseURL.appendingPathComponent(path)
+        }
+    }
+
+    struct TargetAndPath: Codable, Hashable {
+        let path: String?
+        let target: String?
+    }
+
     private struct EntriesResponse: Decodable {
         let contentEntry: [FileEntry]
     }
@@ -63,6 +154,7 @@ struct Assembly64Client {
     enum ClientError: LocalizedError {
         case httpError(Int)
         case apiError(Int)
+        case responseTooLarge(Int64)
 
         var errorDescription: String? {
             switch self {
@@ -72,6 +164,8 @@ struct Assembly64Client {
                 return code == 463
                     ? "Assembly64 rejected the search query."
                     : "Assembly64 error \(code)."
+            case .responseTooLarge(let bytes):
+                return "Assembly64 archive is too large to inspect safely (\(bytes) bytes)."
             }
         }
     }
@@ -100,8 +194,36 @@ struct Assembly64Client {
         return try await getData(url)
     }
 
+    /// Download every file belonging to an entry as one ZIP archive.
+    func downloadArchive(itemID: String, categoryID: Int) async throws -> Data {
+        let url = Self.baseURL.appendingPathComponent(
+            "search/zip/\(itemID)/\(categoryID)")
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.setValue(Self.clientID, forHTTPHeaderField: "client-id")
+        let (temporaryURL, response) = try await URLSession.shared.download(
+            for: request)
+        try validate(response, maximumBytes: Self.maximumArchiveBytes)
+
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: temporaryURL.path)
+        let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard byteCount <= Self.maximumArchiveBytes else {
+            throw ClientError.responseTooLarge(byteCount)
+        }
+        return try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
+    }
+
     func categories() async throws -> [Category] {
         try await get(Self.baseURL.appendingPathComponent("search/categories"))
+    }
+
+    func presets() async throws -> [AQLPreset] {
+        try await get(Self.baseURL.appendingPathComponent("search/aql/presets"))
+    }
+
+    func metadata(itemID: String, categoryID: Int) async throws -> Metadata {
+        try await get(Self.baseURL.appendingPathComponent(
+            "metadata/\(itemID)/\(categoryID)"))
     }
 
     // MARK: - Plumbing
@@ -110,15 +232,25 @@ struct Assembly64Client {
         var request = URLRequest(url: url, timeoutInterval: 60)
         request.setValue(Self.clientID, forHTTPHeaderField: "client-id")
         let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw ClientError.httpError(http.statusCode)
-        }
+        try validate(response)
         // The API reports errors as 200s with {"errorCode": N} bodies.
         if data.count < 200,
            let error = try? JSONDecoder().decode(APIErrorBody.self, from: data) {
             throw ClientError.apiError(error.errorCode)
         }
         return data
+    }
+
+    private func validate(_ response: URLResponse,
+                          maximumBytes: Int64? = nil) throws {
+        if let http = response as? HTTPURLResponse,
+           !(200...299).contains(http.statusCode) {
+            throw ClientError.httpError(http.statusCode)
+        }
+        if let maximumBytes,
+           response.expectedContentLength > maximumBytes {
+            throw ClientError.responseTooLarge(response.expectedContentLength)
+        }
     }
 
     private struct APIErrorBody: Decodable {

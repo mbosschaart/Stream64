@@ -25,8 +25,8 @@ The app:
 - Integrates with the Assembly64 online software library for in-app browsing and loading
 - Handles multiple devices simultaneously in a grid view, each with independent rendering settings
 
-**Target platform:** macOS 14 (Sonoma) or newer, Apple Silicon only.  
-**Required device firmware:** 3.11+. All testing done against 3.14.  
+**Target platform:** macOS 14 (Sonoma) or newer, arm64 and x86_64 with Metal-capable GPU.
+**Required device firmware:** Ultimate 64/Elite 3.11+, or C64 Ultimate 1.1+. Tested against legacy 3.14 and C64 Ultimate 1.1.0.
 **Build system:** Swift Package Manager (`swift run` or open folder in Xcode).
 
 ---
@@ -89,15 +89,17 @@ Per device (in DeviceSession):
 
 ## 3. Source File Inventory
 
-All source lives under `Sources/Stream64/`.
+Application source lives under `Sources/Stream64/`; XCTest coverage is under `Tests/Stream64Tests`, packaging metadata/scripts under `Packaging/` and `Scripts/`.
 
 ### `Stream64App.swift`
 App entry point. Defines `Stream64App` (`@main`) and `AppDelegate`.
 
 Key responsibilities:
-- Creates the three app-level `@StateObject`s: `DeviceStore`, `AppSettings`, `SessionManager`
+- Creates the app-level `@StateObject`s: `DeviceStore`, `AppSettings`, `SessionManager`, and `Assembly64LibraryStore`
 - Declares the `WindowGroup` (main viewer), `Window("help")`, `Window("assembly64")`, and `Settings` scenes
+- `AppDelegate.applicationWillFinishLaunching` acquires `SingleInstanceLock`; a second launch activates the existing process and exits before creating competing UDP listeners
 - `AppDelegate.applicationDidFinishLaunching` installs a `NSWindow.willCloseNotification` observer that calls `NSApp.terminate()` when the main viewer window closes — needed because an open Settings window otherwise keeps the process alive after the user "quit"
+- Root `ContentView.onDisappear` is the authoritative SwiftUI fallback: `WindowGroup` may remove its `NSWindow` before `willClose` can classify it. The fallback calls terminate; `applicationShouldTerminate` immediately orders out/closes every Assembly64, Help, Settings and extra viewer window before returning `.terminateNow`.
 - `isMainWindow()` identifies the main window by exclusion (Settings/help/assembly64 window IDs and panels are excluded), not by title, because the title changes to show the device name
 - Menu commands: Add Device (⇧⌘N), Search Assembly64 (⇧⌘F), Stream64 Help (⌘?)
 - `NSApplication.shared.setActivationPolicy(.regular)` in `init()` — required when launched via `swift run` (no app bundle), otherwise the process has no dock icon or menu bar
@@ -135,7 +137,8 @@ Also defines the enums used throughout the app:
 - `ScalingMode`: integer, aspectFit, fill
 - `FilterMode`: sharp, smooth, crt, crtTube
 - `TubeInput`: svideo, composite, rf (with `signalLevel: Float` returning 0/1/2)
-- `BezelChoice`: c1702, c1084
+- `CRTScreenColor`: color, amber, green, blackAndWhite (with `shaderValue` 0/1/2/3)
+- `BezelChoice`: c1702, c1084 (with physical dot pitch 0.64 mm / 0.42 mm)
 - `PaletteChoice`: pepto, colodore, vice
 
 ### `Models/DisplaySettings.swift`
@@ -143,7 +146,7 @@ Also defines the enums used throughout the app:
 
 Per-device rendering settings, one instance per device UUID, shared via `DisplaySettings.shared(for:)` which keeps a static `[UUID: DisplaySettings]` dictionary. This singleton pattern means the renderer, the toolbar, the context menu, the Settings preferences window, and the bezel knobs all read and write the same object for a given device.
 
-Published fields: `scalingMode`, `filterMode`, `palette`, `tubeInput`, `showFPS`, `showBezel`, `bezelStyle`, `bezelReflection`, plus monitor controls `monBrightness`, `monContrast`, `monColor`, `monTint`.
+Published fields: `scalingMode`, `filterMode`, `palette`, `tubeInput`, `crtScreenColor`, `crtDirtyGlass`, `showFPS`, `showBezel`, `bezelStyle`, `bezelReflection`, plus monitor controls `monBrightness`, `monContrast`, `monColor`, `monTint`.
 
 Each `didSet` calls `save()`, which serializes a `Snapshot` struct to JSON and writes it to `UserDefaults` under key `"displaySettings.<UUID>"`.
 
@@ -172,7 +175,7 @@ Note: the mapping is intentionally not a full charset conversion — it covers t
 
 Thin REST client for the Ultimate's `/v1` API. Every request is built with `makeRequest()` which constructs the URL from `device.baseURL`, appends query items, sets `X-Password` when `device.password` is non-empty, and applies the configured timeout.
 
-All methods are `async throws`. The `perform()` method throws `APIError.httpError(statusCode, body)` for non-2xx responses.
+All methods are `async throws`. `perform()` throws `APIError.httpError(statusCode, body)` for non-2xx responses and `APIError.deviceErrors` when a nominally successful JSON response contains a non-empty `errors` array.
 
 Endpoints used:
 | Method | Path | Purpose |
@@ -209,9 +212,11 @@ Client for the Assembly64 library API at `https://hackerswithstyle.se/leet`.
 Every request must include the `client-id` header with value `"assembly64"`. Without it, the server returns error code 464.
 
 Key types:
-- `SearchResult` — id, name, category (Int), group, handle, year, rating, released. `displayGroup` replaces underscores in group names.
+- `SearchResult` — composite UI identity (`category:itemID`), name, category, group, handle, year, local/site rating, release/update metadata. `displayGroup` replaces underscores in group names.
 - `FileEntry` — id (Int), path, size. `kind` computed property classifies by extension into `FileKind` (prg/disk/sid/cartridge/other).
 - `Category` — id, name, description, groupingName, type
+- `AQLPreset` / `AQLPresetValue` — server-advertised repository, type, year, recency, rating and sort choices from `/search/aql/presets`
+- `Metadata` / `TargetAndPath` — optional source URL and screenshot paths from `/metadata/{id}/{category}`
 
 The **error-in-200 envelope**: the API returns HTTP 200 for some errors, with a JSON body `{"errorCode": N}`. The `getData()` method sniffs small responses (< 200 bytes) and tries to decode `APIErrorBody` before returning data. Error code 463 = bad query syntax; 464 = missing/unknown client-id.
 
@@ -222,8 +227,31 @@ The **error-in-200 envelope**: the API returns HTTP 200 for some errors, with a 
 
 Search flow:
 1. `search(query:offset:limit:)` → `GET /search/aql/{offset}/{limit}?query=...` → `[SearchResult]`
-2. User selects a result → `entries(itemID:categoryID:)` → `GET /search/entries/{id}/{cat}` → `[FileEntry]` (via `EntriesResponse.contentEntry`)
+2. User selects a result → `entries(itemID:categoryID:)` and (unless cached) `metadata(itemID:categoryID:)` run concurrently
 3. User clicks action → `download(itemID:categoryID:fileID:)` → `GET /search/bin/{id}/{cat}/{fileID}` → `Data`
+4. "Save ZIP…" → `downloadArchive(itemID:categoryID:)` → `GET /search/zip/{id}/{cat}` → complete entry archive
+
+### `Models/Assembly64LibraryStore.swift`
+`@MainActor final class Assembly64LibraryStore: ObservableObject`
+
+Persists favorites, 30-item recent history, named searches (text + category + every AQL facet), and remembered per-file actions at `~/Library/Application Support/Stream64/assembly64-library.json`. Regenerable API metadata is deliberately excluded from this user-state snapshot; see `Assembly64Cache`.
+
+### `Models/Assembly64SearchQuery.swift`
+
+Deterministic, testable AQL composition outside SwiftUI. It strips embedded quotes, quotes multi-word names, appends category/repository/type/year/rating/recency facets, and always includes sort/order. `hasConstraint` permits filter-only discovery but rejects an unconstrained default search.
+
+### `Services/Assembly64Cache.swift`
+`actor Assembly64Cache`
+
+Serializes access to a bounded cache under `~/Library/Caches/Stream64/`. Assembly64 metadata expires after 24 hours; CSDB preview descriptors expire after seven days. Each cache holds at most 100 records. Corruption or OS eviction only causes refetching — favorites and saved searches are unaffected.
+
+### `Services/CSDBPreviewClient.swift`
+
+Fallback for entries whose Assembly64 metadata has no screenshot/source link. It is called only when the selected category registry says `type == "csdb"`, reads the first `ScreenShot` from CSDB's release XML, validates HTTP(S) URLs, and links to the corresponding CSDB release page.
+
+### `Services/Assembly64ArchiveInspector.swift`
+
+Uses ZIPFoundation 0.9.20 to inspect complete-entry archives in memory. Before listing or extraction it rejects oversized archives, more than 500 entries, absolute/traversal/duplicate paths, symbolic links, oversized members/totals and suspicious compression ratios. Selected regular files are CRC-checked and extracted directly to bounded `Data`; archive paths are never written to disk.
 
 ### `Services/DeviceSession.swift`
 `@MainActor final class DeviceSession: ObservableObject`
@@ -234,8 +262,13 @@ See section 5 for the full connection state machine.
 
 Also defines:
 - `TransferStatus` enum: `.uploading(String)`, `.done(String)`, `.failed(String)` — shown in the transfer banner overlay
-- `MountBehavior` enum: `.mountOnly`, `.mountAndRun`
+- `MountBehavior` enum: Codable/Equatable `.mountOnly`, `.mountAndRun`
+- `LoadOutcome` enum: successful `.running`, `.mounted`, `.booting`, `.playing` result returned by `loadData()` so library history/preferences are never recorded after failed device operations
 - `LocalNetwork.primaryIPv4Address()` — walks `getifaddrs`, prefers `en0`, falls back to any `en*` interface. Used to determine where to tell the device to stream.
+
+### `Services/SingleInstanceLock.swift`
+
+Uses a non-blocking POSIX `flock` on `~/Library/Application Support/Stream64/instance.lock`. This is required for `swift run`, where macOS does not provide normal app-bundle single-instance behavior. The lock file contains the owner PID so a rejected second launch can activate the existing app. The OS releases the advisory lock on normal exit or crash; stale file contents are harmless.
 
 ### `Services/VideoReceiver.swift`
 `final class VideoReceiver`
@@ -257,7 +290,7 @@ u16 encoding      — not used
 
 `handlePacket()` validates the header (bpp==4, pixelsPerLine==384, size sufficient, line range fits buffer), unpacks nibbles into `frameBuffer`, then calls `publishFrame()` when the last-packet bit is set.
 
-`packetsReceived` is a simple counter written on the receive queue and read racily from other threads — this is intentional and safe (it is only used as a polling liveness signal during connect).
+`packetsReceived` is a lifetime counter written on the receive queue and read racily from other threads. Connect snapshots a per-attempt baseline and looks for increases; comparing with zero would mistake packets from an old listener session for current liveness.
 
 FPS statistics are computed in `publishFrame()`: frame counter / elapsed seconds, reported via `onStats` once per second.
 
@@ -275,12 +308,12 @@ Key fields:
 - `muted`: silences the `AVAudioEngine.mainMixerNode` without stopping the stream
 - `rfAudioEnabled`: written from main thread, read on audio thread — torn reads are harmless (it's just a mode flag)
 
-RF filter state (all audio-thread-only): `rfLowState` (two-pole LP), `rfLowState2` (second LP pole), `rfHighState`/`rfHighPrev` (HP), `rfNoiseSeed` (LCG PRNG), `rfHumPhase`.
+RF filter state (all audio-thread-only): `rfLowState` + `rfLowState2` (two-pole LP), the `.l/.r` halves of `rfHighState`/`rfHighPrev` (two cascaded HP poles), `rfNoiseSeed` (LCG PRNG), and `rfHumPhase`. Filter state resets whenever the audio engine starts.
 
 ### `Rendering/MetalFrameRenderer.swift`
 `final class MetalFrameRenderer: NSObject, MTKViewDelegate`
 
-All Metal rendering. Shaders are embedded as a source string and compiled at runtime via `makeLibrary(source:)`. Four render pipeline states are compiled from the same vertex function (`vertexMain`) with four different fragment functions.
+All Metal rendering. Shaders are embedded as a source string and compiled at runtime via `makeLibrary(source:)`; XCTest instantiates the renderer to catch shader errors. Four pipeline states share `vertexMain`. The renderer owns triple-buffered current frames, a 12-slice indexed history for Amber persistence, per-monitor physical shadow-mask pitch, filtered screenshot targets, and the packaged photographic dirt texture (with transparent fallback).
 
 See section 7 for the full rendering breakdown.
 
@@ -294,6 +327,8 @@ Contains `SessionManager` (the cache class), `ContentView`, `MultiViewerGrid`, `
 The `displayBinding(_:)` helper creates one-way bindings into `DisplaySettings` for toolbar pickers — writes go through, reads don't make `ViewerPane` observe the whole object indiscriminately.
 
 Fullscreen arrow key monitor: `ContentView` installs a `NSEvent.addLocalMonitorForEvents` for `.keyDown` when entering fullscreen with multiple devices. Keys 123 (left arrow) and 124 (right arrow) with no modifiers switch the selected device and are consumed (return `nil`). All other events pass through to the video view (which forwards them to the C64). The monitor is removed on fullscreen exit.
+
+Fullscreen cursor monitor: the fullscreen `NSWindow` temporarily enables `acceptsMouseMovedEvents`. A local `.mouseMoved` monitor reveals the pointer and restarts a five-second cancellable task; expiry hides it using balanced `NSCursor.hide/unhide` calls. Exiting fullscreen, view teardown, or app deactivation always cancels the task and restores the cursor/window setting. Returning to the active app schedules hiding again only if still fullscreen.
 
 ### `Views/VideoView.swift`
 `struct VideoView: NSViewRepresentable` wrapping `KeyCapturingMTKView: MTKView`.
@@ -324,9 +359,13 @@ This split is the key to smooth knob response. If `commit` were called on every 
 ### `Views/Assembly64View.swift`
 `struct Assembly64View` — the Assembly64 browser window.
 
-A `VSplitView` with a results table (top) and a files list (bottom). The `sessionProvider` closure (passed from `Stream64App`) bridges the browser to the live `SessionManager` — the browser doesn't hold sessions itself, it just looks them up for the selected device at load time.
+A compact vertical layout with a fixed 300-point results area (header + roughly ten rows + status) above metadata/file details. Keeping the result area fixed avoids a giant table in tall windows and leaves the remaining height for entry contents. The `sessionProvider` closure (passed from `Stream64App`) bridges the browser to the live `SessionManager` — the browser doesn't hold sessions itself, it just looks them up for the selected device at load time.
 
-The AQL query construction (multi-word quoting) happens in `runSearch()`. Categories are loaded once on `.task` and used to populate a `Picker` for narrowing searches.
+The segmented Search/Favorites/Recent picker changes the table's local source without touching the selected machine. Search mode supports server-advertised repository/file-type/year/rating/recency/sort facets plus category and free text. A query may be filter-only; `runSearch()` only rejects a truly unconstrained default search.
+
+Selecting an item starts a cancellable task that loads files and metadata concurrently. Cached metadata appears immediately. Selection changes cancel the prior task and every state write verifies the selected composite ID, preventing a slow earlier response from overwriting the new item.
+
+The detail pane shows optional preview/source metadata, complete entry contents, remembered load actions, and "Save ZIP…". Favorites, recent history, saved searches, action preferences, and metadata cache live in `Assembly64LibraryStore`.
 
 ### `Views/OnScreenKeyboardView.swift`
 `struct OnScreenKeyboardView` — full C64 keyboard layout.
@@ -356,6 +395,17 @@ The Video tab shows `DeviceVideoSettings` which observes the `DisplaySettings.sh
 `struct HelpView` and `enum HelpTopic`.
 
 In-app documentation, content stored as multiline string literals with markdown formatting. Topics: Getting Started, Devices & Connection, Viewing & Full Screen, Rendering & CRT Simulation, Monitor Bezel, Keyboard Input, Loading Files, Assembly64 Library, Multiple Devices, Machine Control, Troubleshooting. Ships with the app, works offline.
+
+### `Tests/Stream64Tests/Stream64Tests.swift`
+
+XCTest coverage includes AQL composition, composite Assembly64 identity, persisted favorites/search/history/action state, ZIP traversal/symlink/size/count safety and selective extraction, CSDB XML preview parsing, backward-compatible display snapshots, CRT enum/dot-pitch constants, single-instance locking, and runtime compilation of every embedded Metal shader.
+
+### Packaging
+
+- `Packaging/Info.plist` — bundle identity/version placeholders, macOS 14 minimum, local-network description and HTTP-local-device ATS policy.
+- `Scripts/build-release.sh` — cross-compiles `ARCH=arm64|x86_64`, assembles standard app resources, validates Mach-O architecture, ad-hoc signs/verifies app and DMG, creates ZIP/DMG and SHA-256 files.
+- `Package.resolved` pins ZIPFoundation 0.9.20.
+- `Sources/Stream64/Resources/dirty-glass-mask.png` is the photographic RGBA CRT contamination material copied into packaged app resources.
 
 ---
 
@@ -410,7 +460,7 @@ An underrun (ring buffer ran dry) outputs silence and resets `primed = false`, s
 
 1. Mono fold: `s = (left + right) * 0.5`
 2. Two-pole ~3.3 kHz low-pass: two cascaded one-pole IIR filters, `lpAlpha = 0.30` (designed for 47983 Hz). Two poles gives 12 dB/oct rolloff — one pole is too gentle against SID content.
-3. One-pole ~200 Hz high-pass: emulates a small speaker with no bass, `hpAlpha = 0.974`
+3. Two-pole ~330 Hz high-pass: cascaded `hpAlpha = 0.958` poles give 12 dB/oct bass roll-off, emulating an inexpensive 1980s TV's small internal speaker
 4. Tanh soft-clip: `tanh(s * 2.2) * 0.85` — small TV amplifiers distort early
 5. White noise hiss: LCG PRNG (`rfNoiseSeed = rfNoiseSeed * 1664525 + 1013904223`), low-passed through the same first LP pole, added at 0.035 amplitude
 6. 50 Hz mains hum: `sin(rfHumPhase)` at 0.010 amplitude, phase advanced each sample by `2π × 50 / 47983`
@@ -499,21 +549,23 @@ Uses a separate `UltimateAPIClient` with a 2-second timeout (not the session's n
 
 ### Stream pickup logic
 
-After opening UDP listeners, the connect flow polls packet counters for up to 600 ms (6 × 100 ms sleeps):
+After opening UDP listeners, the connect flow snapshots each receiver's lifetime packet counter, then polls for increases for up to 600 ms (6 × 100 ms sleeps):
 ```swift
+let videoPacketBaseline = videoReceiver.packetsReceived
+let audioPacketBaseline = audioReceiver.packetsReceived
 for _ in 0..<6 {
     try await Task.sleep(for: .milliseconds(100))
-    videoLive = videoReceiver.packetsReceived > 0
-    audioLive = audioReceiver.packetsReceived > 0
+    videoLive = videoReceiver.packetsReceived > videoPacketBaseline
+    audioLive = audioReceiver.packetsReceived > audioPacketBaseline
     if videoLive && (audioLive || !settings.audioEnabled) { break }
 }
 ```
 
-Video and audio are checked **independently**. If the app was restarted while the device was already streaming (common workflow), both streams may be live immediately. If only video is live, audio still gets (re)started. If only audio is live, video still gets (re)started.
+The baseline is essential: receiver objects survive listener restarts, so `packetsReceived > 0` can describe an old session and falsely suppress `stream:start`. Video and audio are checked **independently**. If the app was restarted while the device was already streaming (common workflow), both streams may be live immediately. If only video is live, audio still gets (re)started. If only audio is live, video still gets (re)started.
 
 `startStreaming(video:audio:)` takes optional booleans: only the streams that need starting are started. This avoids disturbing a working stream.
 
-**Always stop before start.** Even when starting a fresh stream, `startStreaming()` calls `stopVideoStream()` / `stopAudioStream()` before the corresponding `start`. Reason: after a cold power-on, the firmware sometimes acknowledges `start` with HTTP 200 but sends no packets. The stop/start cycle reliably kicks the generator into streaming. The stop calls use `try?` (ignore failure) because the stream may not have been running.
+**Always stop, settle, then start.** Even when starting a fresh stream, `startStreaming()` stops every requested stream first, waits one second, then starts video/audio. After a cold power-on, firmware may acknowledge a bare start but send no packets. C64 Ultimate 1.1.0 also needs teardown time: an immediate start after stop can return "Network Host Resolve Error" for a literal IP, while the same stop → 1 s wait → start sequence succeeds. Stop failures are ignored because the stream may not have been running.
 
 ### `watchForSilentStream` watchdog
 
@@ -667,6 +719,8 @@ struct Uniforms {
     var contrast: Float          // 0.5 = neutral
     var saturation: Float        // 0.5 = neutral
     var tint: Float              // 0.5 = neutral
+    var phosphorColor: Float     // 0 = color, 1 = amber, 2 = green, 3 = B&W
+    var dirtyGlass: Float        // 1 = years-of-neglect grime layer
     var padding: Float           // alignment
 }
 ```
@@ -691,10 +745,10 @@ Manual bilinear interpolation in palette space: samples the four surrounding ind
 
 1. **Signal simulation** (when `signal > 0.5`): calls `compositeSample()`
 2. **Soft horizontal bloom**: averages one-texel-left and one-texel-right neighbors at 25% mix — emulates horizontal phosphor glow
-3. **Scanlines**: `sin(row * π * 2) * 0.5 + 0.5` gives a value of 1 at scanline centers and 0 between. The darkness multiplier is `mix(0.35, 0.15, luminance)` — bright areas mask the scanlines (as on a real CRT where bright pixels saturate the phosphor) while dark areas show deep scanline gaps
-4. **Phosphor mask**: alternating RGB stripes modulated by `int(pixelPos.x) % 3` — 5% intensity variation per channel simulating RGB stripe phosphors
+3. **Scanlines**: `sin(row * π * 2) * 0.5 + 0.5` gives a value of 1 at scanline centers and 0 between. The darkness multiplier is `mix(0.35, 0.15, luminance)` — bright areas mask the scanlines while dark areas show deep gaps. For Amber/Green only, brightness above 0.62 ramps a beam-current bloom: scanline darkness falls to 22% of normal at the end stop and 18% of neighboring blur spills into the gaps, reproducing an overdriven monochrome tube whose scanlines light into each other.
+4. **Shadow-mask phosphors**: the selected monitor's published pitch (1084S 0.42 mm; 1702 0.64 mm) is converted to destination pixels from the scaled width of a 13-inch 4:3 tube (~264.2 mm visible width). RGB triads use that period, alternating rows are staggered by one-sixth pitch, and vertical cosine modulation forms soft oval dots. Pitch clamps to a minimum 3 pixels when the drawable cannot resolve a full triad without severe aliasing.
 
-Then `applyPicture()` applies monitor controls and `dither()` adds ±0.5 LSB noise.
+Then `applyPicture()` applies monitor controls, `applyPhosphorColor()` applies Color/Amber/Green/Black & White when selected, and `dither()` adds ±0.5 LSB noise. Sharp/Smooth deliberately ignore `phosphorColor`; all UI controls are disabled unless `filterMode` is `.crt` or `.crtTube`.
 
 ### CRT Tube filter (`fragmentCRTTube`) — curved glass
 
@@ -737,45 +791,61 @@ If `reflection < 0.5`, output base color directly (reflection disabled).
 
 Called from `crtShade()` when `signal > 0.5`. Works in YIQ color space.
 
-**Luma softening**: 5-tap Gaussian horizontal blur with tap spacing `lumaSoft` (0.45 for Composite, 0.75 for RF — wider on RF means individual C64 pixels melt together). Gaussian weights: `exp(-0.55 * k²)`.
+**Luma softening**: 5-tap Gaussian horizontal blur with tap spacing `lumaSoft` (0.55 for Composite, 0.85 for RF — wider on RF means individual C64 pixels melt together). Gaussian weights: `exp(-0.55 * k²)`.
 
-**Ghosting**: adds a faint copy displaced +5 texels to the right, mixed at `ghostAmount` (0.025 Composite, 0.06 RF). Simulates impedance mismatch reflections on a long cable.
+**Ghosting**: adds a faint copy displaced +5 texels to the right, mixed at `ghostAmount` (0.035 Composite, 0.07 RF). Simulates impedance mismatch reflections on a long cable.
 
-**Chroma smear**: asymmetric horizontal average of YIQ chroma (I and Q) with 6 taps shifted right (k from -1 to +4). This models color arriving late relative to luma and smeared horizontally, as it does in real composite video with collapsed chroma bandwidth. Step spacing `chromaStep` is 0.9 Composite, 1.5 RF.
+**Chroma smear**: asymmetric horizontal average of YIQ chroma (I and Q) with 9 taps from -2 through +6, weighted around a +0.7-texel delay. This models color arriving late relative to luma and bleeding well beyond sharp edges as composite bandwidth collapses. Step spacing is 1.35 texels for Composite and 1.85 for RF; falloff is 0.20/0.16 respectively.
 
-**Dot crawl**: on horizontal color transitions, the comb filter fails and subcarrier bleeds into luma as a checkerboard pattern. Simulated by: compute the chroma edge strength (`length(yiqR.yz - yiqL.yz)`), multiply by a checkerboard factor (`(x + y) % 2 == 0 ? +1 : -1`), and add to luma. Strength: 0.10 Composite, 0.16 RF.
+**Dot crawl**: on horizontal color transitions, the comb filter fails and subcarrier bleeds into luma as a checkerboard pattern. Simulated by: compute the chroma edge strength (`length(yiqR.yz - yiqL.yz)`), multiply by a checkerboard factor (`(x + y) % 2 == 0 ? +1 : -1`), and add to luma. Strength: 0.12 Composite, 0.18 RF.
 
 **RF-only artifacts**:
 - Snow: animated per-pixel luma noise via `hash21(pixelPos + fract(time) * float2(731, 447))` at 0.10 amplitude
-- Interference bar: a single bright line drifting downward, `bandPos = fract(time * 0.13)`, `band = 1 - smoothstep(0, 0.012, abs(uv.y - bandPos))`, at 0.05 amplitude
+- Interference bar: a single bright line drifting downward, `bandPos = fract(time * (8.0 / 60.0))`, at 0.05 amplitude. Eight complete sweeps divide the renderer's 60-second time loop exactly, so the line never resets before reaching the bottom.
 - Per-scanline horizontal jitter: `jitter = (r - 0.5) * 0.14 + step(0.985, r) * 0.5` — most lines jitter slightly, occasional lines slip by half a texel. Applied to `uv.x` before all sampling.
 - Chroma noise: 2D noise vector added to IQ at 0.03 amplitude
 
+### CRT screen color
+
+`applyPhosphorColor()` runs only in `fragmentCRT` and `fragmentCRTTube`, after monitor picture controls have decoded/adjusted the color signal. Color returns RGB unchanged. Amber, Green and Black & White convert adjusted RGB to luminance (`dot(c, float3(0.299, 0.587, 0.114))`) and apply phosphor color. Amber is intensity-dependent rather than a fixed tint: `smoothstep(0.08, 0.82, glow)` blends dark brown/orange `(0.82, 0.34, 0.01)` toward bright golden yellow `(1.0, 0.76, 0.06)`, matching real examples whose hue shifts as emission rises. At neutral controls, the exact black level introduced by brightness/contrast is removed so true black remains RGB zero. In Amber/Green, brightness above neutral progressively introduces up to an 18% phosphor-colored raster floor; low contrast can add 7%, while high contrast suppresses that floor by up to 65%. This reproduces a real monochrome tube whose "black" starts glowing when driven, without making neutral black permanently tinted. Signal noise above black remains visible. Amber/Green also add a nonlinear highlight boost and raise CRT horizontal bloom from 0.25 to 0.38. Applying the conversion after `applyPicture()` keeps highlight behavior natural and ensures the tube-mask reflection receives the same phosphor color as the face.
+
+Amber also uses real temporal persistence. `MetalFrameRenderer` stores the previous 12 indexed source frames in an R8Uint 2D-array texture (~240 ms at PAL 50 fps). Initial emission is sampled nearest-neighbor from each frame's palette index, so every C64 source pixel starts at exactly one of the 16 palette-derived amber luminances — history never invents spatial gradient shades. The decay itself is analog: CPU uniforms include the continuously advancing fractional frame age since the latest source upload, and the shader applies `exp(-(integerAge + fractionalAge) * 0.16)` without requantizing the result. Moving objects retain blocky C64 geometry while their golden trails fade smoothly in time; CRT bloom/scanline optics soften the emitted light afterward. A source-frame gap over 500 ms resets history so a disconnected/changed stream cannot ghost into the next session. Green, Black & White, Color, Sharp and Smooth do not use this history.
+
+The settings are per-device and backward-compatible: `Snapshot.crtScreenColor` and `Snapshot.crtDirtyGlass` are optional when decoding, so existing saved display JSON defaults to Color + clean glass without losing older settings.
+
+### Dirty CRT glass
+
+`crtDirtyGlass` is a per-device, backward-compatible Boolean available only when `.crt` or `.crtTube` is selected. Sharp/Smooth ignore it completely. The effect is procedural and static in destination screen space, so contamination stays attached to the physical glass while video moves underneath:
+
+- Two-scale value noise creates uneven dust/nicotine film.
+- Three rotated elliptical masks create fingerprint/palm smears and a dried cleaning streak.
+- Three mineral/moisture spots combine cloudy centers with sharp pale rings.
+- A six-pixel cell hash places dense fine dust; a separate sparse ten-pixel grid adds isolated 1–2 pixel dark brown/olive grime flecks. Both are fixed without textures.
+- `Resources/dirty-glass-mask.png` is a generated 1536×1024 photographic RGBA material mask containing realistic corner lint, fibers and granular buildup. The shader center-crops it to 4:3, confines it to small 22%×11% extreme-corner falloffs, caps mask opacity at 32%, and attenuates residue elsewhere to 2%. A transparent 1×1 fallback keeps procedural layers working if the resource is missing.
+- `dirtyGlassUV()` refracts the sampled picture around the moisture spots before CRT/phosphor rendering.
+- `applyDirtyGlass()` then lowers contrast/transmission, warms the image, adds a tiny ambient reflection over black, darkens dust particles, and highlights dried rings.
+
+The overlay runs after phosphor coloring/vignette, while refraction runs before `crtShade()`. This physically separates distortion of the underlying image from contamination on top of the emitted light. The same pipeline is used by filtered screenshots.
+
 ### Screenshot capture
 
-"Save Screenshot…" (toolbar camera button, context menu, ⇧⌘S) captures the **raw decoded picture**, not the filtered GPU output — i.e. what a capture card would see off the S-Video/composite/RF signal, without the CRT tube, scanlines, phosphor mask, or composite/RF artifacts baked in. This was a deliberate simplification: reading back the actual drawable after the fragment shader runs would need a blit into a CPU-readable texture and synchronizing with the command buffer's completion, for a feature whose main use case is "grab an image of what's running," not "reproduce the tube look in a file."
+"Save Screenshot…" (toolbar camera button, context menu, ⇧⌘S) captures the **actual filtered GPU output**: selected palette, monitor controls, CRT scanlines/tube curvature, Composite/RF artifacts, reflection, and CRT screen color.
 
-Implementation is entirely CPU-side and independent of the draw loop:
+`requestFilteredScreenshot()` stores a completion consumed by the next `draw(in:)`. That draw encodes a second pass with the same pipeline, uniforms and source textures into a reusable shared `.bgra8Unorm` offscreen texture sized exactly like the live drawable (destination pixel size matters for scanlines/phosphor mask). A command-buffer completion handler reads the finished texture into a BGRA `CGImage` and returns on the main queue.
 
-- `MetalFrameRenderer` keeps a `lastFrame: Data?` — set alongside `pendingFrame` in `submitFrame()`, but never cleared by `draw()` (unlike `pendingFrame`, which is consumed every frame). This guarantees a screenshot can always grab the latest picture regardless of when it's requested relative to the display link.
-- It also keeps a CPU-side `currentPalette: [SIMD4<UInt8>]`, updated in `setPalette()` alongside the GPU texture write. Screenshots convert palette indices to RGB on the CPU rather than reading back `paletteTexture` from the GPU.
-- `captureFrameImage() -> CGImage?` walks the 384×272 index buffer, looks up each pixel in `currentPalette`, and wraps the resulting RGBA bytes in a `CGImage` via `CGDataProvider` — no Core Image, no GPU round-trip.
-
-Wiring the renderer (owned by `VideoView`'s `Coordinator`, one per NSView instance) back to something the SwiftUI layer can call without holding a reference to the view itself: `DeviceSession` has a plain (non-`@Published`) closure property `captureFrame: (() -> CGImage?)?`, assigned in `VideoView.makeNSView` with `[weak renderer]`. This mirrors the `PictureControls` bypass pattern (§6) — a deliberate escape hatch from SwiftUI's observation model for a leaf wiring detail. Whichever `VideoView` currently exists for a session's UUID (the single pane's or a grid tile's — never both, since only one mode is displayed at a time) owns the assignment; if that view is torn down, the weak reference goes nil and `captureFrame` fails soft — `saveScreenshot()` reports "No frame available to capture yet." rather than crashing.
-
-`DeviceSession.saveScreenshot()` calls `captureFrame?()`, then drives an `NSSavePanel` (PNG only) directly — this is the one place a `DeviceSession` method reaches into AppKit UI rather than staying a pure controller, matching how other file-picker-adjacent code in this app (`DeviceEditSheet`) already sits at the view/AppKit boundary. Encoding is `NSBitmapImageRep(cgImage:).representation(using: .png, properties:)`. Success/failure surfaces through the existing `transferStatus` banner (`.done("Saved <filename>")` / `.failed(...)`), auto-cleared after 4 seconds via a small `scheduleClearTransferStatus()` helper factored out of the same pattern already used by `loadData()`.
+`DeviceSession.captureFrame` is completion-based because capture has one-frame GPU latency. `VideoView.makeNSView` assigns it with a weak renderer reference. `saveScreenshot()` waits for the image, presents `NSSavePanel`, encodes via `NSBitmapImageRep`, and reports success/failure through the existing transfer banner.
 
 ### `applyPicture()`
 
 Applied to every output in every filter mode:
 1. Contrast: `(c - 0.5) * mix(0.4, 1.6, contrast) + 0.5`
-2. Brightness: `+ (brightness - 0.5) * 0.5`
+2. Brightness: piecewise offset around neutral — lower half reaches -0.35; upper half reaches +0.65 for strong CRT overdrive
 3. Convert to YIQ
 4. Tint: rotate the IQ plane by `(tint - 0.5) * 1.0` radians (~±28 degrees)
-5. Saturation: scale IQ magnitude by `saturation * 2.0` (0.0 = greyscale, 1.0 = double saturation at full scale)
+5. Saturation: 0...0.5 maps normally from 0× (greyscale) to 1× (neutral); 0.5...1 ramps aggressively from 1× to 4× chroma
 6. Convert back to RGB, clamp to [0, 1]
 
-All neutral at 0.5. This models what a real composite monitor's pots did: contrast and brightness operate in signal space; color (saturation) and tint rotate the chroma plane. Setting saturation to 0 gives a greyscale picture like a black-and-white television.
+All controls remain neutral at 0.5. This models what a real composite monitor's pots did: contrast and brightness operate in signal space; color (saturation) and tint rotate the chroma plane. The expanded upper ranges deliberately allow washed-out brightness and chroma clipping/overdrive beyond a calibrated monitor.
 
 ---
 
@@ -805,6 +875,7 @@ The `< 200` byte threshold avoids accidentally treating a small valid JSON respo
 AQL (Assembly Query Language) uses space-separated `key:value` terms:
 - `name:turrican` — name contains "turrican"
 - `subcat:games` — filter to category named "games"
+- `repo:csdb type:d64 date:1987 rating:>=7 latest:1year` — discovery facets
 - `sort:name order:asc` — sort results
 
 **Critical gotcha:** multi-word values MUST be quoted. `name:last ninja` is parsed as `name:last` followed by stray term `ninja`, which the parser rejects with error 463. The fix:
@@ -815,11 +886,31 @@ var query = "name:\(name) sort:name order:asc"
 
 This bug manifested as searches for single-word names working fine and multi-word searches always failing with "Assembly64 rejected the search query."
 
+### Discovery filters and presets
+
+`Assembly64Client.presets()` loads `/search/aql/presets` when the window opens. Repository, type, year, recency, sort and order options therefore follow the service instead of being duplicated as app constants; minimum rating is the documented 1–10 range.
+
+`Assembly64SearchFilters` is Codable and captures all facets. Searches may omit a name when category or at least one facet is active, enabling "latest high-rated demos" and similar discovery queries. Named searches persist the exact text, category ID and filter snapshot.
+
+### Favorites, history and metadata
+
+`Assembly64LibraryStore` owns local library state:
+- Favorites are result snapshots keyed by the composite `category:itemID`, avoiding collisions between repositories.
+- Selecting a result moves it to the front of a deduplicated 30-item recent list.
+- Saved searches include every facet and can be reapplied from the toolbar.
+- Metadata from `/metadata/{id}/{category}` is cached for 24 hours (maximum 100 entries) and may provide source links and screenshot URLs.
+- The last disk action is remembered per item/file and shown as quiet history beside the file size. It does not change button styling and Stream64 never auto-mounts or auto-runs merely because an action was remembered.
+
+The metadata endpoint is optional in practice: many entries return only a name. For categories advertised as `type == "csdb"`, Stream64 falls back to CSDB's release webservice for a screenshot and canonical source link. Missing previews/source links remain a normal empty capability, not an error and do not prevent file loading.
+
 ### Search → entries → download flow
 
 1. **Search**: `GET /search/aql/{offset}/{limit}?query=...` → `[SearchResult]` (`pageSize` = 200 per page; see "Search pagination" below for what happens past the first page)
 2. **Entries**: when user selects a result, `GET /search/entries/{itemID}/{categoryID}` → `EntriesResponse { contentEntry: [FileEntry] }`. An item can have multiple files (disk side A, disk side B, different versions, etc.)
 3. **Download**: when user clicks an action, `GET /search/bin/{itemID}/{categoryID}/{fileID}` → raw `Data`. The data goes straight from the HTTP response body to `DeviceSession.loadData()` — never touches the filesystem.
+4. **Archive**: "Save ZIP…" calls `GET /search/zip/{itemID}/{categoryID}` and writes the complete entry to a user-selected local URL. "Inspect ZIP…" downloads once, validates the central directory with `Assembly64ArchiveInspector`, lists safe members, and can feed an individually extracted supported file into `DeviceSession.loadData()`.
+
+Remembered actions are only persisted after `DeviceSession.loadData()` returns a non-nil `LoadOutcome`; a successful download followed by a failed Ultimate upload never becomes the suggested action.
 
 ### Search pagination (Load More)
 
@@ -847,7 +938,7 @@ This is fully automatic: the user clicks once, the disk boots.
 
 ### Category picker
 
-Categories are loaded once on `.task` when the Assembly64 window opens, via `client.categories()`. They are grouped by `groupingName` for the `Picker` UI. Selecting a category adds `subcat:<categoryName>` to the AQL query.
+Categories and AQL presets are loaded concurrently once on `.task` when the window opens. Categories are grouped by `groupingName`; selected categories add `subcat:<categoryName>`. The Filters menu uses the preset response for repository, file type, year, recency, sort and order values, with explicit Apply/Clear actions so changing several facets does not fire several intermediate API requests.
 
 ---
 
@@ -900,7 +991,7 @@ This section documents every non-obvious decision and every bug that required re
 
 **Root cause:** Any `@ObservedObject` publish in `ContentView` (fps updates, connection state changes, anything) causes SwiftUI to re-evaluate `ContentView`'s `body`. In SwiftUI, view struct properties are recreated on re-evaluation. A `let sessionManager = SessionManager()` in `ContentView` would create a new `SessionManager` (and new sessions) every time `body` ran.
 
-**Fix:** `@StateObject` in `Stream64App`. The `App` struct is never recreated during an app's lifetime. All three app-level objects (`DeviceStore`, `AppSettings`, `SessionManager`) must be `@StateObject` here.
+**Fix:** `@StateObject` in `Stream64App`. The `App` struct is never recreated during an app's lifetime. The three core objects (`DeviceStore`, `AppSettings`, `SessionManager`) and `Assembly64LibraryStore` are all app-level `@StateObject`s.
 
 ### Triple-buffered frame textures
 
@@ -951,9 +1042,9 @@ This section documents every non-obvious decision and every bug that required re
 
 **Symptom:** After cold power-on (device was completely off), `startStreaming()` returns HTTP 200 but no packets arrive. The device acknowledges the start request but doesn't send anything.
 
-**Root cause:** Firmware behavior — the streaming generator needs to be kicked. This only happens on cold power-on, not on reboot.
+**Root cause:** Firmware behavior — the streaming generator needs to be kicked. Newer C64 Ultimate firmware also requires a short teardown interval after stop.
 
-**Fix:** `startStreaming()` always calls stop before start, even when starting a fresh stream. The `stopVideoStream()` and `stopAudioStream()` calls use `try?` (failures ignored — the stream may not be running). The subsequent start reliably initiates packet flow.
+**Fix:** `startStreaming()` stops all requested streams, waits one second once, then starts them. The stop calls use `try?` (the stream may not be running). This exact sequence was verified live on C64 Ultimate 1.1.0 after immediate stop/start repeatedly produced the misleading network-stack error.
 
 ### CoreAudio error 35 on rapid reconnect
 
@@ -997,6 +1088,24 @@ This section documents every non-obvious decision and every bug that required re
 
 **Fix:** Check video and audio independently: `if videoLive && (audioLive || !settings.audioEnabled) { break }`. If only video is live after 600 ms, audio still gets a fresh start/start cycle.
 
+### Stream pickup must compare against a per-connect baseline
+
+**Symptom:** Device was reachable and the session showed Online, but reconnecting did not initiate video/audio. Manually calling `PUT /v1/streams/video:start?ip=172.16.10.15:11000` immediately worked.
+
+**Root cause:** `VideoReceiver` and `AudioReceiver` are session-lifetime objects. Their `packetsReceived` counters deliberately survive listener restarts. The pickup check used `packetsReceived > 0`, so once a receiver had ever seen traffic, every later reconnect could misclassify that stale count as a currently arriving stream and skip `stream:start`.
+
+**Fix:** Snapshot both counters immediately after opening the listeners and require them to increase during the 600 ms pickup window. A new explicit `connect()` also clears `streamsStoppedByUser`, `fps`, and `isStreaming`.
+
+`UltimateAPIClient.perform()` additionally decodes JSON responses containing an `errors` array and throws when it is non-empty, even for HTTP 2xx. Current C64 Ultimate firmware can report command-level failure in this envelope; accepting status code alone would leave the UI Online with no stream.
+
+### Multiple Stream64 processes split UDP delivery
+
+**Symptom:** A freshly restarted window reported "No video arriving" while the device was online and another Stream64 process appeared healthy or remained hidden.
+
+**Root cause:** The Network listeners enable local endpoint reuse. Two processes can therefore bind 11000/11001 simultaneously; macOS may deliver the C64U packets to the older process while the new process sees none. This commonly happened when an earlier `swift run` test instance was left alive and another was launched from Terminal.
+
+**Fix:** `SingleInstanceLock` is acquired before window creation. A second process activates the PID recorded by the lock owner and terminates immediately. Verified by launching `swift run` twice: the second command exited in ~1 second, exactly one Stream64 process remained, and the original continued receiving video/audio.
+
 ---
 
 ## 11. Device Specifics
@@ -1009,7 +1118,7 @@ Three devices are configured. All use the default API port 80 with no password.
 - **Video port (local):** 11000
 - **Audio port (local):** 11001
 - **UUID:** AD4810FB-2DF6-48EB-9BFA-F9DCBE8B83FD
-- **Notes:** Primary development device
+- **Notes:** Primary development device; running C64 Ultimate firmware 1.1.0 as of 2026-07-20
 
 ### Ultimate Elite 2
 - **Name:** Ultimate Elite 2
@@ -1025,10 +1134,12 @@ Three devices are configured. All use the default API port 80 with no password.
 - **Audio port (local):** 11005
 - **UUID:** 3902FBF8-5E97-4026-8CB6-16D96F06409F
 
-### Firmware notes (3.14)
+### Firmware notes
 
-All three devices have been tested against firmware 3.14. Known firmware quirks:
-- **Wedged streaming stack** (see section 10): `streams/video:start` and `streams/audio:start` can return HTTP 200 with a "Network Host Resolve Error" body while the REST API is otherwise healthy. Requires device reboot to recover. The app handles both the transient (one retry) and persistent (Reboot Device & Retry path) cases.
+The Ultimate 64/Elite devices were tested against the legacy 3.14 firmware line. C64U Starlight now reports the newer C64 Ultimate firmware 1.1.0. The stream command remains `PUT /v1/streams/{video|audio}:start?ip=<destination>:<port>` on both; this was verified live against 1.1.0 with `172.16.10.15:11000/11001`.
+
+Known firmware quirks:
+- **Misleading network-stack error** (see section 10): stream start can report "Network Host Resolve Error" for a literal IP when issued too quickly after stop. Stop → wait 1 s → start fixes this on C64 Ultimate 1.1.0. A genuinely persistent failure after settled retries may still require reboot; the app retains Reboot Device & Retry for that case.
 - **Cold-boot no-packets**: After a complete power cycle (not just reboot), the device accepts stream-start commands but sends no packets until a stop/start cycle is performed.
 - **No keyboard endpoint**: Verified absent. Keyboard injection must use DMA memory access (`machine:readmem`/`machine:writemem`).
 - **Stream auto-stop on reboot**: Device-side streams stop when the device reboots. The app re-arms streams automatically after detecting the device is back online.
@@ -1047,6 +1158,9 @@ cd ~/UltimateViewer
 # Command line:
 swift run
 
+# Unit tests (Assembly64 query/identity/persistence/ZIP safety):
+swift test
+
 # With debug logging:
 UV_DEBUG=1 swift run
 
@@ -1055,7 +1169,23 @@ open .
 # Xcode will detect the Package.swift and create the Stream64 scheme automatically
 ```
 
-**Requirements:** macOS 14+, Xcode 15+ (Swift 5.9), Apple Silicon. The package target declares `.macOS(.v14)` — no fallback for Intel.
+**Requirements:** macOS 14+, Xcode 15+ (Swift 5.9), Apple Silicon or Intel with a Metal-capable GPU. The package target declares `.macOS(.v14)`. Both arm64 and x86_64 release builds are supported. SwiftPM resolves ZIPFoundation 0.9.20 for safe in-memory Assembly64 archive inspection; keep `Package.resolved` committed.
+
+### Ad-hoc release packaging
+
+`VERSION=1.0.0 BUILD_NUMBER=1 ARCH=<arm64|x86_64> ./Scripts/build-release.sh` performs the complete local distribution pipeline. `ARCH` defaults to arm64; artifacts are isolated under `dist/<architecture>/`.
+
+1. Cross-compiles the optimized SwiftPM executable for `<architecture>-apple-macosx14.0` and verifies the Mach-O architecture with `lipo`.
+2. Creates `dist/<architecture>/Stream64.app` with `Packaging/Info.plist`, GPL license, privacy manifest and `dirty-glass-mask.png` under standard `Contents/Resources`.
+3. Replaces version/build placeholders using PlistBuddy.
+4. Applies an ad-hoc signature (`codesign --sign -`) and verifies the app with `--deep --strict`.
+5. Creates a ZIP and drag-to-Applications UDZO DMG.
+6. Ad-hoc signs and verifies the DMG with `hdiutil verify`.
+7. Writes SHA-256 checksums for both distributable files.
+
+`MetalFrameRenderer` first looks for its dirt texture through `Bundle.main` (packaged app) and only evaluates `Bundle.module` as a fallback under `swift run`. Do not copy SwiftPM resource bundles into the `.app` root: codesign rejects those as unsealed root contents.
+
+Ad-hoc signing proves bundle integrity but does not establish an Apple-trusted developer identity and cannot be notarized. Downloaded copies require Control-click → Open or approval under Privacy & Security on first launch. `dist/` is ignored by Git.
 
 ### Running
 
@@ -1066,27 +1196,21 @@ Persistent state:
 - Per-device display settings: `UserDefaults` keys `displaySettings.<UUID>`
 - App settings: `UserDefaults` (standard keys like `audioEnabled`, `volume`, etc.)
 - Selected device: `UserDefaults` key `selectedDeviceID`
+- Assembly64 user library: `~/Library/Application Support/Stream64/assembly64-library.json`
+- Regenerable Assembly64/CSDB metadata: `~/Library/Caches/Stream64/assembly64-metadata.json`
 
 ### Pushing to GitHub
 
-The repo is at `github.com/mbosschaart/Stream64`. The git config on this machine has two user entries:
+The repo is at `github.com/mbosschaart/Stream64`; `origin` uses HTTPS. Both `mbosschaart` and the work account may be authenticated in GitHub CLI, but this project should remain on the personal account:
+
+```sh
+gh auth switch -u mbosschaart
+gh auth status
 ```
-user.name=Martijn-DevRev
-user.email=martijn.bosschaart@devrev.ai   ← work account
-user.name=Martijn Bosschaart
-user.email=martijn@bosschaart.net          ← personal account (owns mbosschaart)
-```
 
-GitHub remote uses HTTPS (`https://github.com/mbosschaart/Stream64.git`). If pushing fails with an authentication error, the credential helper may be offering the DevRev work account (which does not own the mbosschaart GitHub account). Fix by either:
+If `git push` reports "Repository not found", verify the active CLI/keychain account before changing any repository configuration.
 
-1. Setting the repo-local git config to the personal account:
-   ```sh
-   git config user.email martijn@bosschaart.net
-   git config user.name "Martijn Bosschaart"
-   ```
-2. Or switching the macOS Keychain credential to the personal GitHub token before pushing.
-
-The `.gitignore` excludes `.build/`, `.DS_Store`, `*.xcodeproj`, `.swiftpm/`. The `devices.json` file is **not** in `.gitignore` — but note it is in `~/Library/Application Support/Stream64/`, not in the repo directory, so it is not tracked anyway.
+The `.gitignore` excludes `.build/`, `.DS_Store`, `*.xcodeproj`, `.swiftpm/`, and generated `dist/` release artifacts. `Package.resolved`, packaging scripts/metadata, tests and source resources are tracked. Device and Assembly64 user-state files live under Application Support, outside the repository.
 
 ---
 
@@ -1114,12 +1238,13 @@ The `.gitignore` excludes `.build/`, `.DS_Store`, `*.xcodeproj`, `.swiftpm/`. Th
 
 ### Recently implemented (2026-07-20)
 
-Four items from the lists above have since been built:
+The following roadmap items have since been built:
 
 - **Automatic reconnect** — see the new subsection in §5, "Mid-session disconnect detection & automatic reconnect."
 - **Screenshot export** — see the new subsection in §7, "Screenshot capture."
 - **Assembly64 pagination** — see the updated §8, "Search pagination (Load More)."
 - **Sidebar drag-to-reorder** — `DeviceStore.move(fromOffsets:toOffset:)` plus `.onMove` on the sidebar's `ForEach`. Purely cosmetic list ordering, persisted the same way as the rest of the device list (`devices.json`); doesn't touch ports, UUIDs, or sessions.
+- **Enhanced Assembly64 discovery (roadmap feature 03)** — repository/type/year/rating/recency/sort filters, favorites, recent history, saved searches, metadata previews/source links, complete-entry ZIP download, cancellable selection loading and remembered disk actions.
 
 ---
 

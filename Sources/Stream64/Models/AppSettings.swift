@@ -35,11 +35,40 @@ enum TubeInput: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// CRT phosphor/display color. This is intentionally separate from the C64
+/// palette: it emulates the physical tube after the color picture has been
+/// decoded, and only affects CRT rendering pipelines.
+enum CRTScreenColor: String, CaseIterable, Identifiable, Codable {
+    case color = "Color"
+    case amber = "Amber"
+    case green = "Green"
+    case blackAndWhite = "Black & White"
+
+    var id: String { rawValue }
+
+    var shaderValue: Float {
+        switch self {
+        case .color: return 0
+        case .amber: return 1
+        case .green: return 2
+        case .blackAndWhite: return 3
+        }
+    }
+}
+
 enum BezelChoice: String, CaseIterable, Identifiable, Codable {
     case c1702 = "Commodore 1702"
     case c1084 = "Commodore 1084S"
 
     var id: String { rawValue }
+
+    /// Published phosphor/shadow-mask dot pitch for the physical monitor.
+    var dotPitchMillimeters: Float {
+        switch self {
+        case .c1702: return 0.64
+        case .c1084: return 0.42
+        }
+    }
 }
 
 enum PaletteChoice: String, CaseIterable, Identifiable, Codable {

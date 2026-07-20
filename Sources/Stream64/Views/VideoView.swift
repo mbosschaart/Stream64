@@ -46,6 +46,10 @@ struct VideoView: NSViewRepresentable {
         context.coordinator.renderer?.filterMode = display.filterMode
         context.coordinator.renderer?.reflectionEnabled = display.bezelReflection
         context.coordinator.renderer?.signalLevel = display.tubeInput.signalLevel
+        context.coordinator.renderer?.crtScreenColor = display.crtScreenColor
+        context.coordinator.renderer?.crtDirtyGlass = display.crtDirtyGlass
+        context.coordinator.renderer?.monitorDotPitchMillimeters =
+            display.bezelStyle.dotPitchMillimeters
         context.coordinator.renderer?.picture = display.picture
         context.coordinator.renderer?.setPalette(C64Palette.palette(for: display.palette))
     }
