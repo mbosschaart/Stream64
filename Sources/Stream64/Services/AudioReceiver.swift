@@ -60,6 +60,10 @@ final class AudioReceiver {
     private var rfHighPrev: (l: Float, r: Float) = (0, 0)
     private var rfNoiseSeed: UInt32 = 0x12345678
     private var rfHumPhase: Float = 0
+    private var powerOffCrackleRemaining = 0
+    private var powerOffCrackleTotal = 1
+    private var powerOffCrackleImpulse: Float = 0
+    private var powerOffCracklePhase: Float = 0
 
     // MARK: - Ring buffer (interleaved stereo floats), guarded by `lock`.
 
@@ -117,6 +121,9 @@ final class AudioReceiver {
         rfHighState = (0, 0)
         rfHighPrev = (0, 0)
         rfHumPhase = 0
+        powerOffCrackleRemaining = 0
+        powerOffCrackleImpulse = 0
+        powerOffCracklePhase = 0
 
         do {
             try engine.start()
@@ -148,6 +155,19 @@ final class AudioReceiver {
             engine.stop()
             started = false
         }
+    }
+
+    /// Arm a short, synthesized high-voltage discharge sound. State is
+    /// guarded by the existing audio lock and consumed allocation-free by the
+    /// source-node render callback.
+    func playPowerOffCrackle() {
+        os_unfair_lock_lock(lock)
+        powerOffCrackleTotal = Int(Self.sampleRate * 0.85)
+        powerOffCrackleRemaining = powerOffCrackleTotal
+        powerOffCrackleImpulse = 0
+        powerOffCracklePhase = 0
+        rfNoiseSeed ^= 0xA5A5_5A5A
+        os_unfair_lock_unlock(lock)
     }
 
     // MARK: - Network side (writer)
@@ -208,6 +228,8 @@ final class AudioReceiver {
             } else {
                 left.update(repeating: 0, count: frames)
                 right.update(repeating: 0, count: frames)
+                applyPowerOffCrackle(
+                    left: left, right: right, frames: frames)
                 return
             }
         }
@@ -238,6 +260,49 @@ final class AudioReceiver {
         if rfAudioEnabled {
             applyRFFilter(left: left, right: right, frames: frames)
         }
+        applyPowerOffCrackle(left: left, right: right, frames: frames)
+    }
+
+    private func applyPowerOffCrackle(
+        left: UnsafeMutablePointer<Float>,
+        right: UnsafeMutablePointer<Float>,
+        frames: Int
+    ) {
+        guard powerOffCrackleRemaining > 0 else { return }
+
+        let phaseStep = Float(2 * Double.pi * 78.0 / Self.sampleRate)
+        for index in 0..<frames {
+            guard powerOffCrackleRemaining > 0 else { break }
+            let elapsed = 1.0 - Float(powerOffCrackleRemaining)
+                / Float(powerOffCrackleTotal)
+            let envelope = pow(max(0, 1.0 - elapsed), 2.35)
+
+            rfNoiseSeed = rfNoiseSeed &* 1664525 &+ 1013904223
+            let random = Float(rfNoiseSeed >> 8) / Float(1 << 24)
+            let white = random - 0.5
+
+            // Sparse, irregular dielectric snaps riding on decaying hiss.
+            powerOffCrackleImpulse *= 0.86
+            if random > 0.986 {
+                powerOffCrackleImpulse += (random - 0.986) * 8.0
+            }
+
+            // Initial low electrical pop as the flyback/high voltage drains.
+            powerOffCracklePhase += phaseStep
+            let pop = sin(powerOffCracklePhase)
+                * exp(-elapsed * 22.0) * 0.075
+            let hiss = white * envelope * 0.040
+            let snaps = powerOffCrackleImpulse * envelope * 0.12
+            let sample = pop + hiss + snaps
+
+            left[index] = clampAudio(left[index] + sample)
+            right[index] = clampAudio(right[index] + sample)
+            powerOffCrackleRemaining -= 1
+        }
+    }
+
+    private func clampAudio(_ value: Float) -> Float {
+        min(1, max(-1, value))
     }
 
     /// TV-speaker-over-antenna simulation:

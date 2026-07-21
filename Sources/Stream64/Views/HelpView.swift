@@ -59,7 +59,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .devices: return "Devices & Connection"
         case .viewing: return "Viewing & Full Screen"
         case .rendering: return "Rendering & CRT Simulation"
-        case .monitorBezel: return "Monitor Bezel"
+        case .monitorBezel: return "Monitor Case & Bezel"
         case .keyboard: return "Keyboard Input"
         case .files: return "Loading Files"
         case .assembly64: return "Assembly64 Library"
@@ -104,6 +104,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     // MARK: - Content
 
     private static let gettingStartedText = """
+    **Version \(Stream64Version.display)**
+
     Stream64 streams live video and audio from a **Commodore 64 Ultimate** \
     (Ultimate 64, Ultimate 64 Elite, Ultimate-II+) to your Mac over the network, \
     with hardware-accelerated rendering and full remote control.
@@ -235,7 +237,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **Palette** — Pepto (default), Colodore, or VICE color tables.
 
-    **Picture controls** — with the Commodore 1702 bezel visible, click its \
+    **Picture controls** — with the Commodore 1702 monitor case visible, click its \
     front panel to open the door: real VOLUME, BRIGHT, COLOR, TINT, and \
     CONTRAST knobs drive the picture live (drag up/down; double-click to \
     center). These work like the real monitor's pots — color at zero gives a \
@@ -245,8 +247,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let monitorBezelText = """
-    Show a period-correct monitor around the picture: right-click → Monitor \
-    Bezel → Show Bezel, then pick a style.
+    Show a complete period-correct monitor around the picture: right-click → \
+    Monitor Case → Show Monitor Case, then pick a style.
+
+    **Terminology:** Monitor Case means the complete enclosure, front panel, \
+    logo, controls, chin, and outer shell. Bezel means only the angled inner \
+    plastic lip that overlaps and protects the CRT glass.
 
     • **Commodore 1702** — the classic cream monitor with its dark control \
     strip. Click the strip to flip down the door and reveal **working \
@@ -258,9 +264,18 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     monitor style controls shader dot pitch even when the drawn bezel is hidden.
 
     **Tube Reflection** (with the CRT Tube filter) renders the picture's own \
-    light onto the black mask around the tube face — geometrically correct, \
-    so a bright area at the screen edge glows onto the adjacent mask. Toggle \
-    it via right-click → Monitor Bezel → Tube Reflection.
+    light onto the angled plastic wall around the tube face. The bezel slightly \
+    overlaps the glass and reflects the first few millimetres of the screen; \
+    light diffuses outward but follows one normal path, so single lines never \
+    branch. Toggle it via right-click → \
+    Monitor Case → Tube Reflection.
+
+    Fullscreen hides the complete monitor case but retains a dark angled bezel \
+    around the CRT Tube, including its diffuse reflection.
+
+    The physical tube face always retains a visible dark cool-grey glass \
+    color beneath the video. It is independent of C64 palette black, Brightness, \
+    Color, Tint, and Contrast, and remains visible after CRT Tube power-off.
 
     The bezel scales with the window and keeps the tube opening at exactly 4:3.
     """
@@ -398,7 +413,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **Pause / Resume** — freezes and resumes the machine
     • **Menu** — presses the Ultimate's menu button
     • **Power Off** — powers down the machine (asks for confirmation; \
-    configurable in Settings → General)
+    configurable in Settings → General). In CRT Tube mode, the last frame \
+    flares, collapses to a horizontal line and center dot, then fades with a \
+    synchronized electrical pop/crackle before Stream64 disconnects.
     • **Stop Streaming** — stops video/audio while leaving REST control alive
     • **Start Streaming** — re-arms video/audio to this Mac without a \
     reconnect, for when the picture froze but the device is fine

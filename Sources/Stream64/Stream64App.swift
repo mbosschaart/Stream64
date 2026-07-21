@@ -1,5 +1,9 @@
 import SwiftUI
 
+enum Stream64Version {
+    static let display = "0.91b"
+}
+
 /// Quits the app when the main viewer window closes — otherwise an open
 /// Settings window keeps the process alive, looking like the app refused
 /// to exit.
@@ -21,50 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             NSApp.terminate(nil)
         }
-    }
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: nil,
-            queue: .main) { [weak self] note in
-            guard let self,
-                  !self.isTerminatingCompletely,
-                  let window = note.object as? NSWindow,
-                  Self.isMainWindow(window) else {
-                return
-            }
-            self.terminateCompletely(excluding: window)
-        }
-    }
-
-    /// Closing the viewer is equivalent to Quit. Hide and close every
-    /// auxiliary SwiftUI scene before asking AppKit to terminate, so an
-    /// Assembly64/Help/Settings window can never remain as an orphan.
-    private func terminateCompletely(excluding closingWindow: NSWindow? = nil) {
-        guard !isTerminatingCompletely else { return }
-        isTerminatingCompletely = true
-
-        for window in NSApp.windows where window !== closingWindow {
-            window.orderOut(nil)
-            window.close()
-        }
-        NSApp.terminate(nil)
-    }
-
-    /// The viewer window, as opposed to Settings (identified by SwiftUI's
-    /// settings-window identifier) or utility panels/sheets. The main
-    /// window's title varies (it shows the device name), so identify by
-    /// exclusion.
-    private static func isMainWindow(_ window: NSWindow) -> Bool {
-        if window.identifier?.rawValue.contains("Settings") == true { return false }
-        if window.identifier?.rawValue.contains("help") == true { return false }
-        if window.identifier?.rawValue.contains("assembly64") == true { return false }
-        if window is NSPanel || window.isSheet { return false }
-        // Do not consult `canBecomeMain` here: AppKit may already set it to
-        // false by the time willClose is posted, which caused the viewer to
-        // be missed and left Assembly64 alive as an orphan process.
-        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -118,7 +78,7 @@ struct Stream64App: App {
                 Button("About Stream64") {
                     NSApp.orderFrontStandardAboutPanel(options: [
                         .applicationName: "Stream64",
-                        .applicationVersion: "1.0",
+                        .applicationVersion: Stream64Version.display,
                         .credits: NSAttributedString(
                             string: "Designed by Martijn Bosschaart 2026",
                             attributes: [

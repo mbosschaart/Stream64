@@ -57,6 +57,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     var crtScreenColor: CRTScreenColor = .color
     var crtDirtyGlass: Bool = false
     var monitorDotPitchMillimeters: Float = BezelChoice.c1702.dotPitchMillimeters
+    /// 0 = standalone/fullscreen dark bezel, 1 = 1702, 2 = 1084S.
+    var bezelSurfaceMode: Float = 0
+    private var powerOffEffectStartedAt: UInt64?
     /// Frame counter driving RF noise animation.
     private var frameIndex: UInt32 = 0
     /// Live picture controls, read every frame (bypasses SwiftUI updates
@@ -78,6 +81,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         var historyHead: Float
         var historyValidCount: Float
         var historyPhase: Float
+        var powerOff: Float
+        var bezelSurfaceMode: Float
         var padding: Float = 0
     }
 
@@ -114,6 +119,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float historyHead;
         float historyValidCount;
         float historyPhase;
+        float powerOff;
+        float bezelSurfaceMode;
         float padding;
     };
 
@@ -295,6 +302,20 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                           size - 1);
         uint index = indexTex.read(coord).r;
         return paletteTex.read(uint2(index, 0)).rgb;
+    }
+
+    static float3 roughReflectionSample(
+        float2 uv, float2 tangentOffset,
+        texture2d<uint> indexTex,
+        texture2d<float> paletteTex) {
+        float3 sample = sampleBilinear(uv, indexTex, paletteTex).rgb * 0.76;
+        sample += sampleBilinear(
+            clamp(uv - tangentOffset, 0.0, 1.0),
+            indexTex, paletteTex).rgb * 0.12;
+        sample += sampleBilinear(
+            clamp(uv + tangentOffset, 0.0, 1.0),
+            indexTex, paletteTex).rgb * 0.12;
+        return sample;
     }
 
     static float3 toYIQ(float3 c) {
@@ -683,8 +704,17 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return length(max(q, 0.0)) - r;
     }
 
+    // Physical tube glass exists independently of phosphor emission and C64
+    // palette black. Keep a cool-neutral charcoal floor that darkens gently
+    // toward the curved edges, unaffected by picture controls.
+    static float3 tubeGlassBase(float2 cc) {
+        float radial = clamp(dot(cc, cc) * 0.5, 0.0, 1.0);
+        float level = mix(0.048, 0.026, smoothstep(0.15, 1.0, radial));
+        return level * float3(0.96, 0.99, 1.02);
+    }
+
     // Tube variant: barrel distortion, rounded corners, vignette, and a
-    // mirrored screen reflection on the sunken black mask around the face.
+    // diffuse edge reflection on the angled plastic bezel around the face.
     fragment float4 fragmentCRTTube(VertexOut in [[stage_in]],
                                     constant Uniforms &uniforms [[buffer(0)]],
                                     texture2d<uint> indexTex [[texture(0)]],
@@ -694,15 +724,25 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                     sampler smp [[sampler(0)]]) {
         // Center coordinates in [-1, 1].
         float2 cc = in.texCoord * 2.0 - 1.0;
+        float shutdown = clamp(uniforms.powerOff, 0.0, 1.0);
+        float verticalCollapse = smoothstep(0.0, 0.52, shutdown);
+        float horizontalCollapse = smoothstep(0.48, 0.80, shutdown);
+        float finalFade = smoothstep(0.76, 1.0, shutdown);
+        float verticalScale = mix(1.0, 0.006, verticalCollapse);
+        float horizontalScale = mix(1.0, 0.004, horizontalCollapse);
 
         // Barrel distortion: push samples outward toward the edges.
         float2 curved = cc * (1.0 + 0.028 * dot(cc, cc));
 
         const float radius = 0.08;
         float sd = faceSDF(curved, radius);
+        // The inner plastic bezel overlaps the imperfect glass perimeter.
+        // Move the visible glass/bezel boundary 1.8% inside the physical tube.
+        const float bezelOverlap = 0.018;
+        float wallDepth = sd + bezelOverlap;
 
-        if (sd >= 0.0) {
-            // ---- The black mask: a recess between tube face and case. ----
+        if (wallDepth >= 0.0) {
+            // ---- Angled inner bezel between glass and monitor case. ----
 
             // Depth cues: the mask is sunken, so its outer rim (under the
             // case lip) sits in shadow, and light from above leaves the
@@ -712,7 +752,16 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             float rimDist = -faceSDF(cc, 0.30);                 // 0 at the outer rim
             float lipShadow = smoothstep(-0.06, 0.30, rimDist); // dark under the lip
             float topShadow = mix(0.62, 1.0, smoothstep(-1.15, -0.25, cc.y));
-            float3 base = float3(0.025) * lipShadow * topShadow;
+            float3 standalonePlastic = float3(0.020, 0.021, 0.024);
+            float3 c1702Plastic = float3(0.045, 0.034, 0.028);
+            float3 c1084Plastic = float3(0.145, 0.135, 0.115);
+            float3 plastic = uniforms.bezelSurfaceMode < 0.5
+                           ? standalonePlastic
+                           : (uniforms.bezelSurfaceMode < 1.5
+                              ? c1702Plastic : c1084Plastic);
+            float sideShade = mix(0.88, 1.0,
+                                  smoothstep(-1.0, 0.65, cc.x));
+            float3 base = plastic * lipShadow * topShadow * sideShade;
 
             if (uniforms.reflection < 0.5) {
                 return float4(dither(base, in.position.xy), 1.0);
@@ -728,48 +777,103 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             // content near corners and breaks that correspondence.
             float2 e = float2(0.002, 0.0);
             float2 n = normalize(float2(
-                faceSDF(curved + e.xy, radius) - faceSDF(curved - e.xy, radius),
-                faceSDF(curved + e.yx, radius) - faceSDF(curved - e.yx, radius)));
-            float2 edgePoint = curved - (sd + 0.05) * n;
+                faceSDF(curved + e.xy, radius)
+                    - faceSDF(curved - e.xy, radius),
+                faceSDF(curved + e.yx, radius)
+                    - faceSDF(curved - e.yx, radius)));
+            // The plastic wall is approximately 85° to the tube face (5°
+            // from vertical) and overlaps the glass edge slightly. As depth
+            // increases, project only tan(5°) farther inward: one continuous
+            // mapping that follows the wall without fanning out.
+            const float wallLean = 0.0874887; // tan(5°)
+            float2 edgePoint = curved
+                - (wallDepth + 0.012 + wallDepth * wallLean) * n;
             float2 uvr = clamp(edgePoint * 0.5 + 0.5, 0.0, 1.0);
 
-            // Matte surface: average a strip of picture just inside the
-            // glass, mostly along the edge (tangential) so the glow tracks
-            // the adjacent content, softened across it. Weighted toward the
-            // center tap for a gaussian-ish, seam-free result.
-            float2 t = float2(n.y, -n.x);
-            float spread = 1.0 + sd * 6.0;
-            float3 refl = float3(0.0);
-            float wsum = 0.0;
-            for (int i = -4; i <= 4; i++) {
-                for (int j = -1; j <= 1; j++) {
-                    float w = exp(-0.18 * float(i * i) - 0.5 * float(j * j));
-                    float2 o = (t * (float(i) * 0.026) + n * (float(j) * 0.030)) * spread;
-                    refl += w * sampleBilinear(clamp(uvr + o, 0.0, 1.0), indexTex, paletteTex).rgb;
-                    wsum += w;
-                }
-            }
-            refl /= wsum;
+            // Perspective from a viewer centered in front of the tube. The
+            // midpoint of each wall has no screen-space shear and is most
+            // front-facing; toward corners, reflection rays bend progressively
+            // back toward the horizontal/vertical screen centerline.
+            bool sideWall = abs(n.x) > abs(n.y);
+            float alongWall = sideWall ? cc.y : cc.x;
+            float2 perspectiveWarp = sideWall
+                ? float2(0.0, -cc.y * wallDepth * 0.055)
+                : float2(-cc.x * wallDepth * 0.055, 0.0);
+            uvr = clamp(uvr + perspectiveWarp, 0.0, 1.0);
+            float viewFacing = 1.0 - min(abs(alongWall), 1.0) * 0.18;
+
+            // Rough plastic diffuses the one-to-one projected sample by at
+            // most ~1.5 source pixels along the wall tangent. The symmetric,
+            // three-tap kernel has one center path and a continuous blur—no
+            // widening multi-path branches.
+            float2 sourceTexel = 1.0 / float2(
+                indexTex.get_width(), indexTex.get_height());
+            float2 tangent = float2(n.y, -n.x);
+            float roughness = smoothstep(0.0, 0.30, wallDepth);
+            float2 tangentOffset = tangent * sourceTexel
+                * (0.25 + roughness * 0.55);
+            // Reflect a narrow physical strip under the overlapping lip, not
+            // only its outermost pixel. These normal offsets correspond to
+            // approximately 1.5, 3.2 and 4.8 mm on a 13-inch tube.
+            // Equal physical distance on a 4:3 tube: horizontal UV spans
+            // ~264 mm, vertical UV ~198 mm.
+            float2 inwardUV = n * float2(0.006, 0.008);
+            float3 refl = roughReflectionSample(
+                uvr, tangentOffset, indexTex, paletteTex) * 0.62;
+            refl += roughReflectionSample(
+                clamp(uvr - inwardUV, 0.0, 1.0),
+                tangentOffset, indexTex, paletteTex) * 0.27;
+            refl += roughReflectionSample(
+                clamp(uvr - inwardUV * 2.0, 0.0, 1.0),
+                tangentOffset, indexTex, paletteTex) * 0.11;
+            float reflLuma = dot(refl, float3(0.299, 0.587, 0.114));
+            refl = mix(refl, float3(reflLuma), roughness * 0.07);
 
             refl = applyPhosphorColor(applyPicture(refl, uniforms), uniforms);
+            refl *= 1.0 - smoothstep(0.08, 0.58, shutdown);
 
             // Bloom: soft-knee boost so bright content flares while dark
             // content stays subtle.
             refl += refl * refl * 0.35;
 
-            // Reflection dies off with distance from the glass: brightest
-            // right at the picture edge (a gap there reads as a black ring),
-            // decaying gently so the glow melts into the recess shadow.
-            float fade = exp(-sd * 5.5);
-            float3 color = base + refl * fade * 0.34 * mix(0.55, 1.0, lipShadow) * topShadow;
+            // The overlapping plastic lip blocks reflection immediately at
+            // the glass edge; light then appears on the angled wall and
+            // diffuses farther outward with a broad exponential falloff.
+            float overlapReveal = smoothstep(0.001, 0.012, wallDepth);
+            base *= mix(0.90, 1.0,
+                        smoothstep(0.0, 0.014, wallDepth));
+            float fade = overlapReveal * exp(-wallDepth * 4.2);
+            float3 color = base + refl * fade * 0.27
+                         * viewFacing * mix(0.55, 1.0, lipShadow) * topShadow;
             return float4(dither(color, in.position.xy), 1.0);
         }
 
         // ---- Tube face ----
-        float2 uv = curved * 0.5 + 0.5;
-        float2 sourceUV = dirtyGlassUV(uv, uniforms);
+        float2 glassUV = curved * 0.5 + 0.5;
         // Soft antialiased edge just inside the border.
-        float edge = 1.0 - smoothstep(-0.012, 0.0, sd);
+        float edge = 1.0 - smoothstep(-0.006, 0.0, wallDepth);
+        float vig = 1.0 - 0.22 * dot(cc, cc);
+        float3 glassBase = tubeGlassBase(cc);
+
+        bool insideCollapsedPicture =
+            abs(cc.x) <= horizontalScale && abs(cc.y) <= verticalScale;
+        if (!insideCollapsedPicture || finalFade >= 1.0) {
+            // The phosphor has collapsed away, but the physical dirty glass
+            // remains visible as an almost-black tube face.
+            float3 darkGlass = applyDirtyGlass(
+                glassBase, glassUV, in.position.xy,
+                uniforms, dirtTex);
+            return float4(dither(darkGlass * edge, in.position.xy), 1.0);
+        }
+
+        // Squeeze the complete last frame into the shrinking beam region.
+        float2 contentCC = cc / float2(horizontalScale, verticalScale);
+        float2 contentCurved = contentCC
+            * (1.0 + 0.028 * dot(contentCC, contentCC));
+        float2 uv = clamp(contentCurved * 0.5 + 0.5, 0.0, 1.0);
+        // Dirt/refraction stays fixed to physical glass while content moves.
+        float2 glassWarp = dirtyGlassUV(glassUV, uniforms) - glassUV;
+        float2 sourceUV = clamp(uv + glassWarp, 0.0, 1.0);
 
         float3 color = applyPhosphorColor(
             applyPicture(crtShade(sourceUV, in.position.xy, indexTex,
@@ -782,10 +886,23 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                          uniforms),
             uniforms);
 
-        // Vignette: gentle darkening toward edges, like a lit tube face.
-        float vig = 1.0 - 0.22 * dot(cc, cc);
-        color *= vig;
-        color = applyDirtyGlass(color, uv, in.position.xy,
+        // Flyback collapse concentrates beam energy into a bright horizontal
+        // line, then a hot center dot, before the high voltage drains away.
+        float lineWidth = max(verticalScale * 0.55, 0.002);
+        float lineCore = exp(-pow(abs(cc.y) / lineWidth, 2.0) * 2.5);
+        float dotRadius = max(horizontalScale * 0.70, 0.003);
+        float dotCore = exp(-dot(cc, cc)
+                            / max(dotRadius * dotRadius, 0.00001) * 2.2);
+        float beamGain = 1.0 + verticalCollapse * 1.15
+                       + horizontalCollapse * 0.85;
+        color *= beamGain * vig;
+        color += float3(lineCore * verticalCollapse * 0.20);
+        color += float3(dotCore * horizontalCollapse * 0.32);
+        color *= 1.0 - finalFade;
+        // Phosphor light is emitted over, not substituted for, the physical
+        // glass. Screen blending preserves the glass floor under signal black.
+        color = glassBase + color * (1.0 - glassBase);
+        color = applyDirtyGlass(color, glassUV, in.position.xy,
                                 uniforms, dirtTex);
 
         return float4(dither(color * edge, in.position.xy), 1.0);
@@ -954,6 +1071,14 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             mipmapLevel: 0,
             withBytes: bytes,
             bytesPerRow: 64)
+    }
+
+    func beginPowerOffEffect() {
+        powerOffEffectStartedAt = DispatchTime.now().uptimeNanoseconds
+    }
+
+    func cancelPowerOffEffect() {
+        powerOffEffectStartedAt = nil
     }
 
     /// Requests a screenshot of exactly what's on screen — the active
@@ -1149,6 +1274,14 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             ? 0
             : Float(now - historyLastUploadUptime) / 1_000_000_000
         let historyPhase = min(elapsedSinceSourceFrame * 50.0, 100.0)
+        let powerOffProgress: Float
+        if let powerOffEffectStartedAt {
+            let elapsed = Float(now - powerOffEffectStartedAt)
+                / 1_000_000_000
+            powerOffProgress = min(elapsed / 0.9, 1.0)
+        } else {
+            powerOffProgress = 0
+        }
         var uniforms = Uniforms(scale: scale,
                                 reflection: reflectionEnabled ? 1 : 0,
                                 signal: signalLevel,
@@ -1162,7 +1295,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                 maskPitch: maskPitch,
                                 historyHead: Float(historyHead),
                                 historyValidCount: Float(historyValidCount),
-                                historyPhase: historyPhase)
+                                historyPhase: historyPhase,
+                                powerOff: powerOffProgress,
+                                bezelSurfaceMode: bezelSurfaceMode)
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)

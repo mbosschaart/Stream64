@@ -16,7 +16,9 @@ struct MonitorBezelView<Content: View>: View {
 
     // Proportions relative to the tube opening (4:3).
     private var chin: CGFloat { style == .c1702 ? 0.16 : 0.14 }   // control strip below tube
-    private var rim: CGFloat { 0.055 }                            // case border around tube
+    private var rim: CGFloat {
+        style == .c1702 ? 0.075 : 0.068
+    }                                                             // case border around tube
 
     var body: some View {
         GeometryReader { geo in

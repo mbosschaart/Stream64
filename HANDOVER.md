@@ -4,7 +4,9 @@
 **GitHub:** https://github.com/mbosschaart/Stream64  
 **Local path:** `~/UltimateViewer`  
 **Author:** Martijn Bosschaart, 2026  
-**Last updated:** 2026-07-20
+**Current release:** 0.91b
+
+**Last updated:** 2026-07-22
 
 This document is the primary reference for a developer picking up Stream64 cold. It covers every design decision, every non-obvious constraint, and everything discovered the hard way. Read it before touching anything.
 
@@ -18,7 +20,7 @@ The app:
 - Receives the live video stream (384×272 pixels at ~50 fps PAL) and audio (47983 Hz stereo) over UDP
 - Renders the picture via Metal with four filter pipelines including authentic CRT tube simulation
 - Simulates signal-path degradation: S-Video (clean), Composite (chroma bleed, dot crawl), RF (snow, jitter, interference, TV-speaker audio)
-- Wraps the picture in period-correct Commodore 1702 or 1084S monitor bezels drawn in SwiftUI, with working front-panel knobs on the 1702
+- Wraps the picture in period-correct complete Commodore 1702 or 1084S monitor cases drawn in SwiftUI, with working front-panel knobs on the 1702
 - Injects keyboard input into the C64's KERNAL buffer over DMA (the only mechanism available)
 - Provides machine control: reset, reboot, pause/resume, menu button, power off
 - Supports drag-and-drop loading of PRGs and disk images (`.d64/.g64/.d71/.g71/.d81`)
@@ -98,9 +100,7 @@ Key responsibilities:
 - Creates the app-level `@StateObject`s: `DeviceStore`, `AppSettings`, `SessionManager`, and `Assembly64LibraryStore`
 - Declares the `WindowGroup` (main viewer), `Window("help")`, `Window("assembly64")`, and `Settings` scenes
 - `AppDelegate.applicationWillFinishLaunching` acquires `SingleInstanceLock`; a second launch activates the existing process and exits before creating competing UDP listeners
-- `AppDelegate.applicationDidFinishLaunching` installs a `NSWindow.willCloseNotification` observer that calls `NSApp.terminate()` when the main viewer window closes — needed because an open Settings window otherwise keeps the process alive after the user "quit"
-- Root `ContentView.onDisappear` is the authoritative SwiftUI fallback: `WindowGroup` may remove its `NSWindow` before `willClose` can classify it. The fallback calls terminate; `applicationShouldTerminate` immediately orders out/closes every Assembly64, Help, Settings and extra viewer window before returning `.terminateNow`.
-- `isMainWindow()` identifies the main window by exclusion (Settings/help/assembly64 window IDs and panels are excluded), not by title, because the title changes to show the device name
+- `MainViewerWindowObserver` is an invisible `NSViewRepresentable` attached to each root viewer. It observes only the exact hosting `NSWindow` (not global `willClose`, which also sees transient toolbar picker windows) and requests termination when that viewer closes; `applicationShouldTerminate` orders out/closes every Assembly64, Help, Settings and extra viewer before returning `.terminateNow`.
 - Menu commands: Add Device (⇧⌘N), Search Assembly64 (⇧⌘F), Stream64 Help (⌘?)
 - `NSApplication.shared.setActivationPolicy(.regular)` in `init()` — required when launched via `swift run` (no app bundle), otherwise the process has no dock icon or menu bar
 
@@ -212,7 +212,7 @@ Client for the Assembly64 library API at `https://hackerswithstyle.se/leet`.
 Every request must include the `client-id` header with value `"assembly64"`. Without it, the server returns error code 464.
 
 Key types:
-- `SearchResult` — composite UI identity (`category:itemID`), name, category, group, handle, year, local/site rating, release/update metadata. `displayGroup` replaces underscores in group names.
+- `SearchResult` — composite UI identity (`category:itemID`), name, category, group, handle, year, local/site rating, release/update metadata. The live API sometimes omits `name`; decoding falls back to group/handle or `Untitled #id`. Page decoding is lossy only for entries missing essential ID/category, so one malformed row cannot fail an entire category.
 - `FileEntry` — id (Int), path, size. `kind` computed property classifies by extension into `FileKind` (prg/disk/sid/cartridge/other).
 - `Category` — id, name, description, groupingName, type
 - `AQLPreset` / `AQLPresetValue` — server-advertised repository, type, year, recency, rating and sort choices from `/search/aql/presets`
@@ -310,6 +310,8 @@ Key fields:
 
 RF filter state (all audio-thread-only): `rfLowState` + `rfLowState2` (two-pole LP), the `.l/.r` halves of `rfHighState`/`rfHighPrev` (two cascaded HP poles), `rfNoiseSeed` (LCG PRNG), and `rfHumPhase`. Filter state resets whenever the audio engine starts.
 
+Power-off crackle state (`powerOffCrackleRemaining/Total`, impulse envelope and phase) is armed under the same unfair lock and consumed allocation-free by the render callback, including while the jitter buffer is outputting silence.
+
 ### `Rendering/MetalFrameRenderer.swift`
 `final class MetalFrameRenderer: NSObject, MTKViewDelegate`
 
@@ -346,7 +348,7 @@ Fullscreen cursor monitor: the fullscreen `NSWindow` temporarily enables `accept
 ### `Views/MonitorBezelView.swift`
 `struct MonitorBezelView<Content: View>` and `struct KnobDial`.
 
-The bezel is drawn in pure SwiftUI using `RoundedRectangle`, `LinearGradient`, and `ZStack`. Geometry is computed relative to the tube opening (4:3 aspect), with a `rim` fraction (5.5%) and `chin` fraction (16% for 1702, 14% for 1084S). A `GeometryReader` fits the case into the available space.
+Despite its historical type/property names, `MonitorBezelView` draws the complete **Monitor Case** in SwiftUI: outer enclosure, front panel/chin, logo/control area, and case rim. The **bezel** specifically means the angled inner plastic lip rendered by the CRT Tube shader directly over the glass edge. Geometry is computed relative to the 4:3 opening, with style-specific case rim (7.5% for 1702, 6.8% for 1084S) and chin (16%/14%). A `GeometryReader` fits the complete case. Fullscreen suppresses this SwiftUI case and keeps the shader's standalone dark reflective bezel.
 
 The 1702 control door is a `@State private var doorOpen: Bool` toggled by `onTapGesture` on the control strip. When open, five `KnobDial` views appear for VOLUME, BRIGHT, COLOR, TINT, CONTRAST.
 
@@ -361,7 +363,7 @@ This split is the key to smooth knob response. If `commit` were called on every 
 
 A compact vertical layout with a fixed 300-point results area (header + roughly ten rows + status) above metadata/file details. Keeping the result area fixed avoids a giant table in tall windows and leaves the remaining height for entry contents. The `sessionProvider` closure (passed from `Stream64App`) bridges the browser to the live `SessionManager` — the browser doesn't hold sessions itself, it just looks them up for the selected device at load time.
 
-The segmented Search/Favorites/Recent picker changes the table's local source without touching the selected machine. Search mode supports server-advertised repository/file-type/year/rating/recency/sort facets plus category and free text. A query may be filter-only; `runSearch()` only rejects a truly unconstrained default search.
+The segmented Search/Favorites/Recent picker changes the result source without touching the selected machine. Search supports server-advertised repository/file-type/year/rating/recency/sort facets plus the category picker and free text. A query may be filter-only; `runSearch()` only rejects a truly unconstrained default search. Normal 200-result pagination provides complete result sets.
 
 Selecting an item starts a cancellable task that loads files and metadata concurrently. Cached metadata appears immediately. Selection changes cancel the prior task and every state write verifies the selected composite ID, preventing a slow earlier response from overwriting the new item.
 
@@ -583,6 +585,16 @@ After `connect()` succeeds, a bounded watchdog Task waits 4 seconds and checks i
 
 `rebootAndReconnect()` is the recovery path for a wedged device (error state before connection was established). It calls `reboot()`, polls for 20 seconds, then runs the full `connect()` flow.
 
+### CRT Tube power-off flow
+
+`powerOff()` calls the device API first. If the active per-device filter is `.crtTube`, it then triggers the renderer and audio receiver, waits 900 ms, and disconnects without sending stream-stop requests to the already powered-down REST server.
+
+- `VideoView` installs weak `beginPowerOffVisualEffect` / `cancelPowerOffVisualEffect` hooks on the session.
+- The renderer keeps the last indexed frame, squeezes it vertically into a bright horizontal line, contracts that line to a center dot, blooms/fades to black, and leaves the physical dirty glass visible.
+- Reflection fades early so stale edge content does not outlive the collapsing face.
+- `AudioReceiver.playPowerOffCrackle()` overlays a bounded 850 ms one-shot: low 78 Hz discharge pop, decaying broadband hiss and sparse irregular dielectric snaps.
+- Reconnect cancels any retained visual shutdown state. Non-CRT-Tube filters power off without animation.
+
 ### Reentrancy guard
 
 `connect()` has a `connecting: Bool` flag (not `@Published`) that prevents interleaved runs. Without this, auto-connect from grid tiles + user Retry + the connect watchdog could all fire simultaneously. Concurrent `AudioReceiver.start()` calls raced on the CoreAudio engine and produced error 35 (kAudioHardwareIllegalOperationError).
@@ -658,7 +670,7 @@ FPS publishes only on changes ≥ 0.5 (`if abs(fps - self.fps) >= 0.5`). This av
 
 `AppSettings` holds settings that apply globally: audio hardware (volume, buffer size, enabled), network (timeout, stream duration), and general preferences (reconnect, keyboard capture, confirm destructive actions). All backed by `@AppStorage` (UserDefaults).
 
-`DisplaySettings` holds settings specific to one stream: filter/scaling/palette/input, CRT phosphor and dirty-glass mode, bezel style/visibility/reflection, and four picture controls (brightness, contrast, color, tint). Volume is global in `AppSettings`. Display state is persisted per device UUID as JSON under `"displaySettings.<UUID>"`.
+`DisplaySettings` holds settings specific to one stream: filter/scaling/palette/input, CRT phosphor and dirty-glass mode, monitor-case style/visibility, inner-bezel reflection, and four picture controls (brightness, contrast, color, tint). Internal names `showBezel`/`bezelStyle` are retained for persistence compatibility. Volume is global in `AppSettings`. Display state is persisted per device UUID as JSON under `"displaySettings.<UUID>"`.
 
 The split matters for multi-device: one machine can run CRT Tube + RF while another runs Sharp + S-Video. `AppSettings` changes (volume slider) affect all devices; `DisplaySettings` changes affect only the device that owns that instance.
 
@@ -725,6 +737,7 @@ struct Uniforms {
     var historyHead: Float       // newest slice in 12-frame indexed history
     var historyValidCount: Float // initialized source-history slices
     var historyPhase: Float      // fractional 50 Hz frame age for analog decay
+    var powerOff: Float          // 0...1 CRT Tube shutdown progress over 0.9 s
     var padding: Float           // alignment
 }
 ```
@@ -764,30 +777,33 @@ Most complex shader. Steps:
 
 **Inside the tube face (sd < 0):**
 - Apply `crtShade()` on `uv = curved * 0.5 + 0.5` (distorted UV)
-- Soft antialiased edge: `1 - smoothstep(-0.012, 0.0, sd)` fades out the picture right at the border
+- Composite phosphor emission over `tubeGlassBase(cc)`, an invariant visible cool-grey floor (center ~0.048, edges ~0.026) independent of C64 palette black and all picture controls
+- Soft antialiased edge: `1 - smoothstep(-0.012, 0.0, sd)` fades the glass into the bezel recess
 - Vignette: `1 - 0.22 * dot(cc, cc)` — gentle radial darkening toward corners
 - Dither + output
 
-**In the black mask (sd >= 0):**
-- Compute depth cues for the sunken recess:
+**On the overlapping angled bezel (`wallDepth >= 0`):**
+- The bezel boundary is moved 1.8% inside the physical glass SDF, hiding the imperfect tube perimeter with plastic.
+- Material is selected by context: dark neutral standalone/fullscreen, dark brown/charcoal 1702, warm grey/beige 1084S.
+- Compute depth cues for the sunken/angled surface:
   - `rimDist = -faceSDF(cc, 0.30)` — distance from the outer rim of the bezel recess (0 at the lip, positive inward). Used to darken under the case lip.
   - `lipShadow = smoothstep(-0.06, 0.30, rimDist)` — dark near the outer rim (under the plastic case lip), bright toward the face edge
   - `topShadow = mix(0.62, 1.0, smoothstep(-1.15, -0.25, cc.y))` — top of the recess is in shadow (light comes from above)
-  - Base color: `float3(0.025) * lipShadow * topShadow` — dark grey with shading
+  - Base material: standalone `(0.020,0.021,0.024)`, 1702 `(0.045,0.034,0.028)`, or 1084S `(0.145,0.135,0.115)`, multiplied by lip/top and subtle side-direction shading
 
 If `reflection < 0.5`, output base color directly (reflection disabled).
 
 **Reflection computation:**
 1. Compute SDF gradient numerically (central differences with ε = 0.002) → surface normal `n`
-2. Project to the edge: `edgePoint = curved - (sd + 0.05) * n` — move from the current mask point to just inside the glass
-3. Convert to UV: `uvr = clamp(edgePoint * 0.5 + 0.5, 0, 1)`
-4. Sample a strip of picture adjacent to this mask point: a 9×3 weighted kernel along the tangent direction (`t = float2(n.y, -n.x)`) with Gaussian weights, spread widening with depth (`spread = 1 + sd * 6`)
+2. Model the bezel wall as 85° to the tube face (5° from vertical): `edgePoint = curved - (sd + 0.022 + sd * tan(5°)) * n`. The fixed 0.022 overlap moves beneath the plastic lip; depth adds only a small non-diverging inward shift.
+3. Convert to UV, then apply full-frontal perspective along the wall tangent. Wall midpoints remain unsheared and most front-facing; shear increases continuously toward corners and bends samples back toward the horizontal/vertical screen centerline.
+4. Reflect a narrow strip beneath the lip rather than only the final edge pixel: three samples approximately 1.5, 3.2 and 4.8 mm inward along the same surface normal (weights 0.62/0.27/0.11). X and Y UV steps are scaled to equal physical distances on a 4:3 tube, so top/bottom behavior matches the sides. Each uses a bounded symmetric tangent blur of 0.25–0.8 source pixels (0.76/0.12/0.12). All samples share one normal path, so the strip diffuses without divergent branches.
 5. Apply picture controls to the reflection sample
 6. Bloom boost: `refl += refl * refl * 0.35` (soft knee)
-7. Distance falloff: `fade = exp(-sd * 5.5)` — reflection strongest right at the face edge, dying off exponentially
-8. Combine: `base + refl * fade * 0.34 * lipShadow_blend * topShadow`
+7. The overlapping lip blocks reflection over 0.008–0.030 SDF depth and starts base shading at 58%; beyond it, `exp(-sd * 4.2)` diffuses reflection outward along the plastic wall.
+8. Combine at 0.27 strength with lip/top and viewing-angle shading; roughness desaturates up to 7% with depth.
 
-**Why not true mirror reflection?** True mirroring (`curved - 2*sd*n`) pulls samples from deeper inside the picture as `sd` grows. Near corners, this pulls from wrong-neighborhood content — content that is spatially far from the mask point's adjacent picture area. The edge-projection approach (`edgePoint = curved - (sd + 0.05) * n`) always samples the picture content directly adjacent to the mask point, so the glow tracks the local picture content correctly along the entire edge.
+**Why not true mirror reflection?** True mirroring (`curved - 2*sd*n`) pulls samples from deeper inside the picture as `sd` grows. Near corners, this pulls from spatially unrelated content. The 85° edge projection keeps one continuous adjacent mapping; centered-view perspective bends that mapping toward the viewer's axis without splitting it, and only sub-pixel material roughness is blurred.
 
 **Dithering.** The `dither()` function adds `(hash(pixelPos) - 0.5) / 255` to every output pixel before the framebuffer quantizes to 8-bit per channel. This breaks up smooth gradient banding — visible as concentric rings in the vignette and in the reflection falloff when brightness is raised or contrast lowered.
 
@@ -981,7 +997,7 @@ Each device stores `videoPort` and `audioPort` (local UDP ports on the Mac), and
 
 ### Per-device rendering settings
 
-Every visual aspect of how a stream is rendered is per-device: filter mode, scaling, palette, input signal, bezel style/visibility/reflection, and picture controls. The `DisplaySettings.shared(for:)` singleton ensures each device has its own instance, and all control surfaces for that device share it.
+Every visual aspect of how a stream is rendered is per-device: filter mode, scaling, palette, input signal, monitor-case style/visibility, inner-bezel reflection, and picture controls. The `DisplaySettings.shared(for:)` singleton ensures each device has its own instance, and all control surfaces for that device share it.
 
 ---
 
@@ -1162,7 +1178,7 @@ cd ~/UltimateViewer
 # Command line:
 swift run
 
-# 14 tests: AQL/CSDB, persistence/migration, ZIP safety, CRT constants,
+# 15 tests: AQL/lossy API decoding/CSDB, persistence/migration, ZIP safety, CRT constants,
 # single-instance locking, and embedded Metal compilation:
 swift test
 
@@ -1178,7 +1194,7 @@ open .
 
 ### Ad-hoc release packaging
 
-`VERSION=1.0.0 BUILD_NUMBER=1 ARCH=<arm64|x86_64> ./Scripts/build-release.sh` performs the complete local distribution pipeline. `ARCH` defaults to arm64; artifacts are isolated under `dist/<architecture>/`.
+`VERSION=0.91b BUILD_NUMBER=91 ARCH=<arm64|x86_64> ./Scripts/build-release.sh` performs the complete local distribution pipeline. `ARCH` defaults to arm64; artifacts are isolated under `dist/<architecture>/`.
 
 1. Cross-compiles the optimized SwiftPM executable for `<architecture>-apple-macosx14.0` and verifies the Mach-O architecture with `lipo`.
 2. Creates `dist/<architecture>/Stream64.app` with `Packaging/Info.plist`, GPL license and `dirty-glass-mask.png` under standard `Contents/Resources`; ZIPFoundation's privacy manifest is copied when its generated bundle contains one.

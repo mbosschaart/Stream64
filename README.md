@@ -1,12 +1,13 @@
 # Stream64
 
-A native macOS viewer and remote control for the **Commodore 64 Ultimate** family (C64 Ultimate, Ultimate 64, Ultimate 64 Elite, Ultimate-II+). Stream64 receives the device's live video and audio streams over the network and renders them with Metal — with authentic CRT simulation, working monitor bezels, full keyboard input, drag-and-drop file loading, and simultaneous multi-device viewing.
+A native macOS viewer and remote control for the **Commodore 64 Ultimate** family (C64 Ultimate, Ultimate 64, Ultimate 64 Elite, Ultimate-II+). Stream64 receives the device's live video and audio streams over the network and renders them with Metal — with authentic CRT simulation, complete monitor cases, full keyboard input, drag-and-drop file loading, and simultaneous multi-device viewing.
 
 Designed by Martijn Bosschaart, 2026.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
+![Version](https://img.shields.io/badge/version-0.91b-purple)
 
 ## Features
 
@@ -14,12 +15,12 @@ Designed by Martijn Bosschaart, 2026.
 - **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, and long analog Amber afterglow sourced from the C64's indexed 16-color history
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
-- **Monitor bezels** — Commodore 1702 and 1084S, drawn in SwiftUI. The 1702's front-panel door opens to reveal **working knobs** (volume, brightness, 4× color overdrive, tint, contrast) that drive the picture live
+- **Monitor cases and bezels** — complete Commodore 1702/1084S cases are drawn in SwiftUI; the bezel is the angled inner plastic lip overlapping the tube glass. The 1702 door reveals **working knobs** (volume, brightness, 4× color overdrive, tint, contrast)
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
-- **Assembly64 discovery browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with repository/type/year/rating/recency filters, favorites, recent history, saved searches, Assembly64/CSDB previews and source links; safely inspect or save complete ZIPs, remember successful disk actions, and load files straight onto a machine
+- **Assembly64 search browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with category/repository/type/year/rating/recency filters, pagination, favorites, recents, saved searches, previews/source links, safe ZIP inspection, remembered successful actions, and direct device loading
 - **Keyboard input** — type on the C64 from your Mac (KERNAL keyboard-buffer injection over DMA), plus a full on-screen C64 keyboard with PETSCII shift combinations
-- **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, power off
+- **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, and power off; CRT Tube shutdown collapses the last frame into a bright line/dot with synchronized voltage-discharge crackle
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **In-app documentation** — Help → Stream64 Help (⌘?)
@@ -46,10 +47,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=1.0.0 BUILD_NUMBER=1 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.91b BUILD_NUMBER=91 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=1.0.0 BUILD_NUMBER=1 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.91b BUILD_NUMBER=91 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -172,7 +173,7 @@ CRT screen color is per device. Color preserves RGB; Green/Black & White use lum
 
 Dirty Glass combines a packaged photographic lint material with static procedural grime, smudges, tiny mineral deposits/refraction, fine dust and isolated dark flecks. It is fixed in glass space while video moves underneath and is included in filtered screenshots.
 
-The **tube reflection** mirrors each mask pixel's position across the nearest point of the curved face edge (via the SDF gradient), so every strip of the black mask reflects the picture content directly adjacent to it — a bright sprite at the screen edge glows onto the mask beside it. Falloff is exponential with distance from the glass; a gaussian tangential blur stands in for matte plastic.
+The CRT Tube face has an invariant dark charcoal glass base independent of C64 signal black or picture controls. Its **bezel reflection** models a plastic wall roughly 85° to the glass with a slight overlapping lip, one continuous mapping of the first ~1.5–5 mm screen strip, sub-pixel rough-plastic diffusion and broad outward falloff. A centered-view perspective keeps each wall midpoint front-facing and bends the mapping progressively toward the screen centerlines near corners. Single lines remain single and never diverge.
 
 Output is **dithered** (±0.5 LSB hash noise) to prevent 8-bit banding rings in the vignette and reflection gradients — visible when brightness is raised or contrast lowered.
 

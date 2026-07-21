@@ -9,10 +9,12 @@ struct VideoView: NSViewRepresentable {
     /// the host view (pane, grid tile) observes them.
     @ObservedObject var display: DisplaySettings
     @EnvironmentObject var settings: AppSettings
+    let monitorCaseVisible: Bool
 
-    init(session: DeviceSession) {
+    init(session: DeviceSession, monitorCaseVisible: Bool = false) {
         self.session = session
         self.display = session.display
+        self.monitorCaseVisible = monitorCaseVisible
     }
 
     func makeCoordinator() -> Coordinator {
@@ -38,6 +40,14 @@ struct VideoView: NSViewRepresentable {
             }
             renderer.requestFilteredScreenshot(completion: completion)
         }
+        context.coordinator.session.beginPowerOffVisualEffect = {
+            [weak renderer] in
+            renderer?.beginPowerOffEffect()
+        }
+        context.coordinator.session.cancelPowerOffVisualEffect = {
+            [weak renderer] in
+            renderer?.cancelPowerOffEffect()
+        }
         return view
     }
 
@@ -50,6 +60,9 @@ struct VideoView: NSViewRepresentable {
         context.coordinator.renderer?.crtDirtyGlass = display.crtDirtyGlass
         context.coordinator.renderer?.monitorDotPitchMillimeters =
             display.bezelStyle.dotPitchMillimeters
+        context.coordinator.renderer?.bezelSurfaceMode = monitorCaseVisible
+            ? (display.bezelStyle == .c1702 ? 1 : 2)
+            : 0
         context.coordinator.renderer?.picture = display.picture
         context.coordinator.renderer?.setPalette(C64Palette.palette(for: display.palette))
     }

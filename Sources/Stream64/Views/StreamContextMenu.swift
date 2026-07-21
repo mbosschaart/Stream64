@@ -144,8 +144,8 @@ struct StreamContextMenu: View {
             .labelsHidden()
         }
 
-        Menu("Monitor Bezel", systemImage: "tv") {
-            Toggle("Show Bezel", isOn: bind(\.showBezel))
+        Menu("Monitor Case", systemImage: "tv") {
+            Toggle("Show Monitor Case", isOn: bind(\.showBezel))
             Picker("Style", selection: bind(\.bezelStyle)) {
                 ForEach(BezelChoice.allCases) { style in
                     Text(style.rawValue).tag(style)

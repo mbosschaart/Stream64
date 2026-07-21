@@ -57,6 +57,22 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(result.libraryKey, "4:123")
     }
 
+    func testSearchResultsTolerateMissingNamesAndSkipMissingIdentity() throws {
+        let json = """
+        [
+          {"id":"106052","category":1,"group":"Beatless"},
+          {"category":1,"name":"Missing ID"},
+          {"id":"42","category":8,"name":"Assembler"}
+        ]
+        """.data(using: .utf8)!
+
+        let results = try Assembly64Client.decodeSearchResults(json)
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[0].name, "Beatless")
+        XCTAssertEqual(results[0].id, "1:106052")
+        XCTAssertEqual(results[1].name, "Assembler")
+    }
+
     @MainActor
     func testLibraryStatePersistsFavoritesSearchesHistoryAndActions() throws {
         let url = FileManager.default.temporaryDirectory

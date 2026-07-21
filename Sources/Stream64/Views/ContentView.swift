@@ -72,6 +72,7 @@ struct ContentView: View {
                 EmptyStateView(showingAddDevice: $showingAddDevice)
             }
         }
+        .background(MainViewerWindowObserver())
         // One audible device at a time, in every view mode. Reapply whenever
         // the mode or selection changes; sessions created later respect it
         // via the same calls in the grid/pane task handlers.
@@ -118,14 +119,6 @@ struct ContentView: View {
         .onDisappear {
             removeArrowKeyMonitor()
             removeCursorAutoHide()
-            // Root ContentView disappears only when the main viewer scene is
-            // closed. SwiftUI can remove its NSWindow before AppKit's
-            // willClose observer can classify it, so terminate from the view
-            // lifecycle as the authoritative fallback. The app delegate then
-            // orders out and closes Assembly64/Help/Settings before exit.
-            DispatchQueue.main.async {
-                NSApp.terminate(nil)
-            }
         }
     }
 
@@ -231,6 +224,55 @@ struct ContentView: View {
             }
             .help("Show all devices side by side")
         }
+    }
+}
+
+/// Attaches the main-viewer lifecycle directly to its concrete NSWindow.
+/// SwiftUI view disappearance is not a reliable close signal because it can
+/// occur during scene reconstruction; this receives willClose only for the
+/// actual viewer window hosting the representable.
+private struct MainViewerWindowObserver: NSViewRepresentable {
+    func makeNSView(context: Context) -> MainViewerWindowObservationView {
+        MainViewerWindowObservationView()
+    }
+
+    func updateNSView(_ nsView: MainViewerWindowObservationView,
+                      context: Context) {}
+}
+
+private final class MainViewerWindowObservationView: NSView {
+    private weak var observedWindow: NSWindow?
+    private var closeObserver: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window !== observedWindow else { return }
+        removeObservation()
+        observedWindow = window
+        guard let window else { return }
+
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main) { _ in
+                // AppDelegate.applicationShouldTerminate closes every
+                // auxiliary and extra viewer window before returning now.
+                DispatchQueue.main.async {
+                    NSApp.terminate(nil)
+                }
+            }
+    }
+
+    deinit {
+        removeObservation()
+    }
+
+    private func removeObservation() {
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+            self.closeObserver = nil
+        }
+        observedWindow = nil
     }
 }
 
@@ -612,9 +654,9 @@ struct ViewerPane: View {
         VStack(spacing: 0) {
             ZStack {
                 Color.black
-                if display.showBezel {
+                if display.showBezel && !isFullscreen {
                     MonitorBezelView(style: display.bezelStyle, display: display, session: session) {
-                        VideoView(session: session)
+                        VideoView(session: session, monitorCaseVisible: true)
                     }
                     .padding(12)
                 } else {
@@ -965,9 +1007,9 @@ struct ViewerPane: View {
             .disabled(!isCRTFilter)
 
             Toggle(isOn: displayBinding(\.showBezel)) {
-                Label("Monitor Bezel", systemImage: "tv")
+                Label("Monitor Case", systemImage: "tv")
             }
-            .help("Show a Commodore monitor bezel around the picture")
+            .help("Show the complete Commodore monitor case around the picture")
 
             Button {
                 session.saveScreenshot()

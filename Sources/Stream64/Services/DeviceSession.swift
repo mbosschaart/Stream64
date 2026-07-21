@@ -48,6 +48,9 @@ final class DeviceSession: ObservableObject {
     /// capturing the actual filtered picture requires an extra GPU render
     /// pass on the next draw() — see MetalFrameRenderer.requestFilteredScreenshot.
     var captureFrame: ((@escaping (CGImage?) -> Void) -> Void)?
+    /// Renderer hooks for the CRT Tube power-down sequence.
+    var beginPowerOffVisualEffect: (() -> Void)?
+    var cancelPowerOffVisualEffect: (() -> Void)?
 
     init(device: UltimateDevice, settings: AppSettings) {
         self.display = DisplaySettings.shared(for: device.id)
@@ -224,6 +227,7 @@ final class DeviceSession: ObservableObject {
         defer { connecting = false }
 
         state = .connecting
+        cancelPowerOffVisualEffect?()
         streamsStoppedByUser = false
         fps = 0
         isStreaming = false
@@ -417,14 +421,16 @@ final class DeviceSession: ObservableObject {
         isStreaming = false
     }
 
-    func disconnect() async {
+    func disconnect(stopRemoteStreams: Bool = true) async {
         reconnectTask?.cancel()
         reconnectTask = nil
         keyWorker?.cancel()
         keyWorker = nil
         keyQueue.removeAll()
-        try? await client.stopVideoStream()
-        try? await client.stopAudioStream()
+        if stopRemoteStreams {
+            try? await client.stopVideoStream()
+            try? await client.stopAudioStream()
+        }
         videoReceiver.stop()
         audioReceiver.stop()
         fps = 0
@@ -475,8 +481,21 @@ final class DeviceSession: ObservableObject {
     }
 
     func powerOff() async {
-        await run { try await self.client.powerOff() }
-        await disconnect()
+        do {
+            try await client.powerOff()
+        } catch {
+            state = .error(error.localizedDescription)
+            return
+        }
+
+        if display.filterMode == .crtTube {
+            beginPowerOffVisualEffect?()
+            audioReceiver.playPowerOffCrackle()
+            try? await Task.sleep(for: .milliseconds(900))
+        }
+        // The device is already powered down; avoid two REST timeouts trying
+        // to stop streams on a server that no longer exists.
+        await disconnect(stopRemoteStreams: false)
     }
     func menuButton() async { await run { try await self.client.menuButton() } }
 

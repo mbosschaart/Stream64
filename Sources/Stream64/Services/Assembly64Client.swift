@@ -33,6 +33,57 @@ struct Assembly64Client {
             case country, event, updated, released
         }
 
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+
+            if let stringID = try? values.decode(String.self, forKey: .itemID) {
+                itemID = stringID
+            } else if let numericID = try? values.decode(Int.self, forKey: .itemID) {
+                itemID = String(numericID)
+            } else {
+                throw DecodingError.keyNotFound(
+                    CodingKeys.itemID,
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Assembly64 result has no item id"))
+            }
+
+            if let integerCategory = try? values.decode(
+                Int.self, forKey: .category) {
+                category = integerCategory
+            } else if let stringCategory = try? values.decode(
+                String.self, forKey: .category),
+                      let integerCategory = Int(stringCategory) {
+                category = integerCategory
+            } else {
+                throw DecodingError.keyNotFound(
+                    CodingKeys.category,
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Assembly64 result has no category"))
+            }
+
+            group = try values.decodeIfPresent(String.self, forKey: .group)
+            handle = try values.decodeIfPresent(String.self, forKey: .handle)
+            let explicitName = try values.decodeIfPresent(
+                String.self, forKey: .name)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            name = explicitName?.isEmpty == false
+                ? explicitName!
+                : [group, handle]
+                    .compactMap { $0 }
+                    .first { !$0.isEmpty } ?? "Untitled #\(itemID)"
+
+            year = try values.decodeIfPresent(Int.self, forKey: .year)
+            rating = try values.decodeIfPresent(Int.self, forKey: .rating)
+            siteRating = try values.decodeIfPresent(
+                Double.self, forKey: .siteRating)
+            country = try values.decodeIfPresent(String.self, forKey: .country)
+            event = try values.decodeIfPresent(String.self, forKey: .event)
+            updated = try values.decodeIfPresent(String.self, forKey: .updated)
+            released = try values.decodeIfPresent(String.self, forKey: .released)
+        }
+
         var displayGroup: String {
             let g = (group ?? "").replacingOccurrences(of: "_", with: " ")
             return g.isEmpty ? (handle ?? "") : g
@@ -151,6 +202,14 @@ struct Assembly64Client {
         let contentEntry: [FileEntry]
     }
 
+    private struct LossyElement<Value: Decodable>: Decodable {
+        let value: Value?
+
+        init(from decoder: Decoder) {
+            value = try? Value(from: decoder)
+        }
+    }
+
     enum ClientError: LocalizedError {
         case httpError(Int)
         case apiError(Int)
@@ -177,7 +236,14 @@ struct Assembly64Client {
             url: Self.baseURL.appendingPathComponent("search/aql/\(offset)/\(limit)"),
             resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "query", value: query)]
-        return try await get(components.url!)
+        let data = try await getData(components.url!)
+        return try Self.decodeSearchResults(data)
+    }
+
+    static func decodeSearchResults(_ data: Data) throws -> [SearchResult] {
+        try JSONDecoder()
+            .decode([LossyElement<SearchResult>].self, from: data)
+            .compactMap(\.value)
     }
 
     /// Files inside one library item (an item can hold several disk sides,

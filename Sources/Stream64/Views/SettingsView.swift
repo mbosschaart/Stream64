@@ -185,8 +185,8 @@ private struct DeviceVideoSettings: View {
                     .disabled(!isCRTFilter)
             }
 
-            Section("Monitor Bezel") {
-                Toggle("Show monitor bezel", isOn: $display.showBezel)
+            Section("Monitor Case") {
+                Toggle("Show monitor case", isOn: $display.showBezel)
                 Picker("Style", selection: $display.bezelStyle) {
                     ForEach(BezelChoice.allCases) { style in
                         Text(style.rawValue).tag(style)
