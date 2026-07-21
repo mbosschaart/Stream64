@@ -3,3 +3,4 @@
 *.xcodeproj
 .swiftpm/
 dist/
+HANDOVER.md

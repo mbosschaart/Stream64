@@ -23,6 +23,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, and power off; CRT Tube shutdown collapses the last frame into a bright line/dot with synchronized voltage-discharge crackle
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
+- **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
 - **In-app documentation** — Help → Stream64 Help (⌘?)
 
 ## Requirements

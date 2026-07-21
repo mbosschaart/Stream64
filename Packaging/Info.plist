@@ -8,6 +8,8 @@
     <string>Stream64</string>
     <key>CFBundleExecutable</key>
     <string>Stream64</string>
+    <key>CFBundleIconFile</key>
+    <string>Stream64.icns</string>
     <key>CFBundleIdentifier</key>
     <string>net.bosschaart.Stream64</string>
     <key>CFBundleInfoDictionaryVersion</key>

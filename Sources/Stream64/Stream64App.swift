@@ -4,31 +4,67 @@ enum Stream64Version {
     static let display = "0.91b"
 }
 
+enum Stream64Assets {
+    static let aboutLogo = image(named: "logofactuur")
+    static let applicationIcon = image(named: "Stream64logo")
+
+    private static func image(named name: String) -> NSImage? {
+        let bundles = [Bundle.main, Bundle.module]
+        for bundle in bundles {
+            if let url = bundle.url(
+                forResource: name,
+                withExtension: "png"
+            ), let image = NSImage(contentsOf: url) {
+                return image
+            }
+        }
+        return nil
+    }
+}
+
 /// Quits the app when the main viewer window closes — otherwise an open
 /// Settings window keeps the process alive, looking like the app refused
 /// to exit.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let instanceLock = SingleInstanceLock()
     private var isTerminatingCompletely = false
+    private var splashWindow: NSWindow?
+    private var hiddenLaunchWindows: [NSWindow] = []
+    private var windowOrderObserver: NSObjectProtocol?
+    private var isShowingSplash = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        guard case .alreadyRunning(let pid) = instanceLock.acquire() else {
-            return
+        switch instanceLock.acquire() {
+        case .acquired:
+            prepareForSplash()
+        case .alreadyRunning(let pid):
+            // Repeated `swift run` launches otherwise create multiple UDP
+            // listeners with endpoint reuse enabled. Packets may be delivered
+            // to the older process while the new window reports no video.
+            if let pid, let existing = NSRunningApplication(
+                processIdentifier: pid
+            ) {
+                existing.activate(options: [.activateAllWindows])
+            }
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
         }
+    }
 
-        // Repeated `swift run` launches otherwise create multiple UDP
-        // listeners with endpoint reuse enabled. Packets may be delivered to
-        // the older process while the new window reports "No video arriving."
-        if let pid, let existing = NSRunningApplication(processIdentifier: pid) {
-            existing.activate(options: [.activateAllWindows])
-        }
-        DispatchQueue.main.async {
-            NSApp.terminate(nil)
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard isShowingSplash else { return }
+        showSplashWindow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.finishSplash()
         }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // MainViewerWindowObserver explicitly terminates when a viewer closes.
+        // Returning true here would also terminate while the standalone
+        // startup splash hands off to the already-created viewer window.
+        false
     }
 
     func applicationShouldTerminate(
@@ -43,6 +79,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return .terminateNow
+    }
+
+    private func prepareForSplash() {
+        isShowingSplash = true
+        windowOrderObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didUpdateNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isShowingSplash else { return }
+            for window in NSApp.windows
+            where window !== self.splashWindow && window.isVisible {
+                if !self.hiddenLaunchWindows.contains(
+                    where: { $0 === window }
+                ) {
+                    self.hiddenLaunchWindows.append(window)
+                }
+                window.alphaValue = 0
+                window.ignoresMouseEvents = true
+            }
+        }
+    }
+
+    private func showSplashWindow() {
+        let size = NSSize(width: 440, height: 440)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = NSHostingController(
+            rootView: SplashView()
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.level = .floating
+        window.isReleasedWhenClosed = false
+        window.isMovableByWindowBackground = true
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let targetScreen = hiddenLaunchWindows.first?.screen
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        if let screen = targetScreen {
+            let screenFrame = screen.frame
+            window.setFrameOrigin(NSPoint(
+                x: screenFrame.midX - size.width / 2,
+                y: screenFrame.midY - size.height / 2
+            ))
+        } else {
+            window.center()
+        }
+        splashWindow = window
+        window.orderFrontRegardless()
+    }
+
+    private func finishSplash() {
+        guard isShowingSplash else { return }
+
+        var launchWindows = hiddenLaunchWindows
+        for window in NSApp.windows
+        where window !== splashWindow && window.canBecomeMain {
+            if !launchWindows.contains(where: { $0 === window }) {
+                launchWindows.append(window)
+            }
+        }
+        guard !launchWindows.isEmpty else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                [weak self] in
+                self?.finishSplash()
+            }
+            return
+        }
+
+        isShowingSplash = false
+        if let windowOrderObserver {
+            NotificationCenter.default.removeObserver(windowOrderObserver)
+            self.windowOrderObserver = nil
+        }
+
+        for window in launchWindows {
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.orderFront(nil)
+        }
+        launchWindows.first?.makeKeyAndOrderFront(nil)
+        hiddenLaunchWindows.removeAll()
+
+        splashWindow?.orderOut(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
@@ -62,6 +189,9 @@ struct Stream64App: App {
         // Needed when launched via `swift run` (no app bundle): become a regular
         // foreground app with a menu bar and dock icon.
         NSApplication.shared.setActivationPolicy(.regular)
+        if let icon = Stream64Assets.applicationIcon {
+            NSApplication.shared.applicationIconImage = icon
+        }
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -76,16 +206,7 @@ struct Stream64App: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Stream64") {
-                    NSApp.orderFrontStandardAboutPanel(options: [
-                        .applicationName: "Stream64",
-                        .applicationVersion: Stream64Version.display,
-                        .credits: NSAttributedString(
-                            string: "Designed by Martijn Bosschaart 2026",
-                            attributes: [
-                                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                                .foregroundColor: NSColor.secondaryLabelColor,
-                            ]),
-                    ])
+                    openWindow(id: "about")
                 }
             }
             CommandGroup(after: .newItem) {
@@ -116,6 +237,12 @@ struct Stream64App: App {
             HelpView()
         }
         .defaultSize(width: 860, height: 600)
+
+        Window("About Stream64", id: "about") {
+            AboutView()
+        }
+        .defaultSize(width: 520, height: 300)
+        .windowResizability(.contentSize)
 
         Window("Assembly64", id: "assembly64") {
             Assembly64View { device in

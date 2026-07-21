@@ -16,6 +16,7 @@
 - CRT Tube power-off collapse with bright line/dot fade and synthesized voltage-discharge crackle.
 - Single-instance process locking to prevent competing UDP listeners.
 - Ad-hoc signed arm64/x86_64 app, ZIP, and DMG packaging workflow.
+- Native Stream64 app icon, centered standalone versioned launch splash, and branded About window with Retro8BITShop link.
 - XCTest coverage for AQL, persistence, archive safety, CSDB parsing, display migration, process locking, and embedded Metal compilation.
 
 ### Changed

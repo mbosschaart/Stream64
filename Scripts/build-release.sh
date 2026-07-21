@@ -32,6 +32,8 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 
 install -m 755 "$BIN_DIR/Stream64" "$APP_BUNDLE/Contents/MacOS/Stream64"
 cp "$ROOT_DIR/Packaging/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$ROOT_DIR/Packaging/Stream64.icns" \
+    "$APP_BUNDLE/Contents/Resources/Stream64.icns"
 /usr/libexec/PlistBuddy \
     -c "Set :CFBundleShortVersionString $VERSION" \
     -c "Set :CFBundleVersion $BUILD_NUMBER" \
@@ -41,6 +43,10 @@ cp "$ROOT_DIR/Packaging/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 # continues to use SwiftPM's generated Bundle.module fallback.
 cp "$BIN_DIR/Stream64_Stream64.bundle/dirty-glass-mask.png" \
     "$APP_BUNDLE/Contents/Resources/dirty-glass-mask.png"
+cp "$BIN_DIR/Stream64_Stream64.bundle/logofactuur.png" \
+    "$APP_BUNDLE/Contents/Resources/logofactuur.png"
+cp "$BIN_DIR/Stream64_Stream64.bundle/Stream64logo.png" \
+    "$APP_BUNDLE/Contents/Resources/Stream64logo.png"
 if [[ -f "$BIN_DIR/ZIPFoundation_ZIPFoundation.bundle/PrivacyInfo.xcprivacy" ]]; then
     cp "$BIN_DIR/ZIPFoundation_ZIPFoundation.bundle/PrivacyInfo.xcprivacy" \
         "$APP_BUNDLE/Contents/Resources/PrivacyInfo.xcprivacy"
