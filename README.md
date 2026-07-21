@@ -58,7 +58,7 @@ Artifacts are written to `dist/<architecture>/`:
 - `Stream64.app`
 - `Stream64-<version>-macos-<architecture>.zip`
 - `Stream64-<version>-macos-<architecture>.dmg`
-- `Stream64-<version>-SHA256.txt`
+- `Stream64-<version>-macos-<architecture>-SHA256.txt`
 
 These are separate thin arm64 and x86_64 builds, not one universal binary.
 
