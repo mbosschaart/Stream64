@@ -7,15 +7,16 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.91b-purple)
+![Version](https://img.shields.io/badge/version-0.92b-purple)
 
 ## Features
 
 - **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
+- **Automatic device discovery** — bounded, cancellable Ethernet/Wi-Fi subnet scanning finds Ultimate REST endpoints, shows product/firmware details, and prefills setup with collision-free local stream ports; manual addressing remains available
 - **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, and long analog Amber afterglow sourced from the C64's indexed 16-color history
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
-- **Monitor cases and bezels** — complete Commodore 1702/1084S cases are drawn in SwiftUI; the bezel is the angled inner plastic lip overlapping the tube glass. The 1702 door reveals **working knobs** (volume, brightness, 4× color overdrive, tint, contrast)
+- **Monitor cases and bezels** — complete Commodore 1702/1084S cases are drawn in SwiftUI; the bezel is the angled inner plastic lip overlapping the tube glass. The 1702 door reveals **working knobs** (volume, brightness, 4× color overdrive, tint, contrast); when the case is hidden, equivalent controls are available in a movable non-modal window
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
 - **Assembly64 search browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with category/repository/type/year/rating/recency filters, pagination, favorites, recents, saved searches, previews/source links, safe ZIP inspection, remembered successful actions, and direct device loading
@@ -48,10 +49,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.91b BUILD_NUMBER=91 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.92b BUILD_NUMBER=92 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.91b BUILD_NUMBER=91 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.92b BUILD_NUMBER=92 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

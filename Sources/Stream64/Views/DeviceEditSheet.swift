@@ -19,8 +19,11 @@ struct DeviceEditSheet: View {
     let onSave: (UltimateDevice) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var deviceStore: DeviceStore
     @State private var device: UltimateDevice
     @State private var testState: TestState = .idle
+    @StateObject private var discovery = DeviceDiscoveryService()
+    @State private var connectionTestTask: Task<Void, Never>?
 
     enum TestState: Equatable {
         case idle
@@ -43,7 +46,11 @@ struct DeviceEditSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("Device") {
+                if isAdding {
+                    discoverySection
+                }
+
+                Section(isAdding ? "Manual Configuration" : "Device") {
                     TextField("Name", text: $device.name, prompt: Text("Living Room U64"))
                     TextField("Address", text: $device.host, prompt: Text("u64.local or 192.168.1.64"))
                     TextField("API Port", value: $device.apiPort, format: .number.grouping(.never))
@@ -109,8 +116,99 @@ struct DeviceEditSheet: View {
             }
             .padding()
         }
-        .frame(width: 460, height: 520)
+        .frame(width: 520, height: isAdding ? 680 : 520)
         .navigationTitle(mode.title)
+        .onChange(of: device.host) { resetConnectionTest() }
+        .onChange(of: device.apiPort) { resetConnectionTest() }
+        .onChange(of: device.password) { resetConnectionTest() }
+        .task {
+            if isAdding {
+                discovery.start()
+            }
+        }
+        .onDisappear {
+            discovery.cancel()
+            connectionTestTask?.cancel()
+        }
+    }
+
+    @ViewBuilder
+    private var discoverySection: some View {
+        Section {
+            if discovery.isScanning {
+                ProgressView(
+                    value: Double(discovery.scannedHostCount),
+                    total: Double(max(discovery.totalHostCount, 1))
+                )
+                Text(
+                    "Scanning \(discovery.scannedHostCount) of "
+                        + "\(discovery.totalHostCount) local addresses…"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            ForEach(discovery.results) { result in
+                HStack(spacing: 12) {
+                    Image(systemName: "desktopcomputer")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(result.suggestedName)
+                            .fontWeight(.medium)
+                        Text(
+                            result.detail.isEmpty
+                                ? result.host
+                                : "\(result.host) · \(result.detail)"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                    Spacer()
+                    if isConfigured(result) {
+                        Text("Already Added")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Use") {
+                            useDiscoveredDevice(result)
+                        }
+                    }
+                }
+            }
+
+            if !discovery.isScanning && discovery.results.isEmpty {
+                ContentUnavailableView(
+                    "No Ultimates Found",
+                    systemImage: "network.slash",
+                    description: Text(
+                        "Check that this Mac and the Ultimate are on the "
+                            + "same local network, or enter its address below."
+                    )
+                )
+            }
+
+            HStack {
+                Button(discovery.isScanning ? "Stop Scan" : "Scan Again") {
+                    if discovery.isScanning {
+                        discovery.cancel()
+                    } else {
+                        discovery.start()
+                    }
+                }
+                Spacer()
+                Text("Manual entry is always available below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Automatic Discovery")
+        } footer: {
+            Text(
+                "Stream64 checks a bounded set of addresses on active local "
+                    + "Ethernet and Wi-Fi networks. VPN ranges are not scanned."
+            )
+        }
     }
 
     private var saveButtonTitle: String {
@@ -120,19 +218,62 @@ struct DeviceEditSheet: View {
         }
     }
 
+    private var isAdding: Bool {
+        if case .add = mode { return true }
+        return false
+    }
+
+    private func isConfigured(
+        _ result: DeviceDiscoveryService.DiscoveredDevice
+    ) -> Bool {
+        deviceStore.devices.contains {
+            let sameHardware: Bool
+            if let discoveredID = result.uniqueID,
+               let configuredID = $0.ultimateUniqueID {
+                sameHardware = configuredID.caseInsensitiveCompare(
+                    discoveredID
+                ) == .orderedSame
+            } else {
+                sameHardware = false
+            }
+            let sameAddress = $0.host.caseInsensitiveCompare(
+                result.host
+            ) == .orderedSame
+            return sameHardware || sameAddress
+        }
+    }
+
+    private func useDiscoveredDevice(
+        _ result: DeviceDiscoveryService.DiscoveredDevice
+    ) {
+        device = discovery.suggestedDevice(
+            for: result, avoiding: deviceStore.devices)
+        testState = .idle
+    }
+
     private func testConnection() {
+        connectionTestTask?.cancel()
         testState = .testing
         let client = UltimateAPIClient(device: device)
-        Task {
+        connectionTestTask = Task {
             do {
                 let info = try await client.fetchInfo()
+                guard !Task.isCancelled else { return }
                 let description = [info.product, info.firmwareVersion]
                     .compactMap { $0 }
                     .joined(separator: " · ")
                 testState = .success(description.isEmpty ? "Connected" : description)
             } catch {
+                guard !Task.isCancelled else { return }
                 testState = .failure(error.localizedDescription)
             }
+            connectionTestTask = nil
         }
+    }
+
+    private func resetConnectionTest() {
+        connectionTestTask?.cancel()
+        connectionTestTask = nil
+        testState = .idle
     }
 }

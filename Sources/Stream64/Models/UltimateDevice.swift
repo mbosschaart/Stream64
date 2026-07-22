@@ -16,6 +16,9 @@ struct UltimateDevice: Identifiable, Codable, Hashable {
     /// Automatically connect and start streaming when the device is selected.
     var autoConnect: Bool = true
     var notes: String = ""
+    /// Stable hardware identity reported by `/v1/info`, when discovered.
+    /// The app UUID remains the identity for sessions and persisted settings.
+    var ultimateUniqueID: String? = nil
 
     var baseURL: URL? {
         var components = URLComponents()

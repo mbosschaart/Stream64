@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.92b — 2026-07-22
+
+### Added
+
+- Bounded, cancellable LAN discovery for Ultimate devices with progressive product/firmware results, one-click guided setup, VPN exclusion, and manual-address fallback.
+- Movable non-modal CRT picture-controls window for brightness, color, tint, and contrast whenever the physical monitor case is hidden, including fullscreen and multi-device views.
+
+### Changed
+
+- CRT bezel reflections are 10% brighter.
+- Composite and RF inputs add PAL-phase cross-color bleed, producing colored fringes around fine bright text and high-contrast lines.
+
 ## 0.91b — 2026-07-22
 
 ### Added

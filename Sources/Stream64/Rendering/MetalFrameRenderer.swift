@@ -546,6 +546,34 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
         iq /= wsum;
 
+        // Cross-color: imperfect composite Y/C separation interprets fine
+        // high-contrast luma detail as color subcarrier. This is what gives
+        // bright text and narrow lines the photographed red/green/blue edge
+        // fringes even when the source pixels themselves are white. Anchor
+        // phase to source pixels (not output resolution), and alternate Q on
+        // successive PAL lines. A wider gradient term lets the false color
+        // bleed just beyond each edge rather than forming a hard rainbow grid.
+        float centerY = dot(
+            sampleBilinear(uv, indexTex, paletteTex).rgb,
+            float3(0.299, 0.587, 0.114));
+        float leftY = dot(cl, float3(0.299, 0.587, 0.114));
+        float rightY = dot(cr, float3(0.299, 0.587, 0.114));
+        float highFrequency = abs(centerY - (leftY + rightY) * 0.5);
+        float edgeGradient = rightY - leftY;
+        float crossEnergy = clamp(
+            highFrequency * 1.45 + abs(edgeGradient) * 0.38,
+            0.0, 1.0);
+        float2 sourcePos = uv * float2(size);
+        float subcarrierPhase = sourcePos.x * 1.5707963;
+        float palAlternation =
+            (int(floor(sourcePos.y)) & 1) == 0 ? 1.0 : -1.0;
+        float2 falseChroma = float2(
+            cos(subcarrierPhase),
+            sin(subcarrierPhase) * palAlternation);
+        falseChroma *= crossEnergy * sign(edgeGradient + 0.0001)
+                     * (rf > 0.5 ? 0.14 : 0.11);
+        iq += falseChroma;
+
         // Dot crawl: on chroma transitions, the comb filter fails and a
         // checkerboard of residual subcarrier climbs the edge.
         float3 yiqL = toYIQ(cl), yiqR = toYIQ(cr);
@@ -843,7 +871,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             base *= mix(0.90, 1.0,
                         smoothstep(0.0, 0.014, wallDepth));
             float fade = overlapReveal * exp(-wallDepth * 4.2);
-            float3 color = base + refl * fade * 0.27
+            float3 color = base + refl * fade * 0.297
                          * viewFacing * mix(0.55, 1.0, lipShadow) * topShadow;
             return float4(dither(color, in.position.xy), 1.0);
         }

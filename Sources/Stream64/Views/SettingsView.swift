@@ -108,7 +108,10 @@ struct DevicesSettingsTab: View {
             .padding(8)
         }
         .sheet(isPresented: $showingAdd) {
-            DeviceEditSheet(mode: .add) { deviceStore.add($0) }
+            DeviceEditSheet(
+                mode: .add,
+                suggested: .makeDefault(avoiding: deviceStore.devices)
+            ) { deviceStore.add($0) }
         }
         .sheet(item: $deviceToEdit) { device in
             DeviceEditSheet(mode: .edit(device)) { deviceStore.update($0) }

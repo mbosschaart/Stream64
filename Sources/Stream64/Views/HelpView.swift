@@ -118,9 +118,13 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **First connection**
 
     1. Click **Add Device…** in the sidebar (or press ⇧⌘N)
-    2. Enter a name and the device's IP address or hostname
-    3. Click **Test Connection** to verify it's reachable
-    4. Click **Add** — the viewer connects automatically when selected
+    2. Stream64 scans active local Ethernet and Wi-Fi networks for Ultimates
+    3. Click **Use** beside a discovered device, then **Add**
+
+    Product, firmware, hostname and address are filled in automatically, along \
+    with an unused pair of local streaming ports. If discovery finds nothing — \
+    for example, when the API is password-protected — manually enter the \
+    address and optional password, then click **Test Connection** and **Add**.
 
     The app asks the Ultimate to stream video (a 384×272 pixel, ~50 fps PAL \
     picture) and audio (47983 Hz stereo) to your Mac, then renders it with Metal.
@@ -217,8 +221,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     Simulates how the C64 reached the screen:
 
     • **S-Video** — the clean signal; separated luma and chroma.
-    • **Composite** — color bleeds horizontally, luma softens, dot crawl on \
-    color edges, slight ghosting. The classic single-cable look.
+    • **Composite** — color bleeds horizontally, fine bright text develops \
+    red/green/blue edge fringes from luma-to-chroma crosstalk, luma softens, \
+    and color edges show dot crawl and slight ghosting. The classic \
+    single-cable look.
     • **RF (antenna)** — composite degraded further: snow, per-line jitter, a \
     drifting interference line, stronger ghosting — plus matching **audio**: \
     mono, band-limited like a small TV speaker, with static and mains hum.
@@ -240,7 +246,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Picture controls** — with the Commodore 1702 monitor case visible, click its \
     front panel to open the door: real VOLUME, BRIGHT, COLOR, TINT, and \
     CONTRAST knobs drive the picture live (drag up/down; double-click to \
-    center). These work like the real monitor's pots — color at zero gives a \
+    center). When a CRT filter is active without the monitor case, use the \
+    toolbar sliders button or right-click → **Picture Controls…** to open the \
+    same brightness, color, tint, and contrast controls in a movable floating \
+    window. The viewer stays bright and interactive while it is open. This is \
+    also available from the right-click menu in fullscreen and grid views. \
+    These work like the real monitor's pots — color at zero gives a \
     black-and-white picture, tint rotates hues, contrast crushes or flattens. \
     BRIGHT has extended highlight headroom; COLOR rises to extreme 4× chroma \
     at its end stop for intentionally overdriven CRT color.

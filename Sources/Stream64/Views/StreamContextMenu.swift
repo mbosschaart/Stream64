@@ -15,10 +15,19 @@ struct StreamContextMenu: View {
     /// Host view's power-off path (shows the confirmation dialog when the
     /// preference asks for it).
     let requestPowerOff: () -> Void
+    let requestPictureControls: () -> Void
+    let monitorCaseVisible: Bool
 
-    init(session: DeviceSession, requestPowerOff: @escaping () -> Void) {
+    init(
+        session: DeviceSession,
+        monitorCaseVisible: Bool = false,
+        requestPictureControls: @escaping () -> Void = {},
+        requestPowerOff: @escaping () -> Void
+    ) {
         self.session = session
         self.display = session.display
+        self.monitorCaseVisible = monitorCaseVisible
+        self.requestPictureControls = requestPictureControls
         self.requestPowerOff = requestPowerOff
     }
 
@@ -159,6 +168,12 @@ struct StreamContextMenu: View {
         }
 
         Toggle("Show Frame Rate", isOn: bind(\.showFPS))
+
+        if isCRTFilter && !monitorCaseVisible {
+            Button("Picture Controls…", systemImage: "slider.horizontal.3") {
+                requestPictureControls()
+            }
+        }
 
         Divider()
 

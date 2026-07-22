@@ -337,7 +337,13 @@ struct ViewerTile: View {
     var body: some View {
         tileBody
             .contextMenu {
-                StreamContextMenu(session: session) {
+                StreamContextMenu(
+                    session: session,
+                    requestPictureControls: {
+                        PictureControlsPanelController.show(
+                            display: session.display)
+                    }
+                ) {
                     if settings.confirmDestructiveActions {
                         showPowerOffConfirmation = true
                     } else {
@@ -678,7 +684,13 @@ struct ViewerPane: View {
         .ignoresSafeArea(.all, edges: isFullscreen ? .all : [])
         .animation(.easeInOut(duration: 0.2), value: showOnScreenKeyboard)
         .contextMenu {
-            StreamContextMenu(session: session) {
+            StreamContextMenu(
+                session: session,
+                monitorCaseVisible: display.showBezel && !isFullscreen,
+                requestPictureControls: {
+                    PictureControlsPanelController.show(display: display)
+                }
+            ) {
                 if settings.confirmDestructiveActions {
                     showPowerOffConfirmation = true
                 } else {
@@ -1005,6 +1017,18 @@ struct ViewerPane: View {
                   ? "Simulate years of dust, grime, smudges and moisture on the tube"
                   : "Dirty glass — only applies to the CRT filters")
             .disabled(!isCRTFilter)
+
+            if isCRTFilter && (!display.showBezel || isFullscreen) {
+                Button {
+                    PictureControlsPanelController.show(display: display)
+                } label: {
+                    Label(
+                        "Picture Controls",
+                        systemImage: "slider.horizontal.3"
+                    )
+                }
+                .help("Adjust brightness, color, tint, and contrast")
+            }
 
             Toggle(isOn: displayBinding(\.showBezel)) {
                 Label("Monitor Case", systemImage: "tv")

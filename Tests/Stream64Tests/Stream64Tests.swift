@@ -216,6 +216,104 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(BezelChoice.c1702.dotPitchMillimeters, 0.64)
     }
 
+    func testDiscoveryHostsStayBoundedAndExcludeLocalAddress() {
+        let interface = LocalNetwork.IPv4Interface(
+            name: "en0",
+            address: "172.16.10.15",
+            netmask: "255.255.0.0")
+
+        let hosts = LocalNetwork.discoveryHosts(for: [interface])
+
+        XCTAssertEqual(hosts.count, 253)
+        XCTAssertEqual(hosts.first, "172.16.10.1")
+        XCTAssertEqual(hosts.last, "172.16.10.254")
+        XCTAssertFalse(hosts.contains("172.16.10.15"))
+        XCTAssertFalse(hosts.contains("172.16.11.1"))
+    }
+
+    func testDiscoveryHostsDeduplicateOverlappingInterfaces() {
+        let interfaces = [
+            LocalNetwork.IPv4Interface(
+                name: "en0", address: "192.168.1.10",
+                netmask: "255.255.255.0"),
+            LocalNetwork.IPv4Interface(
+                name: "en1", address: "192.168.1.11",
+                netmask: "255.255.255.0"),
+        ]
+
+        let hosts = LocalNetwork.discoveryHosts(for: interfaces)
+
+        XCTAssertEqual(hosts.count, 252)
+        XCTAssertEqual(Set(hosts).count, hosts.count)
+        XCTAssertFalse(hosts.contains("192.168.1.10"))
+        XCTAssertFalse(hosts.contains("192.168.1.11"))
+    }
+
+    @MainActor
+    func testDiscoveryDeduplicatesDevicesByUniqueID() async throws {
+        let service = DeviceDiscoveryService(
+            maximumConcurrentProbes: 2,
+            hostProvider: {
+                ["192.168.1.20", "192.168.1.21", "192.168.1.22"]
+            },
+            probe: { host in
+                DeviceDiscoveryService.DiscoveredDevice(
+                    host: host,
+                    product: "Ultimate 64",
+                    firmwareVersion: "3.14",
+                    hostname: nil,
+                    uniqueID: host == "192.168.1.22" ? "second" : "first")
+            })
+
+        service.start()
+        while service.isScanning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(service.scannedHostCount, 3)
+        XCTAssertEqual(Set(service.results.map(\.id)), ["first", "second"])
+    }
+
+    func testDiscoveryRejectsEmptyIdentityAndNormalizesInfo() throws {
+        let emptyInfo = UltimateAPIClient.DeviceInfo(
+            product: nil,
+            firmwareVersion: nil,
+            hostname: "untrusted-host",
+            uniqueId: nil)
+        XCTAssertNil(DeviceDiscoveryService.discoveryResult(
+            host: "192.168.1.30", info: emptyInfo))
+
+        let validInfo = UltimateAPIClient.DeviceInfo(
+            product: "  Ultimate 64-II ",
+            firmwareVersion: " 3.14d ",
+            hostname: " Ultimate-64 ",
+            uniqueId: " B94F01 ")
+        let result = try XCTUnwrap(
+            DeviceDiscoveryService.discoveryResult(
+                host: "192.168.1.31", info: validInfo))
+
+        XCTAssertEqual(result.product, "Ultimate 64-II")
+        XCTAssertEqual(result.firmwareVersion, "3.14d")
+        XCTAssertEqual(result.hostname, "Ultimate-64")
+        XCTAssertEqual(result.uniqueID, "B94F01")
+    }
+
+    func testDefaultDeviceAvoidsExistingStreamPorts() {
+        let existing = [
+            UltimateDevice(
+                name: "One", host: "192.168.1.20",
+                videoPort: 11000, audioPort: 11001),
+            UltimateDevice(
+                name: "Two", host: "192.168.1.21",
+                videoPort: 11002, audioPort: 11003),
+        ]
+
+        let device = UltimateDevice.makeDefault(avoiding: existing)
+
+        XCTAssertEqual(device.videoPort, 11004)
+        XCTAssertEqual(device.audioPort, 11005)
+    }
+
     @MainActor
     func testOldDisplaySnapshotDefaultsToColorCRT() throws {
         let id = UUID()
