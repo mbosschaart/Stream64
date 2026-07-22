@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.95b — 2026-07-22
+
+### Added
+
+- Commander-style dual-pane file manager where each pane can browse Home/internal/USB Mac volumes or any configured Ultimate, including C64-to-C64 transfers, Space-to-mark batch selection, passive FTP browsing, queued copy/move/rename/delete/mkdir, Finder drag-and-drop, conflict policies, progress/retry/cancel controls, and direct remote run/mount/play actions.
+
+### Fixed
+
+- Commander table selection no longer conflicts with pane activation or folder opening.
+- Uploads no longer show a conflict dialog unless a matching destination name exists; stale-listing conflicts now pause the queue and offer Replace, Skip, Keep Both, or Cancel instead of failing. The virtual Ultimate root directs users into an actual storage drive instead of returning FTP 502.
+- FTP downloads now preserve Network.framework's final-chunk completion flag instead of issuing an extra receive that fails with POSIX error 96.
+
 ## 0.92b — 2026-07-22
 
 ### Added

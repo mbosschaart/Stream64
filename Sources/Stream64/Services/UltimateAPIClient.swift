@@ -1,15 +1,31 @@
 import Foundation
 
+protocol HTTPTransport: Sendable {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+struct URLSessionHTTPTransport: HTTPTransport {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await URLSession.shared.data(for: request)
+    }
+}
+
 /// Client for the Ultimate 64 / Ultimate-II+ REST API (firmware 3.11+) and
 /// the C64 Ultimate API-compatible firmware line (1.1+).
 /// Endpoints follow the official `/v1/...` API.
 struct UltimateAPIClient {
     let device: UltimateDevice
     let timeout: TimeInterval
+    let transport: any HTTPTransport
 
-    init(device: UltimateDevice, timeout: TimeInterval = 5) {
+    init(
+        device: UltimateDevice,
+        timeout: TimeInterval = 5,
+        transport: any HTTPTransport = URLSessionHTTPTransport()
+    ) {
         self.device = device
         self.timeout = timeout
+        self.transport = transport
     }
 
     enum APIError: LocalizedError {
@@ -100,6 +116,12 @@ struct UltimateAPIClient {
         try await perform(request)
     }
 
+    func runPRG(path: String) async throws {
+        try await put("/v1/runners:run_prg", queryItems: [
+            URLQueryItem(name: "file", value: path),
+        ])
+    }
+
     /// Upload a SID tune and play it.
     func playSID(data: Data) async throws {
         var request = try makeRequest(path: "/v1/runners:sidplay", method: "POST")
@@ -108,12 +130,33 @@ struct UltimateAPIClient {
         try await perform(request)
     }
 
+    func playSID(path: String, songNumber: Int? = nil) async throws {
+        var items = [URLQueryItem(name: "file", value: path)]
+        if let songNumber {
+            items.append(URLQueryItem(
+                name: "songnr", value: String(songNumber)))
+        }
+        try await put("/v1/runners:sidplay", queryItems: items)
+    }
+
+    func playMOD(path: String) async throws {
+        try await put("/v1/runners:modplay", queryItems: [
+            URLQueryItem(name: "file", value: path),
+        ])
+    }
+
     /// Upload a cartridge image and run it.
     func runCRT(data: Data) async throws {
         var request = try makeRequest(path: "/v1/runners:run_crt", method: "POST")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
         try await perform(request)
+    }
+
+    func runCRT(path: String) async throws {
+        try await put("/v1/runners:run_crt", queryItems: [
+            URLQueryItem(name: "file", value: path),
+        ])
     }
 
     /// Upload a disk image and mount it. `type` (d64/g64/d71/g71/d81) is
@@ -135,6 +178,18 @@ struct UltimateAPIClient {
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         request.httpBody = body
         try await perform(request)
+    }
+
+    func mountDisk(
+        path: String,
+        drive: String = "a",
+        type: String? = nil,
+        mode: String? = nil
+    ) async throws {
+        var items = [URLQueryItem(name: "image", value: path)]
+        if let type { items.append(URLQueryItem(name: "type", value: type)) }
+        if let mode { items.append(URLQueryItem(name: "mode", value: mode)) }
+        try await put("/v1/drives/\(drive):mount", queryItems: items)
     }
 
     // MARK: - Streams
@@ -215,7 +270,7 @@ struct UltimateAPIClient {
 
     @discardableResult
     private func perform(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw APIError.httpError(http.statusCode, body)

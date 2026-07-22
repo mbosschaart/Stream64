@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.92b-purple)
+![Version](https://img.shields.io/badge/version-0.95b-purple)
 
 ## Features
 
@@ -19,6 +19,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Monitor cases and bezels** — complete Commodore 1702/1084S cases are drawn in SwiftUI; the bezel is the angled inner plastic lip overlapping the tube glass. The 1702 door reveals **working knobs** (volume, brightness, 4× color overdrive, tint, contrast); when the case is hidden, equivalent controls are available in a movable non-modal window
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
+- **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, F2/F5/F6/F7/F8 operations, persistent serialized transfers, conflict handling, and direct remote run/mount/play
 - **Assembly64 search browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with category/repository/type/year/rating/recency filters, pagination, favorites, recents, saved searches, previews/source links, safe ZIP inspection, remembered successful actions, and direct device loading
 - **Keyboard input** — type on the C64 from your Mac (KERNAL keyboard-buffer injection over DMA), plus a full on-screen C64 keyboard with PETSCII shift combinations
 - **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, and power off; CRT Tube shutdown collapses the last frame into a bright line/dot with synchronized voltage-discharge crackle
@@ -49,10 +50,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.92b BUILD_NUMBER=92 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.95b BUILD_NUMBER=95 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.92b BUILD_NUMBER=92 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.95b BUILD_NUMBER=95 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

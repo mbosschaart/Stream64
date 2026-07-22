@@ -19,6 +19,16 @@ struct UltimateDevice: Identifiable, Codable, Hashable {
     /// Stable hardware identity reported by `/v1/info`, when discovered.
     /// The app UUID remains the identity for sessions and persisted settings.
     var ultimateUniqueID: String? = nil
+    /// Optional FTP overrides. Nil preserves compatibility and uses the
+    /// Ultimate defaults: port 21, anonymous login when no password is set.
+    var ftpPort: Int? = nil
+    var ftpUsername: String? = nil
+
+    var effectiveFTPPort: Int { ftpPort ?? 21 }
+    var effectiveFTPUsername: String {
+        if let ftpUsername, !ftpUsername.isEmpty { return ftpUsername }
+        return password.isEmpty ? "anonymous" : "admin"
+    }
 
     var baseURL: URL? {
         var components = URLComponents()

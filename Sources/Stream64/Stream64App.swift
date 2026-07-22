@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Stream64Version {
-    static let display = "0.92b"
+    static let display = "0.95b"
 }
 
 enum Stream64Assets {
@@ -220,6 +220,11 @@ struct Stream64App: App {
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 Divider()
+                Button("File Manager…") {
+                    openWindow(id: "files")
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                Divider()
                 Button("Save Screenshot…") {
                     NotificationCenter.default.post(name: .saveScreenshotRequested, object: nil)
                 }
@@ -264,6 +269,15 @@ struct Stream64App: App {
         // ideal size changed. Paired with a wide-enough defaultSize above
         // and minWidth in Assembly64View, the window now opens already at
         // the size it used to only reach after your first selection.
+        .windowResizability(.contentMinSize)
+
+        Window("File Manager", id: "files") {
+            RemoteBrowserView()
+                .environmentObject(deviceStore)
+                .environmentObject(settings)
+                .environmentObject(sessionManager)
+        }
+        .defaultSize(width: 1180, height: 760)
         .windowResizability(.contentMinSize)
 
         Settings {

@@ -22,6 +22,7 @@ struct DeviceEditSheet: View {
     @EnvironmentObject private var deviceStore: DeviceStore
     @State private var device: UltimateDevice
     @State private var testState: TestState = .idle
+    @State private var ftpTestState: TestState = .idle
     @StateObject private var discovery = DeviceDiscoveryService()
     @State private var connectionTestTask: Task<Void, Never>?
 
@@ -66,6 +67,44 @@ struct DeviceEditSheet: View {
                 } footer: {
                     Text("Each device needs its own local ports — two devices cannot stream to the same port at once.")
                         .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    TextField(
+                        "FTP Port",
+                        value: Binding(
+                            get: { device.effectiveFTPPort },
+                            set: { device.ftpPort = $0 == 21 ? nil : $0 }),
+                        format: .number.grouping(.never))
+                    TextField(
+                        "FTP Username",
+                        text: Binding(
+                            get: { device.ftpUsername ?? "" },
+                            set: { device.ftpUsername = $0.isEmpty ? nil : $0 }),
+                        prompt: Text(device.password.isEmpty ? "anonymous" : "admin"))
+                    HStack {
+                        Button("Test FTP") { testFTPConnection() }
+                        switch ftpTestState {
+                        case .idle: EmptyView()
+                        case .testing: ProgressView().controlSize(.small)
+                        case .success(let text):
+                            Label(text, systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        case .failure(let text):
+                            Label(text, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                    }
+                } header: {
+                    Text("FTP File Service")
+                } footer: {
+                    Text(
+                        "FTP must be enabled on the Ultimate. It uses the "
+                            + "Network Password above and is unencrypted on "
+                            + "your local network."
+                    )
                 }
 
                 Section("Notes") {
@@ -268,6 +307,19 @@ struct DeviceEditSheet: View {
                 testState = .failure(error.localizedDescription)
             }
             connectionTestTask = nil
+        }
+    }
+
+    private func testFTPConnection() {
+        ftpTestState = .testing
+        let candidate = device
+        Task {
+            do {
+                try await UltimateFTPClient(device: candidate).testConnection()
+                ftpTestState = .success("Connected")
+            } catch {
+                ftpTestState = .failure(error.localizedDescription)
+            }
         }
     }
 

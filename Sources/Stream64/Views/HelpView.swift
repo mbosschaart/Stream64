@@ -46,6 +46,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case monitorBezel
     case keyboard
     case files
+    case fileManager
     case assembly64
     case multiDevice
     case machineControl
@@ -62,6 +63,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .monitorBezel: return "Monitor Case & Bezel"
         case .keyboard: return "Keyboard Input"
         case .files: return "Loading Files"
+        case .fileManager: return "Commander File Manager"
         case .assembly64: return "Assembly64 Library"
         case .multiDevice: return "Multiple Devices"
         case .machineControl: return "Machine Control"
@@ -78,6 +80,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .monitorBezel: return "tv"
         case .keyboard: return "keyboard"
         case .files: return "arrow.down.doc"
+        case .fileManager: return "rectangle.split.2x1"
         case .assembly64: return "books.vertical"
         case .multiDevice: return "square.grid.2x2"
         case .machineControl: return "power"
@@ -94,6 +97,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .monitorBezel: return Self.monitorBezelText
         case .keyboard: return Self.keyboardText
         case .files: return Self.filesText
+        case .fileManager: return Self.fileManagerText
         case .assembly64: return Self.assembly64Text
         case .multiDevice: return Self.multiDeviceText
         case .machineControl: return Self.machineControlText
@@ -339,6 +343,54 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     You can also load software directly from the **Assembly64 online \
     library** without downloading anything first — see the Assembly64 \
     Library topic.
+    """
+
+    private static let fileManagerText = """
+    Open **File Manager…** from the toolbar or press ⇧⌘B. It uses a two-pane \
+    Commander layout: each side can independently browse this Mac or any \
+    configured Ultimate, enabling Mac-to-C64 and direct C64-to-C64 transfers.
+
+    **Navigation** — choose Local Mac or a named Ultimate above either pane. \
+    Local panes include a **Volumes** menu containing Home, internal volumes, \
+    and currently mounted USB drives. Enter a path directly, double-click a \
+    folder (or select it and use \
+    **Open**/Return), or use Up and Refresh. The \
+    Ultimate root is listed dynamically and commonly contains Flash, SD, Temp, \
+    USB0, and USB1 depending on attached media. The top-level `/` is only a \
+    drive list: open one of those storage roots before uploading or creating \
+    folders.
+
+    **Commander keys and buttons**
+
+    • **F2** Rename
+    • **F5** Copy to the opposite pane
+    • **F6** Move to the opposite pane
+    • **F7** Create folder
+    • **F8** Delete
+
+    Use the arrow keys to move the table cursor and press **Space** to mark or \
+    unmark files. The cursor advances automatically, so a batch can be marked \
+    quickly without holding Command. You can also click the checkbox beside \
+    any file or folder to build the same multi-selection with the mouse. \
+    F5/F6 and the context menu operate on all marked files; **Clear Marks** \
+    resets the batch.
+
+    Right-click any selected file or folder for the same Open, Rename, Copy, \
+    Move, New Folder, Delete, Run/Play, Mount, and Mount & Run commands. \
+    Commands that do not apply to the selection are hidden or disabled.
+
+    Multiple files and complete folders can be selected. Finder files can be \
+    dropped into either pane; remote files can be dragged back to Finder. The \
+    persistent queue runs one operation at a time, reports progress, and \
+    supports pause, cancel, retry, reordering, and clearing completed work.
+
+    **Run / Mount / Play** acts on PRG, disk, SID, MOD, and CRT files. Remote \
+    files run directly by their Ultimate path instead of downloading and \
+    uploading them again. Disk images also offer **Mount & Run**.
+
+    The Ultimate's **FTP File Service** must be enabled. Configure its port or \
+    username under the device settings if necessary. FTP is unencrypted and \
+    intended only for a trusted local network.
     """
 
     private static let assembly64Text = """

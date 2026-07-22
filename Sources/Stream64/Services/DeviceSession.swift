@@ -585,12 +585,67 @@ final class DeviceSession: ObservableObject {
 
     /// Load a dropped file: .prg is uploaded and run, disk images are
     /// uploaded and mounted in drive A.
-    func loadFile(at url: URL) async {
+    func loadFile(
+        at url: URL,
+        mountBehavior: MountBehavior = .mountOnly
+    ) async {
         do {
             let data = try Data(contentsOf: url)
-            _ = await loadData(data, filename: url.lastPathComponent)
+            _ = await loadData(
+                data, filename: url.lastPathComponent,
+                mountBehavior: mountBehavior)
         } catch {
             transferStatus = .failed("\(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    /// Run, mount, or play a file that already resides on Ultimate storage.
+    /// Uses REST PUT-by-path and avoids downloading through FTP only to upload
+    /// the same bytes back through REST.
+    func loadRemoteFile(
+        path: String,
+        filename: String,
+        mountBehavior: MountBehavior = .mountOnly
+    ) async {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        transferStatus = .uploading(filename)
+        do {
+            switch ext {
+            case "prg":
+                await flushPendingKeys()
+                try await client.runPRG(path: path)
+                transferStatus = .done("Running \(filename)")
+            case "d64", "g64", "d71", "g71", "d81":
+                try await client.mountDisk(path: path, type: ext)
+                if mountBehavior == .mountAndRun {
+                    await flushPendingKeys()
+                    try await client.reset()
+                    try await Task.sleep(for: .seconds(3))
+                    try await client.typeKeys(
+                        PETSCII.encode("load\"*\",8,1\r"))
+                    try await Task.sleep(for: .seconds(1))
+                    try await client.typeKeys(PETSCII.encode("run\r"))
+                    transferStatus = .done("Booting \(filename)")
+                } else {
+                    transferStatus = .done("Mounted \(filename) in drive A")
+                }
+            case "sid":
+                try await client.playSID(path: path)
+                transferStatus = .done("Playing \(filename)")
+            case "mod":
+                try await client.playMOD(path: path)
+                transferStatus = .done("Playing \(filename)")
+            case "crt":
+                try await client.runCRT(path: path)
+                transferStatus = .done("Running \(filename)")
+            default:
+                transferStatus = .failed("Unsupported file type: .\(ext)")
+                return
+            }
+            scheduleClearTransferStatus()
+        } catch {
+            transferStatus = .failed(
+                "\(filename): \(error.localizedDescription)")
         }
     }
 

@@ -314,6 +314,256 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(device.audioPort, 11005)
     }
 
+    func testFTPMLSDAndLISTParsing() throws {
+        let endpoint = FileEndpoint.ultimate(UUID())
+        let mlsd = Data("""
+        type=dir;size=0;modify=20150904093646; carts\r
+        type=file;size=174848;modify=20260722120000; game.d64\r
+        """.utf8)
+        let items = try UltimateFTPClient.parseMLSD(
+            mlsd, endpoint: endpoint, parent: ManagedPath("/Flash"))
+        XCTAssertEqual(items.map(\.name), ["carts", "game.d64"])
+        XCTAssertEqual(items[0].kind, .directory)
+        XCTAssertEqual(items[1].kind, .disk)
+        XCTAssertEqual(items[1].size, 174_848)
+
+        let listing = Data(
+            "drw-rw-rw- 1 user ftp 0 Sep 04 2015 roms\r\n".utf8)
+        let fallback = try UltimateFTPClient.parseLIST(
+            listing, endpoint: endpoint, parent: ManagedPath("/Flash"))
+        XCTAssertEqual(fallback.first?.name, "roms")
+        XCTAssertEqual(fallback.first?.kind, .directory)
+    }
+
+    func testFTPCommandPathRejectsControlCharacters() {
+        XCTAssertThrowsError(
+            try UltimateFTPClient.commandPath(ManagedPath("/Flash/bad\nname")))
+    }
+
+    func testLiveUltimateFTPWhenConfigured() async throws {
+        guard let host = ProcessInfo.processInfo.environment[
+            "UV_LIVE_FTP_HOST"
+        ] else {
+            throw XCTSkip("Set UV_LIVE_FTP_HOST for live FTP validation")
+        }
+        let device = UltimateDevice(name: "FTP Test", host: host)
+        let items = try await UltimateFTPClient(device: device).list(
+            ManagedPath("/"))
+        XCTAssertFalse(items.isEmpty)
+        XCTAssertTrue(items.contains { $0.isDirectory })
+    }
+
+    func testLiveUltimateFTPMutationsWhenConfigured() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let host = environment["UV_LIVE_FTP_HOST"],
+              environment["UV_LIVE_FTP_MUTATIONS"] == "1" else {
+            throw XCTSkip(
+                "Set UV_LIVE_FTP_HOST and UV_LIVE_FTP_MUTATIONS=1")
+        }
+        let sourceDevice = UltimateDevice(name: "FTP Source", host: host)
+        let destinationDevice = UltimateDevice(
+            name: "FTP Destination", host: host)
+        let client = UltimateFTPClient(device: sourceDevice)
+        let folder = ManagedPath(
+            "/Temp/Stream64-Test-\(UUID().uuidString)")
+        let remote = folder.appending("probe.bin")
+        let renamed = folder.appending("renamed.bin")
+        let copied = folder.appending("c64-to-c64.bin")
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let downloaded = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let payload = Data("Stream64 FTP probe".utf8)
+        try payload.write(to: local)
+        defer {
+            try? FileManager.default.removeItem(at: local)
+            try? FileManager.default.removeItem(at: downloaded)
+        }
+
+        try await client.makeDirectory(folder)
+        do {
+            try await client.upload(local, to: remote) { _, _ in }
+            let listing = try await client.list(folder)
+            XCTAssertTrue(listing.contains {
+                $0.name == "probe.bin"
+            })
+            try await client.download(remote, to: downloaded) { _, _ in }
+            XCTAssertEqual(try Data(contentsOf: downloaded), payload)
+            try await client.rename(remote, to: renamed)
+            let coordinator = FileOperationCoordinator { id in
+                if id == sourceDevice.id { return sourceDevice }
+                if id == destinationDevice.id { return destinationDevice }
+                return nil
+            }
+            try await coordinator.process(TransferJob(operation: .copy(
+                source: TransferReference(
+                    endpoint: .ultimate(sourceDevice.id), path: renamed,
+                    isDirectory: false, size: Int64(payload.count)),
+                destination: TransferReference(
+                    endpoint: .ultimate(destinationDevice.id), path: copied,
+                    isDirectory: false, size: Int64(payload.count))
+            ), conflictPolicy: .replace)) { _, _ in }
+            let copiedListing = try await client.list(folder)
+            XCTAssertTrue(copiedListing.contains {
+                $0.name == copied.name
+            })
+            try await client.deleteFile(copied)
+            try await client.deleteFile(renamed)
+            try await client.deleteDirectory(folder)
+        } catch {
+            try? await client.deleteFile(remote)
+            try? await client.deleteFile(renamed)
+            try? await client.deleteFile(copied)
+            try? await client.deleteDirectory(folder)
+            throw error
+        }
+    }
+
+    func testLocalProviderAndCoordinatorCopyMove() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.prg")
+        try Data([1, 8, 0, 1]).write(to: source)
+        let copy = root.appendingPathComponent("copy.prg")
+        let moved = root.appendingPathComponent("moved.prg")
+        let coordinator = FileOperationCoordinator { _ in nil }
+
+        try await coordinator.process(TransferJob(operation: .copy(
+            source: TransferReference(
+                endpoint: .local, path: ManagedPath(source.path),
+                isDirectory: false, size: 4),
+            destination: TransferReference(
+                endpoint: .local, path: ManagedPath(copy.path),
+                isDirectory: false, size: 4)
+        ), conflictPolicy: .replace)) { _, _ in }
+        XCTAssertEqual(try Data(contentsOf: copy), Data([1, 8, 0, 1]))
+
+        try await coordinator.process(TransferJob(operation: .move(
+            source: TransferReference(
+                endpoint: .local, path: ManagedPath(copy.path),
+                isDirectory: false, size: 4),
+            destination: TransferReference(
+                endpoint: .local, path: ManagedPath(moved.path),
+                isDirectory: false, size: 4)
+        ))) { _, _ in }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+    }
+
+    @MainActor
+    func testTransferQueuePersistsAndCompletesJobs() async throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: store) }
+        let queue = TransferQueue(storeURL: store)
+        queue.configure { _, progress in
+            await progress(10, 10)
+        }
+        queue.enqueue(.makeDirectory(target: TransferReference(
+            endpoint: .local, path: ManagedPath("/tmp/test"),
+            isDirectory: true, size: nil)))
+        for _ in 0..<100 where queue.jobs.first?.state != .completed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(queue.jobs.first?.state, .completed)
+        XCTAssertEqual(queue.jobs.first?.completedBytes, 10)
+
+        let reloaded = TransferQueue(storeURL: store)
+        XCTAssertEqual(reloaded.jobs.first?.state, .completed)
+    }
+
+    @MainActor
+    func testTransferQueuePausesForConflictAndResumesWithChoice() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source.prg")
+        let destinationURL = root.appendingPathComponent("destination.prg")
+        try Data("new".utf8).write(to: sourceURL)
+        try Data("old".utf8).write(to: destinationURL)
+        let store = root.appendingPathComponent("queue.json")
+        let coordinator = FileOperationCoordinator { _ in nil }
+        let queue = TransferQueue(storeURL: store)
+        queue.configure { job, progress in
+            try await coordinator.process(job, progress: progress)
+        }
+        queue.enqueue(.copy(
+            source: TransferReference(
+                endpoint: .local, path: ManagedPath(sourceURL.path),
+                isDirectory: false, size: 3),
+            destination: TransferReference(
+                endpoint: .local, path: ManagedPath(destinationURL.path),
+                isDirectory: false, size: 3)),
+            conflictPolicy: .ask)
+
+        for _ in 0..<100 where queue.jobs.first?.state != .conflict {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(queue.jobs.first?.state, .conflict)
+        queue.resolveConflict(queue.jobs[0].id, policy: .replace)
+        for _ in 0..<100 where queue.jobs.first?.state != .completed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(queue.jobs.first?.state, .completed)
+        XCTAssertEqual(
+            try Data(contentsOf: destinationURL), Data("new".utf8))
+    }
+
+    func testRemoteRunnerBuildsAuthenticatedPathRequest() async throws {
+        let transport = RecordingHTTPTransport()
+        let device = UltimateDevice(
+            name: "Test", host: "192.168.1.64",
+            password: "secret")
+        let client = UltimateAPIClient(
+            device: device, transport: transport)
+
+        try await client.runPRG(path: "/Flash/My Game.prg")
+
+        let recordedRequest = await transport.recordedRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertEqual(request.httpMethod, "PUT")
+        XCTAssertEqual(request.url?.path, "/v1/runners:run_prg")
+        XCTAssertEqual(
+            URLComponents(
+                url: try XCTUnwrap(request.url),
+                resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "file" })?.value,
+            "/Flash/My Game.prg")
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Password"), "secret")
+    }
+
+    @MainActor
+    func testCommanderSpaceMarksAndAdvancesCursor() {
+        let model = FilePaneModel(
+            location: .local, path: ManagedPath("/tmp"))
+        let first = FilesystemItem(
+            endpoint: .local, path: ManagedPath("/tmp/one.prg"),
+            kind: .prg, size: 1, modified: nil)
+        let second = FilesystemItem(
+            endpoint: .local, path: ManagedPath("/tmp/two.prg"),
+            kind: .prg, size: 1, modified: nil)
+        model.items = [first, second]
+        model.selection = [first.id]
+
+        model.toggleMarkAtCursor()
+
+        XCTAssertEqual(model.markedIDs, [first.id])
+        XCTAssertEqual(model.selection, [second.id])
+        XCTAssertEqual(model.selectedItems, [first])
+
+        model.toggleMark(second.id)
+        XCTAssertEqual(model.markedIDs, [first.id, second.id])
+        model.toggleMark(first.id)
+        XCTAssertEqual(model.markedIDs, [second.id])
+    }
+
     @MainActor
     func testOldDisplaySnapshotDefaultsToColorCRT() throws {
         let id = UUID()
@@ -384,5 +634,25 @@ final class Assembly64FeatureTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(
             Assembly64Client.SearchResult.self, from: data)
+    }
+}
+
+private actor RecordingHTTPTransport: HTTPTransport {
+    private var request: URLRequest?
+
+    func recordedRequest() -> URLRequest? {
+        return request
+    }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        self.request = request
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil)!
+        return (Data(#"{"errors":[]}"#.utf8), response)
     }
 }

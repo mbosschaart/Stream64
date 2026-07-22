@@ -1051,6 +1051,13 @@ struct ViewerPane: View {
             .help("Search the Assembly64 online library and load programs")
 
             Button {
+                openWindow(id: "files")
+            } label: {
+                Label("File Manager", systemImage: "rectangle.split.2x1")
+            }
+            .help("Browse and transfer files between this Mac and the Ultimate")
+
+            Button {
                 NSApp.keyWindow?.toggleFullScreen(nil)
             } label: {
                 Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
