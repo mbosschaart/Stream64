@@ -172,6 +172,10 @@ final class AudioReceiver {
 
     // MARK: - Network side (writer)
 
+    static func isStructurallyValidPacket(_ data: Data) -> Bool {
+        data.count == 770
+    }
+
     private func receive(on connection: NWConnection) {
         connection.receiveMessage { [weak self, weak connection] data, _, _, error in
             guard let self else { return }
@@ -185,8 +189,11 @@ final class AudioReceiver {
     }
 
     private func handlePacket(_ data: Data) {
+        // Ultimate audio packets contain a 2-byte sequence plus exactly
+        // 192 stereo Int16 frames (768 bytes). Do not let unrelated or
+        // truncated UDP traffic satisfy DeviceSession's live-stream probe.
+        guard started, Self.isStructurallyValidPacket(data) else { return }
         packetsReceived += 1
-        guard started, data.count > 2 else { return }
         let payload = data.dropFirst(2)
         let frameCount = payload.count / 4 // 2 channels × 2 bytes
         guard frameCount > 0 else { return }

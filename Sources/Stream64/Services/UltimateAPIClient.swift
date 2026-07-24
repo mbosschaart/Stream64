@@ -58,6 +58,87 @@ struct UltimateAPIClient {
     func powerOff() async throws { try await put("/v1/machine:poweroff") }
     func menuButton() async throws { try await put("/v1/machine:menu_button") }
 
+    func fetchMenuScreen() async throws -> UltimateMenuScreen {
+        let request = try makeRequest(
+            path: "/v1/machine:menu_screen", method: "GET")
+        let data = try await perform(request)
+        return try UltimateMenuScreen(data: data)
+    }
+
+    // MARK: - Firmware configuration / input readiness
+
+    struct InputServiceStatus: Equatable {
+        let dmaEnabled: Bool
+        let webRemoteEnabled: Bool
+        let changed: Bool
+    }
+
+    func ensureInputServicesEnabled() async throws -> InputServiceStatus {
+        let request = try makeRequest(
+            path: "/v1/configs/Network Settings", method: "GET")
+        let data = try await perform(request)
+        guard let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let settings = object["Network Settings"]
+                as? [String: Any] else {
+            throw APIError.httpError(
+                200, "Network Settings response was malformed")
+        }
+        let dma = (settings["Ultimate DMA Service"] as? String) == "Enabled"
+        let web = (settings["Web Remote Control Service"] as? String)
+            == "Enabled"
+        var changed = false
+        if !dma {
+            try await setConfigItem(
+                category: "Network Settings",
+                item: "Ultimate DMA Service",
+                value: "Enabled")
+            changed = true
+        }
+        if !web {
+            try await setConfigItem(
+                category: "Network Settings",
+                item: "Web Remote Control Service",
+                value: "Enabled")
+            changed = true
+        }
+        if changed {
+            try await put("/v1/configs:save_to_flash")
+        }
+        return InputServiceStatus(
+            dmaEnabled: true, webRemoteEnabled: true, changed: changed)
+    }
+
+    func setConfigItem(
+        category: String, item: String, value: String
+    ) async throws {
+        try await put(
+            "/v1/configs/\(category)/\(item)",
+            queryItems: [URLQueryItem(name: "value", value: value)])
+    }
+
+    // MARK: - Matrix keyboard / joystick input
+
+    func sendMachineInput(
+        _ events: [C64MachineInputEvent]
+    ) async throws {
+        guard !events.isEmpty, events.count <= 64 else {
+            throw APIError.httpError(
+                400, "Matrix input requires 1...64 events")
+        }
+        var request = try makeRequest(
+            path: "/v1/machine:input", method: "POST")
+        request.setValue(
+            "application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            C64MachineInputEnvelope(events: events))
+        _ = try await perform(request)
+    }
+
+    func releaseAllInput() async throws {
+        try await sendMachineInput([.releaseAll])
+    }
+
     // MARK: - Keyboard (via DMA memory access)
 
     /// Read `length` bytes of C64 memory.
@@ -90,13 +171,32 @@ struct UltimateAPIClient {
             // owns the zero page — a running program may reuse it for its
             // own data, so a stuck nonzero value proves nothing. Overwriting
             // is safe: unconsumed keys are flushed at reset/PRG boundaries.
-            for _ in 0..<25 {
-                guard let pending = try? await readMemory(address: 0x00C6, length: 1) else { break }
-                if pending.first == 0 { break }
-                try await Task.sleep(nanoseconds: 20_000_000)
+            var ready = false
+            var delay = 50_000_000
+            for _ in 0..<20 {
+                let pending = try await readMemory(
+                    address: 0x00C6, length: 1)
+                if pending.first == 0 {
+                    ready = true
+                    break
+                }
+                try await Task.sleep(nanoseconds: UInt64(delay))
+                delay = min(delay * 2, 500_000_000)
             }
+            guard ready else {
+                throw APIError.httpError(
+                    408, "C64 keyboard buffer remained busy")
+            }
+            try await writeMemory(address: 0x0091, bytes: [0])
             try await writeMemory(address: 0x0277, bytes: chunk)
             try await writeMemory(address: 0x00C6, bytes: [UInt8(chunk.count)])
+            if let verification = try? await readMemory(
+                address: 0x00C6, length: 1
+            ), let count = verification.first,
+               count != 0 && count != UInt8(chunk.count) {
+                throw APIError.httpError(
+                    409, "Keyboard buffer verification failed")
+            }
             index += chunk.count
         }
     }

@@ -11,6 +11,7 @@ struct StreamContextMenu: View {
     /// while the user is traversing them.
     let session: DeviceSession
     let display: DisplaySettings
+    let input: InputSettings
     @EnvironmentObject var settings: AppSettings
     /// Host view's power-off path (shows the confirmation dialog when the
     /// preference asks for it).
@@ -26,6 +27,7 @@ struct StreamContextMenu: View {
     ) {
         self.session = session
         self.display = session.display
+        self.input = session.input.settings
         self.monitorCaseVisible = monitorCaseVisible
         self.requestPictureControls = requestPictureControls
         self.requestPowerOff = requestPowerOff
@@ -36,6 +38,14 @@ struct StreamContextMenu: View {
     private func bind<T>(_ keyPath: ReferenceWritableKeyPath<DisplaySettings, T>) -> Binding<T> {
         Binding(get: { display[keyPath: keyPath] },
                 set: { display[keyPath: keyPath] = $0 })
+    }
+
+    private func inputBind<T>(
+        _ keyPath: ReferenceWritableKeyPath<InputSettings, T>
+    ) -> Binding<T> {
+        Binding(
+            get: { input[keyPath: keyPath] },
+            set: { input[keyPath: keyPath] = $0 })
     }
 
     var body: some View {
@@ -177,7 +187,36 @@ struct StreamContextMenu: View {
 
         Divider()
 
-        Toggle("Capture Keyboard", isOn: $settings.captureKeyboardWhenFocused)
+        Menu("Input", systemImage: "gamecontroller") {
+            Toggle(
+                "Capture Keyboard",
+                isOn: $settings.captureKeyboardWhenFocused)
+            Picker("Keymap", selection: inputBind(\.keymap)) {
+                ForEach(C64KeymapChoice.allCases) {
+                    Text($0.rawValue).tag($0)
+                }
+            }
+            Toggle(
+                "Joystick Mode (F10)",
+                isOn: inputBind(\.joystickEnabled))
+                .disabled(input.capability != .supported)
+            Picker("Joystick Port", selection: inputBind(\.joystickPort)) {
+                Text("Port 1").tag(1)
+                Text("Port 2").tag(2)
+            }
+            Picker(
+                "Fire Key",
+                selection: inputBind(\.joystickFireKey)
+            ) {
+                ForEach(JoystickFireKey.allCases) {
+                    Text($0.rawValue).tag($0)
+                }
+            }
+            Text(input.capability.label)
+            Button("Recheck Input Capability") {
+                Task { await session.input.probeCapability() }
+            }
+        }
     }
 
     private var isCRTFilter: Bool {

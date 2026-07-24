@@ -38,6 +38,7 @@ final class DeviceSession: ObservableObject {
     let audioReceiver = AudioReceiver()
     /// How this stream looks — per-device, persisted by device ID.
     let display: DisplaySettings
+    let input: C64InputController
     private let settings: AppSettings
     private var client: UltimateAPIClient
     private var displayObserver: AnyCancellable?
@@ -54,6 +55,7 @@ final class DeviceSession: ObservableObject {
 
     init(device: UltimateDevice, settings: AppSettings) {
         self.display = DisplaySettings.shared(for: device.id)
+        self.input = C64InputController(device: device)
         self.device = device
         self.settings = settings
         self.client = UltimateAPIClient(device: device, timeout: settings.connectTimeoutSeconds)
@@ -243,6 +245,7 @@ final class DeviceSession: ObservableObject {
         let description = [info.product, info.firmwareVersion]
             .compactMap { $0 }
             .joined(separator: " · ")
+        await input.prepare()
 
         do {
             // Start local UDP receivers first so no packets are dropped.
@@ -356,7 +359,10 @@ final class DeviceSession: ObservableObject {
                     self.watchForSilentStream(attempt: attempt + 1)
                 } else {
                     self.transferStatus = .failed(
-                        "No video arriving — check firewall/UDP path, or use Start Streaming.")
+                        "No video arriving. Ultimate 64 A/V streams use the "
+                            + "wired Ethernet interface even when REST works "
+                            + "over Wi-Fi; verify the cable and use the wired "
+                            + "IP address. Also check the firewall/UDP path.")
                 }
             }
         }
@@ -424,9 +430,7 @@ final class DeviceSession: ObservableObject {
     func disconnect(stopRemoteStreams: Bool = true) async {
         reconnectTask?.cancel()
         reconnectTask = nil
-        keyWorker?.cancel()
-        keyWorker = nil
-        keyQueue.removeAll()
+        await input.cancelAndRelease()
         if stopRemoteStreams {
             try? await client.stopVideoStream()
             try? await client.stopAudioStream()
@@ -497,7 +501,47 @@ final class DeviceSession: ObservableObject {
         // to stop streams on a server that no longer exists.
         await disconnect(stopRemoteStreams: false)
     }
-    func menuButton() async { await run { try await self.client.menuButton() } }
+    func menuButton() async {
+        // If the firmware menu is already active (for example it was opened
+        // physically), open the remote child without toggling device state.
+        if let screen = try? await client.fetchMenuScreen() {
+            RemoteMenuWindowController.show(
+                session: self, screen: screen)
+            return
+        }
+
+        // menu_screen is read-only and returns 404 while the menu is closed,
+        // so toggle the firmware menu first. Capable firmware then opens the
+        // API-rendered child automatically; older firmware keeps showing the
+        // menu only inside the normal video stream.
+        do {
+            try await client.menuButton()
+        } catch {
+            state = .error(error.localizedDescription)
+            return
+        }
+
+        // Firmware 3.15+ can expose the menu as a 40×25 character/colour
+        // matrix. Give the UI a short moment to open, then capability-probe.
+        // A persistent 404 means old firmware: keep the existing behavior,
+        // where the menu remains visible inside the normal video stream.
+        for _ in 0..<8 {
+            try? await Task.sleep(for: .milliseconds(100))
+            if let screen = try? await client.fetchMenuScreen() {
+                RemoteMenuWindowController.show(
+                    session: self, screen: screen)
+                return
+            }
+        }
+    }
+
+    func fetchRemoteMenuScreen() async throws -> UltimateMenuScreen {
+        try await client.fetchMenuScreen()
+    }
+
+    func closeRemoteMenuFromWindow() async {
+        try? await client.menuButton()
+    }
 
     func togglePause() async {
         if isPaused {
@@ -509,78 +553,93 @@ final class DeviceSession: ObservableObject {
         }
     }
 
-    // MARK: - Keyboard queue
-    //
-    // Keystrokes are funneled through one queue drained by a single worker:
-    // concurrent typeKeys calls would race on the C64's keyboard buffer
-    // ($0277/$C6) and drop or reorder keys. Failures are transient (retried
-    // once, then reported via the banner) — they never demote `state`, so a
-    // hiccup on one keystroke can't disconnect the session.
-
-    private var keyQueue: [UInt8] = []
-    private var keyWorker: Task<Void, Never>?
+    // MARK: - Keyboard and joystick input
 
     func sendKeys(_ text: String) {
-        enqueueKeys(PETSCII.encode(text))
+        input.tapPETSCII(PETSCII.encode(text))
     }
 
     func sendKeyCodes(_ codes: [UInt8]) {
-        enqueueKeys(codes)
+        input.tapPETSCII(codes)
     }
 
-    private func enqueueKeys(_ codes: [UInt8]) {
-        guard !codes.isEmpty else { return }
-        keyQueue.append(contentsOf: codes)
-        startKeyWorkerIfNeeded()
-    }
-
-    private func startKeyWorkerIfNeeded() {
-        guard keyWorker == nil, !keyQueue.isEmpty else { return }
-        keyWorker = Task { [weak self] in
-            await self?.drainKeyQueue()
-            guard let self else { return }
-            self.keyWorker = nil
-            // Keys enqueued while the drain was finishing would otherwise
-            // strand until the next keystroke.
-            self.startKeyWorkerIfNeeded()
+    func handleHostKeyDown(_ event: HostKeyInput) -> Bool {
+        switch C64HostKeyMapper.action(
+            for: event, settings: input.settings) {
+        case .key(let binding):
+            input.keyDown(
+                hostKeyCode: event.keyCode,
+                inputs: binding.inputs,
+                fallback: binding.fallback,
+                holdable: binding.holdable)
+            return true
+        case .joystick(let direction):
+            input.setJoystick(
+                source: "keyboard", input: direction, pressed: true)
+            return true
+        case .toggleJoystick:
+            input.toggleJoystickMode()
+            return true
+        case .toggleJoystickPort:
+            input.toggleJoystickPort()
+            return true
+        case .passthrough:
+            return false
         }
     }
 
-    private func drainKeyQueue() async {
-        while !keyQueue.isEmpty {
-            let batch = keyQueue
-            keyQueue.removeAll()
-            do {
-                try await client.typeKeys(batch)
-            } catch {
-                do {
-                    try await Task.sleep(for: .milliseconds(300))
-                    try await client.typeKeys(batch)
-                } catch {
-                    dropKeys(message: "Keyboard: \(error.localizedDescription)")
-                    return
-                }
-            }
+    func handleHostKeyUp(_ event: HostKeyInput) -> Bool {
+        switch C64HostKeyMapper.action(
+            for: event, settings: input.settings) {
+        case .key:
+            input.keyUp(hostKeyCode: event.keyCode)
+            return true
+        case .joystick(let direction):
+            input.setJoystick(
+                source: "keyboard", input: direction, pressed: false)
+            return true
+        case .toggleJoystick, .toggleJoystickPort:
+            return true
+        case .passthrough:
+            return false
         }
     }
 
-    private func dropKeys(message: String) {
-        keyQueue.removeAll()
-        transferStatus = .failed(message)
-        Task {
-            try? await Task.sleep(for: .seconds(4))
-            if case .failed = transferStatus { transferStatus = nil }
+    func handleModifierChange(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        if let joystick = C64HostKeyMapper.joystickModifier(
+            keyCode: keyCode,
+            modifiers: modifiers,
+            enabled: input.settings.joystickEnabled,
+            fireKey: input.settings.joystickFireKey
+        ) {
+            input.setJoystick(
+                source: "keyboard-control",
+                input: joystick.input,
+                pressed: joystick.pressed)
+            return true
         }
+        guard input.settings.keymap == .positional,
+              let matrixKey = C64HostKeyMapper.positionalModifier(
+                keyCode: keyCode) else { return false }
+        let pressed = !input.isHostKeyHeld(keyCode)
+        if pressed {
+            input.keyDown(
+                hostKeyCode: keyCode, inputs: [matrixKey],
+                fallback: nil, holdable: true)
+        } else {
+            input.keyUp(hostKeyCode: keyCode)
+        }
+        return true
     }
 
     /// Abandon queued keystrokes and clear unconsumed keys on the C64 —
     /// used at machine-state boundaries (reset, PRG load) so stale input
     /// can't replay into whatever runs next.
     private func flushPendingKeys() async {
-        keyWorker?.cancel()
-        keyWorker = nil
-        keyQueue.removeAll()
-        try? await client.flushKeyboardBuffer()
+        await input.cancelAndRelease()
     }
 
     /// Load a dropped file: .prg is uploaded and run, disk images are
@@ -621,10 +680,10 @@ final class DeviceSession: ObservableObject {
                     await flushPendingKeys()
                     try await client.reset()
                     try await Task.sleep(for: .seconds(3))
-                    try await client.typeKeys(
+                    await input.typeAndWait(
                         PETSCII.encode("load\"*\",8,1\r"))
                     try await Task.sleep(for: .seconds(1))
-                    try await client.typeKeys(PETSCII.encode("run\r"))
+                    await input.typeAndWait(PETSCII.encode("run\r"))
                     transferStatus = .done("Booting \(filename)")
                 } else {
                     transferStatus = .done("Mounted \(filename) in drive A")
@@ -687,9 +746,10 @@ final class DeviceSession: ObservableObject {
                     try await client.reset()
                     // Give BASIC time to come up before typing.
                     try await Task.sleep(for: .seconds(3))
-                    try await client.typeKeys(PETSCII.encode("load\"*\",8,1\r"))
+                    await input.typeAndWait(
+                        PETSCII.encode("load\"*\",8,1\r"))
                     try await Task.sleep(for: .seconds(1))
-                    try await client.typeKeys(PETSCII.encode("run\r"))
+                    await input.typeAndWait(PETSCII.encode("run\r"))
                     transferStatus = .done("Booting \(filename)")
                     outcome = .booting(filename)
                 } else {

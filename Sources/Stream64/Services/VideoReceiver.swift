@@ -67,15 +67,28 @@ final class VideoReceiver {
     private var dbgRejected = 0
     private var dbgFrames = 0
 
-    private func handlePacket(_ data: Data) {
-        packetsReceived += 1
-        if Self.debug {
-            dbgPackets += 1
-            if dbgPackets % 500 == 1 {
-                NSLog("[video] packets=%d rejected=%d frames=%d len=%d", dbgPackets, dbgRejected, dbgFrames, data.count)
-            }
+    static func isStructurallyValidPacket(_ data: Data) -> Bool {
+        guard data.count >= 12 else { return false }
+        return data.withUnsafeBytes { raw in
+            let lineField = UInt16(raw[4]) | (UInt16(raw[5]) << 8)
+            let startLine = Int(lineField & 0x7FFF)
+            let pixelsPerLine = Int(
+                UInt16(raw[6]) | (UInt16(raw[7]) << 8))
+            let linesPerPacket = Int(raw[8])
+            let bitsPerPixel = Int(raw[9])
+            return bitsPerPixel == 4
+                && pixelsPerLine == Self.width
+                && data.count >= 12
+                    + pixelsPerLine * linesPerPacket / 2
+                && startLine + linesPerPacket <= Self.height
         }
-        guard data.count >= 12 else { return }
+    }
+
+    private func handlePacket(_ data: Data) {
+        guard Self.isStructurallyValidPacket(data) else {
+            if Self.debug { dbgRejected += 1 }
+            return
+        }
 
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             let lineField = UInt16(raw[4]) | (UInt16(raw[5]) << 8)
@@ -83,18 +96,15 @@ final class VideoReceiver {
             let startLine = Int(lineField & 0x7FFF)
             let pixelsPerLine = Int(UInt16(raw[6]) | (UInt16(raw[7]) << 8))
             let linesPerPacket = Int(raw[8])
-            let bitsPerPixel = Int(raw[9])
 
-            guard bitsPerPixel == 4, pixelsPerLine == Self.width,
-                  data.count >= 12 + pixelsPerLine * linesPerPacket / 2,
-                  startLine + linesPerPacket <= Self.height else {
-                if Self.debug {
-                    dbgRejected += 1
-                    if dbgRejected % 100 == 1 {
-                        NSLog("[video] REJECT ppl=%d lpp=%d bpp=%d line=%d len=%d", pixelsPerLine, linesPerPacket, bitsPerPixel, startLine, data.count)
-                    }
+            packetsReceived += 1
+            if Self.debug {
+                dbgPackets += 1
+                if dbgPackets % 500 == 1 {
+                    NSLog(
+                        "[video] packets=%d rejected=%d frames=%d len=%d",
+                        dbgPackets, dbgRejected, dbgFrames, data.count)
                 }
-                return
             }
             let payloadBytes = pixelsPerLine * linesPerPacket / 2
 

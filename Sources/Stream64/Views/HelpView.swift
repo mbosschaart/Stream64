@@ -302,23 +302,34 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     on, keystrokes go to the C64 while the viewer is focused. Click the \
     picture first to give it focus.
 
-    Keys are delivered into the C64's keyboard buffer over the network. \
-    Regular text, RETURN, delete, cursor keys, HOME/CLR, and **F1–F8** all \
-    work. RUN/STOP is Escape.
+    In **Auto** mode, supported firmware receives physical matrix press/release \
+    events, so held keys and games that scan CIA keyboard hardware work. Older \
+    firmware automatically falls back to ordered KERNAL-buffer typing. Regular \
+    text, RETURN, delete, cursor keys, HOME/CLR, and **F1–F8** work; RUN/STOP \
+    is Escape. Select Symbolic mapping for typed characters or Positional \
+    mapping to mirror the physical C64 layout and its held modifiers.
 
     **On-screen keyboard** (toolbar, next to capture) — a full C64-layout \
-    keyboard with clickable KERNAL-buffer keys, including SHIFT combinations \
-    for PETSCII graphics characters. SHIFT is sticky: click it, then the key. \
-    CTRL and RESTORE are shown disabled because they have no character code \
-    that can be injected through the KERNAL buffer.
+    keyboard routed through the same matrix/fallback controller, including \
+    SHIFT combinations for PETSCII graphics characters. SHIFT is sticky: click \
+    it, then the key. CTRL and RESTORE remain disabled on legacy firmware.
 
-    **A note on games** — keystrokes arrive through the C64's KERNAL buffer, \
-    which BASIC and most utilities read. Games that scan the keyboard \
-    hardware directly won't see injected keys; that's a platform limitation, \
-    not a setting.
+    **Virtual joystick** — press F10 to toggle joystick mode and F11 to switch \
+    port 1/2. Arrow keys drive directions; Backquote (`) is the default fire \
+    key and can be changed under Settings → Input. Connected macOS \
+    game controllers use their D-pad/left stick and primary button. Input is \
+    held until key/button release and always released on focus loss or device \
+    switching. This requires firmware with `/v1/machine:input` support \
+    (public guidance currently says Ultimate 64 firmware 3.15+); unsupported \
+    firmware still types through the KERNAL fallback but cannot emulate a \
+    hardware joystick.
 
-    Keystrokes are flushed automatically when you reset the machine or load \
-    a program, so stale input never replays into the next program.
+    Stream64 automatically enables and saves the Ultimate DMA service when \
+    REST access is available. Web Remote Control must already be enabled for \
+    Stream64 to reach the configuration API.
+
+    All held keyboard and joystick state is released automatically on focus \
+    loss, disconnect, reset, device switch, controller removal, and app exit.
     """
 
     private static let filesText = """
@@ -386,7 +397,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **Run / Mount / Play** acts on PRG, disk, SID, MOD, and CRT files. Remote \
     files run directly by their Ultimate path instead of downloading and \
-    uploading them again. Disk images also offer **Mount & Run**.
+    uploading them again. Disk images also offer **Mount & Run**. Use the \
+    toolbar target picker to choose one configured machine or **All Connected \
+    C64s**; multi-target actions read the source once and dispatch to every \
+    connected session simultaneously.
 
     The Ultimate's **FTP File Service** must be enabled. Configure its port or \
     username under the device settings if necessary. FTP is unencrypted and \
@@ -399,6 +413,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     archives, and more. Stream64 searches it and loads results straight onto \
     your machine without permanent local files. **Save ZIP…** intentionally \
     writes locally, and archive inspection uses a temporary URLSession download.
+
+    The toolbar **Target** picker selects any configured machine or **All \
+    Connected C64s**. Run, Play, Mount, and Mount & Run download once and then \
+    execute concurrently on every chosen connected machine.
 
     **Open the browser** — the toolbar's Assembly64 button (books icon), \
     **File → Search Assembly64…**, or ⇧⌘F. It's a separate window, so you \
@@ -474,7 +492,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **Reboot Ultimate** — full device reboot; the app waits for it to come \
     back and restarts the streams automatically
     • **Pause / Resume** — freezes and resumes the machine
-    • **Menu** — presses the Ultimate's menu button
+    • **Menu** — on firmware with `GET /v1/machine:menu_screen`, Stream64 \
+    immediately opens the firmware menu and its live 40×25 character/colour \
+    child window. Arrow keys and Return control it; Escape or Close exits. \
+    Older firmware keeps the original behavior and shows the menu only inside \
+    the normal video stream.
     • **Power Off** — powers down the machine (asks for confirmation; \
     configurable in Settings → General). In CRT Tube mode, the last frame \
     flares, collapses to a horizontal line and center dot, then fades with a \
@@ -496,6 +518,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     right-click). If that fails, check that no firewall blocks inbound UDP \
     on the device's video/audio ports.
 
+    **REST works but an Ultimate 64 sends no video/audio** — its Wi-Fi and \
+    Ethernet addresses can expose the same REST identity, but A/V streaming \
+    uses wired Ethernet. Check the cable and configure the wired DHCP address.
+
     **"Network stack appears stuck" error** — an immediate start after stop can \
     trigger a misleading firmware error. Stream64 uses a proven stop → one \
     second wait → start sequence and retries automatically. If the settled \
@@ -507,9 +533,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     end helps.
 
     **Keyboard input not arriving** — make sure keyboard capture is on \
-    (toolbar) and the picture has focus (click it once). Games that read \
-    the keyboard hardware directly can't receive injected keys — see the \
-    Keyboard Input topic.
+    (toolbar) and the picture has focus (click it once). Check Settings → \
+    Input for matrix capability or legacy fallback. Joystick and held-game-key \
+    input require firmware that supports `/v1/machine:input`.
 
     **Picture judders when the window is in the background** — expected \
     macOS behavior is throttled; the app keeps rendering, but fully covered \

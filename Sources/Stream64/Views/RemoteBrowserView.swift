@@ -170,6 +170,7 @@ struct RemoteBrowserView: View {
     @StateObject private var transferQueue = TransferQueue()
     @State private var activePaneID: UUID?
     @State private var coordinator: FileOperationCoordinator?
+    @State private var actionTarget: DeviceActionTarget?
     @State private var queueExpanded = true
     @State private var pendingTransfer: (move: Bool, items: [FilesystemItem])?
     @State private var renameText = ""
@@ -189,6 +190,20 @@ struct RemoteBrowserView: View {
     }
     private var selectedDevice: UltimateDevice? {
         deviceStore.selectedDevice
+    }
+
+    private var actionTargetDevices: [UltimateDevice] {
+        switch actionTarget {
+        case .device(let id):
+            return deviceStore.devices.filter { $0.id == id }
+        case .allConnected:
+            return deviceStore.devices.filter {
+                sessionManager.session(
+                    for: $0, settings: settings).isConnected
+            }
+        case nil:
+            return selectedDevice.map { [$0] } ?? []
+        }
     }
 
     var body: some View {
@@ -307,10 +322,14 @@ struct RemoteBrowserView: View {
     @ToolbarContentBuilder
     private var browserToolbar: some ToolbarContent {
         ToolbarItemGroup {
-            Picker("Run Target", selection: $deviceStore.selectedDeviceID) {
+            Picker("Run Target", selection: $actionTarget) {
                 ForEach(deviceStore.devices) { device in
-                    Text(device.name).tag(Optional(device.id))
+                    Text(device.name)
+                        .tag(Optional(DeviceActionTarget.device(device.id)))
                 }
+                Divider()
+                Text("All Connected C64s")
+                    .tag(Optional(DeviceActionTarget.allConnected))
             }
             .frame(maxWidth: 220)
             Button {
@@ -339,12 +358,14 @@ struct RemoteBrowserView: View {
                 performDeviceAction()
             }
                 .disabled(activePane.selectedItems.count != 1
-                          || !activePane.selectedItems[0].kind.supportsDeviceAction)
+                          || !activePane.selectedItems[0].kind.supportsDeviceAction
+                          || actionTargetDevices.isEmpty)
             Button("Mount & Run") {
                 performDeviceAction(mountAndRun: true)
             }
             .disabled(activePane.selectedItems.count != 1
-                      || activePane.selectedItems[0].kind != .disk)
+                      || activePane.selectedItems[0].kind != .disk
+                      || actionTargetDevices.isEmpty)
             Spacer()
             Text("\(activePane.selectedItems.count) selected")
                 .foregroundStyle(.secondary)
@@ -435,6 +456,9 @@ struct RemoteBrowserView: View {
             try await coordinator.process(job, progress: progress)
         }
         activePaneID = left.id
+        if actionTarget == nil, let selectedDevice {
+            actionTarget = .device(selectedDevice.id)
+        }
         if let selectedDevice {
             right.location = .ultimate(selectedDevice.id)
             right.path = ManagedPath("/")
@@ -660,26 +684,62 @@ struct RemoteBrowserView: View {
 
     private func performDeviceAction(mountAndRun: Bool = false) {
         guard let item = activePane.selectedItems.first else { return }
-        let device: UltimateDevice?
-        if case .ultimate(let id) = item.endpoint {
-            device = deviceStore.devices.first { $0.id == id }
-        } else {
-            device = selectedDevice
-        }
-        guard let device else { return }
-        let session = sessionManager.session(for: device, settings: settings)
+        let targets = actionTargetDevices
+        guard !targets.isEmpty else { return }
         let behavior: DeviceSession.MountBehavior =
             mountAndRun ? .mountAndRun : .mountOnly
         Task {
-            if case .local = item.endpoint {
-                await session.loadFile(
-                    at: URL(fileURLWithPath: item.path.rawValue),
-                    mountBehavior: behavior)
-            } else {
+            // A single target can execute its own remote file directly.
+            if targets.count == 1,
+               case .ultimate(let sourceID) = item.endpoint,
+               sourceID == targets[0].id {
+                let session = sessionManager.session(
+                    for: targets[0], settings: settings)
                 await session.loadRemoteFile(
-                    path: item.path.rawValue, filename: item.name,
+                    path: item.path.rawValue,
+                    filename: item.name,
                     mountBehavior: behavior)
+                return
             }
+
+            do {
+                let data = try await dataForDeviceAction(item)
+                await withTaskGroup(of: Void.self) { group in
+                    for device in targets {
+                        let session = sessionManager.session(
+                            for: device, settings: settings)
+                        group.addTask {
+                            _ = await session.loadData(
+                                data, filename: item.name,
+                                mountBehavior: behavior)
+                        }
+                    }
+                }
+            } catch {
+                operationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func dataForDeviceAction(
+        _ item: FilesystemItem
+    ) async throws -> Data {
+        switch item.endpoint {
+        case .local:
+            return try Data(
+                contentsOf: URL(fileURLWithPath: item.path.rawValue))
+        case .ultimate(let id):
+            guard let sourceDevice = deviceStore.devices.first(
+                where: { $0.id == id }) else {
+                throw FileSystemError.notConnected
+            }
+            let temporary = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try await UltimateFTPClient(device: sourceDevice).download(
+                item.path, to: temporary
+            ) { _, _ in }
+            return try Data(contentsOf: temporary)
         }
     }
 

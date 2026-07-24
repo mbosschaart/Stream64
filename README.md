@@ -7,7 +7,9 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.95b-purple)
+![Version](https://img.shields.io/badge/version-0.96b-purple)
+
+![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
 ## Features
 
@@ -19,14 +21,34 @@ Designed by Martijn Bosschaart, 2026.
 - **Monitor cases and bezels** — complete Commodore 1702/1084S cases are drawn in SwiftUI; the bezel is the angled inner plastic lip overlapping the tube glass. The 1702 door reveals **working knobs** (volume, brightness, 4× color overdrive, tint, contrast); when the case is hidden, equivalent controls are available in a movable non-modal window
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
-- **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, F2/F5/F6/F7/F8 operations, persistent serialized transfers, conflict handling, and direct remote run/mount/play
-- **Assembly64 search browser** — search the online C64 library (CSDB, GameBase64, HVSC, OneLoad64, …) with category/repository/type/year/rating/recency filters, pagination, favorites, recents, saved searches, previews/source links, safe ZIP inspection, remembered successful actions, and direct device loading
-- **Keyboard input** — type on the C64 from your Mac (KERNAL keyboard-buffer injection over DMA), plus a full on-screen C64 keyboard with PETSCII shift combinations
-- **Machine control** — reset, reboot (with automatic stream re-arm), pause/resume, menu button, and power off; CRT Tube shutdown collapses the last frame into a bright line/dot with synchronized voltage-discharge crackle
+- **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
+- **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
+- **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
+- **Machine control** — reset, reboot, pause/resume, menu, and power off; firmware supporting `menu_screen` immediately opens a keyboard-controlled live 40×25 child, while older firmware falls back to the streamed menu
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
 - **In-app documentation** — Help → Stream64 Help (⌘?)
+
+## Screenshots
+
+### All Screens
+
+Monitor multiple Commodore 64 Ultimates at once, each with independent CRT, signal, phosphor, and scaling settings.
+
+![Stream64 All Screens multi-device view](Screenshots/All%20Screens%20view.png)
+
+### Assembly64
+
+Search, preview, favorite, inspect, and run software from the Assembly64 library directly on a selected Ultimate.
+
+![Stream64 Assembly64 interface](Screenshots/Assembly64%20interface.png)
+
+### Commander File Manager
+
+Browse any configured Ultimate or mounted Mac volume in either pane, then queue Mac-to-C64, C64-to-Mac, or C64-to-C64 transfers.
+
+![Stream64 Commander file manager](Screenshots/File%20commander.png)
 
 ## Requirements
 
@@ -50,10 +72,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.95b BUILD_NUMBER=95 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.96b BUILD_NUMBER=96 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.95b BUILD_NUMBER=95 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.96b BUILD_NUMBER=96 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -182,13 +204,13 @@ Output is **dithered** (±0.5 LSB hash noise) to prevent 8-bit banding rings in 
 
 Monitor picture controls (brightness/contrast in signal space; saturation/tint as YIQ chroma rotation — exactly what the real pots did) apply as shader uniforms in every mode. Knob drags write to a plain `PictureControls` object the renderer reads per frame, bypassing SwiftUI so adjustments track at full frame rate.
 
-### Keyboard
+### Keyboard and Joystick
 
-The Ultimate's REST API has **no keyboard endpoint** (verified against firmware 3.14 and the device's own web UI). Stream64 types by DMA: PETSCII codes are written to the C64's KERNAL keyboard buffer at `$0277` with the pending count at `$C6`, via `machine:writemem`, in chunks of 10 (the buffer size), polling for drain between chunks.
+`C64InputController` serializes every physical/on-screen keyboard and joystick event. It capability-probes `POST /v1/machine:input`: supported firmware receives batched matrix tap/press/release events and `release_all`, enabling held keys and games that scan CIA input directly. Auto mode demotes unsupported firmware to safe 10-byte KERNAL-buffer writes at `$0277/$C6`, with RUN/STOP flag clearing, backpressure, and chunk verification.
 
-Keystrokes flow through a **single serialized queue** per device — concurrent writers would race on the buffer and drop or reorder keys. Failures retry once, then surface in a banner without touching connection state. The buffer is flushed at machine-state boundaries (reset, reboot, PRG load) so unconsumed keys can't replay into the next program.
+Symbolic keymaps follow produced characters; positional keymaps follow Mac physical key positions and can hold C64 Shift/Ctrl/Commodore modifiers. Custom `.c64keymap.ini` files can be imported. F10 toggles virtual joystick mode, F11 switches ports, Arrow keys map to directions, and Backquote (`` ` ``) is the default configurable fire key. Apple `GameController` D-pads, left sticks, and primary buttons feed the same edge-triggered state reducer with deadzone and opposite-direction handling.
 
-Limitation inherent to the approach: programs that read the keyboard through the KERNAL (BASIC, most utilities) receive input; games scanning the hardware matrix directly do not.
+All held keyboard/controller state is released on focus loss, app deactivation, controller disconnect, device switch, reset/reboot, and teardown. Current 3.14-era hardware falls back to KERNAL typing; public guidance identifies Ultimate 64 firmware 3.15+ for matrix/joystick support.
 
 ### File Loading
 
@@ -225,12 +247,19 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 | `PUT /v1/streams/video:start?ip=<mac>:<port>` | Start VIC stream to this Mac (same for audio) |
 | `PUT /v1/machine:reset / :reboot / :pause / :resume / :poweroff / :menu_button` | Machine control |
 | `GET/PUT /v1/machine:readmem / :writemem` | Keyboard-buffer injection ($0277/$C6) |
+| `POST /v1/machine:input` | Capability-gated matrix keyboard/joystick press, release, tap, and release-all |
+| `GET /v1/machine:menu_screen` | Capability-gated 40×25 menu character and colour matrices |
+| `GET/PUT /v1/configs/...` | Verify and automatically enable/save required network services |
 | `POST /v1/runners:run_prg` | Upload + run a PRG (binary body) |
 | `POST /v1/drives/a:mount` | Upload + mount a disk image (multipart) |
 | `POST /v1/runners:sidplay` | Upload + play a SID tune |
 | `POST /v1/runners:run_crt` | Upload + run a cartridge image |
 
 Requests carry the `X-Password` header when the device has an API password set.
+
+## Input Design Credits
+
+The matrix-input protocol, ordered fallback strategy, focus-release safety, and keymap concepts were informed by [chrisgleissner/c64stream](https://github.com/chrisgleissner/c64stream) (GPL-2.0-or-later). Stream64 reimplements these concepts natively in Swift and adds Apple GameController support.
 
 ## License
 

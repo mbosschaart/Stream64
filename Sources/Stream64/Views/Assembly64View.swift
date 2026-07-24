@@ -50,6 +50,7 @@ struct Assembly64View: View {
     @State private var showingSaveSearch = false
     @State private var savedSearchName = ""
     @State private var archivePreview: ArchivePreview?
+    @State private var actionTarget: DeviceActionTarget?
 
     private static let pageSize = 200
 
@@ -70,6 +71,26 @@ struct Assembly64View: View {
         return displayedResults.first { $0.id == selectedResult }
     }
 
+    private var targetDevices: [UltimateDevice] {
+        switch actionTarget {
+        case .device(let id):
+            return deviceStore.devices.filter { $0.id == id }
+        case .allConnected:
+            return deviceStore.devices.filter {
+                sessionProvider($0).isConnected
+            }
+        case nil:
+            return deviceStore.selectedDevice.map { [$0] } ?? []
+        }
+    }
+
+    private var targetLabel: String {
+        if case .allConnected = actionTarget {
+            return "All Connected C64s (\(targetDevices.count))"
+        }
+        return targetDevices.first?.name ?? "No Target"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             resultsPane
@@ -85,6 +106,11 @@ struct Assembly64View: View {
                minHeight: 580, idealHeight: 680, maxHeight: .infinity,
                alignment: .top)
         .task { await loadReferenceData() }
+        .onAppear {
+            if actionTarget == nil, let id = deviceStore.selectedDeviceID {
+                actionTarget = .device(id)
+            }
+        }
         .onChange(of: scope) {
             clearSelection()
         }
@@ -116,6 +142,20 @@ struct Assembly64View: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 190)
+        }
+
+        ToolbarItem {
+            Picker("Target", selection: $actionTarget) {
+                ForEach(deviceStore.devices) { device in
+                    Text(device.name)
+                        .tag(Optional(DeviceActionTarget.device(device.id)))
+                }
+                Divider()
+                Text("All Connected C64s")
+                    .tag(Optional(DeviceActionTarget.allConnected))
+            }
+            .frame(maxWidth: 210)
+            .help("Device target for Run, Play, Mount, and Mount & Run")
         }
 
         ToolbarItem(placement: .navigation) {
@@ -359,11 +399,9 @@ struct Assembly64View: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            if let device = deviceStore.selectedDevice {
-                Label(device.name, systemImage: "desktopcomputer")
-                    .foregroundStyle(.secondary)
-                    .help("Files load onto this device")
-            }
+            Label(targetLabel, systemImage: "scope")
+                .foregroundStyle(.secondary)
+                .help("Run/Mount target")
         }
         .font(.callout)
         .padding(.horizontal, 10)
@@ -596,25 +634,27 @@ struct Assembly64View: View {
             Button("Run") {
                 load(entry, result: result, behavior: .mountOnly, action: "run")
             }
-            .disabled(deviceStore.selectedDevice == nil)
+            .disabled(targetDevices.isEmpty)
         case .disk:
             Button("Mount & Run") {
                 load(entry, result: result,
                      behavior: .mountAndRun, action: "mountAndRun")
             }
+            .disabled(targetDevices.isEmpty)
             Button("Mount") {
                 load(entry, result: result, behavior: .mountOnly, action: "mount")
             }
+            .disabled(targetDevices.isEmpty)
         case .sid:
             Button("Play") {
                 load(entry, result: result, behavior: .mountOnly, action: "play")
             }
-            .disabled(deviceStore.selectedDevice == nil)
+            .disabled(targetDevices.isEmpty)
         case .cartridge:
             Button("Run") {
                 load(entry, result: result, behavior: .mountOnly, action: "run")
             }
-            .disabled(deviceStore.selectedDevice == nil)
+            .disabled(targetDevices.isEmpty)
         case .other:
             Text("Preview only")
                 .font(.caption)
@@ -823,8 +863,8 @@ struct Assembly64View: View {
                       result: Assembly64Client.SearchResult,
                       behavior: DeviceSession.MountBehavior,
                       action: String) {
-        guard let device = deviceStore.selectedDevice else { return }
-        let session = sessionProvider(device)
+        let targets = targetDevices
+        guard !targets.isEmpty else { return }
         loadStatus = "Downloading \(entry.filename)…"
 
         Task {
@@ -833,10 +873,28 @@ struct Assembly64View: View {
                     itemID: result.itemID,
                     categoryID: result.category,
                     fileID: entry.id)
-                loadStatus = nil
-                let outcome = await session.loadData(
-                    data, filename: entry.filename, mountBehavior: behavior)
-                if outcome != nil {
+                loadStatus = "Sending to \(targets.count) target"
+                    + (targets.count == 1 ? "…" : "s…")
+                let successes = await withTaskGroup(
+                    of: Bool.self, returning: Int.self
+                ) { group in
+                    for device in targets {
+                        let session = sessionProvider(device)
+                        group.addTask {
+                            await session.loadData(
+                                data, filename: entry.filename,
+                                mountBehavior: behavior) != nil
+                        }
+                    }
+                    var count = 0
+                    for await success in group where success { count += 1 }
+                    return count
+                }
+                loadStatus = successes == targets.count
+                    ? "Completed on \(successes) target"
+                        + (successes == 1 ? "" : "s")
+                    : "Completed on \(successes) of \(targets.count) targets"
+                if successes > 0 {
                     library.rememberAction(
                         action, result: result, entry: entry)
                 }
@@ -937,8 +995,8 @@ struct Assembly64View: View {
     private func loadArchiveItem(_ item: Assembly64ArchiveInspector.Item,
                                  preview: ArchivePreview,
                                  behavior: DeviceSession.MountBehavior) {
-        guard let device = deviceStore.selectedDevice else { return }
-        let session = sessionProvider(device)
+        let targets = targetDevices
+        guard !targets.isEmpty else { return }
         loadStatus = "Extracting \(item.filename)…"
 
         Task {
@@ -948,9 +1006,25 @@ struct Assembly64View: View {
                         item, from: preview.data)
                 }.value
                 archivePreview = nil
-                loadStatus = nil
-                _ = await session.loadData(
-                    data, filename: item.filename, mountBehavior: behavior)
+                loadStatus = "Sending to \(targets.count) target"
+                    + (targets.count == 1 ? "…" : "s…")
+                let successes = await withTaskGroup(
+                    of: Bool.self, returning: Int.self
+                ) { group in
+                    for device in targets {
+                        let session = sessionProvider(device)
+                        group.addTask {
+                            await session.loadData(
+                                data, filename: item.filename,
+                                mountBehavior: behavior) != nil
+                        }
+                    }
+                    var count = 0
+                    for await success in group where success { count += 1 }
+                    return count
+                }
+                loadStatus = "Completed on \(successes) of "
+                    + "\(targets.count) targets"
             } catch {
                 loadStatus = "ZIP extraction failed: \(error.localizedDescription)"
             }

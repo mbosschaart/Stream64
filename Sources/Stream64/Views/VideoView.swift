@@ -25,10 +25,26 @@ struct VideoView: NSViewRepresentable {
         let view = KeyCapturingMTKView(frame: .zero)
         let renderer = MetalFrameRenderer(mtkView: view)
         context.coordinator.renderer = renderer
-        view.onKeyText = { text in
-            guard settings.captureKeyboardWhenFocused else { return }
-            let session = context.coordinator.session
-            Task { @MainActor in session.sendKeys(text) }
+        view.onKeyDown = { input in
+            MainActor.assumeIsolated {
+                context.coordinator.session.handleHostKeyDown(input)
+            }
+        }
+        view.onKeyUp = { input in
+            MainActor.assumeIsolated {
+                context.coordinator.session.handleHostKeyUp(input)
+            }
+        }
+        view.onFlagsChanged = { keyCode, modifiers in
+            MainActor.assumeIsolated {
+                context.coordinator.session.handleModifierChange(
+                    keyCode: keyCode, modifiers: modifiers)
+            }
+        }
+        view.onFocusLost = {
+            Task { @MainActor in
+                context.coordinator.session.input.releaseAll()
+            }
         }
         context.coordinator.session.videoReceiver.onFrame = { [weak renderer] frame in
             renderer?.submitFrame(frame)
@@ -65,6 +81,7 @@ struct VideoView: NSViewRepresentable {
             : 0
         context.coordinator.renderer?.picture = display.picture
         context.coordinator.renderer?.setPalette(C64Palette.palette(for: display.palette))
+        nsView.captureEnabled = settings.captureKeyboardWhenFocused
     }
 
     final class Coordinator {
@@ -82,9 +99,19 @@ struct VideoView: NSViewRepresentable {
 /// occluded (MTKView's display link pauses then, which made background
 /// playback jumpy) by driving draw() from a timer.
 final class KeyCapturingMTKView: MTKView {
-    var onKeyText: ((String) -> Void)?
+    var onKeyDown: ((HostKeyInput) -> Bool)?
+    var onKeyUp: ((HostKeyInput) -> Bool)?
+    var onFlagsChanged: ((UInt16, NSEvent.ModifierFlags) -> Bool)?
+    var onFocusLost: (() -> Void)?
+    var captureEnabled = true {
+        didSet {
+            if oldValue && !captureEnabled { onFocusLost?() }
+        }
+    }
 
     private var occlusionObserver: NSObjectProtocol?
+    private var resignKeyObserver: NSObjectProtocol?
+    private var resignActiveObserver: NSObjectProtocol?
     private var backgroundTimer: Timer?
 
     override var acceptsFirstResponder: Bool { true }
@@ -94,6 +121,10 @@ final class KeyCapturingMTKView: MTKView {
         if let observer = occlusionObserver {
             NotificationCenter.default.removeObserver(observer)
             occlusionObserver = nil
+        }
+        if let observer = resignKeyObserver {
+            NotificationCenter.default.removeObserver(observer)
+            resignKeyObserver = nil
         }
         stopBackgroundDriving()
         guard let window else { return }
@@ -106,6 +137,16 @@ final class KeyCapturingMTKView: MTKView {
             } else {
                 self.startBackgroundDriving()
             }
+        }
+        resignKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window, queue: .main
+        ) { [weak self] _ in self?.onFocusLost?() }
+        if resignActiveObserver == nil {
+            resignActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: NSApp, queue: .main
+            ) { [weak self] _ in self?.onFocusLost?() }
         }
     }
 
@@ -130,14 +171,48 @@ final class KeyCapturingMTKView: MTKView {
         if let observer = occlusionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = resignKeyObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = resignActiveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        onFocusLost?()
     }
 
     override func keyDown(with event: NSEvent) {
-        guard let text = Self.c64Text(for: event) else {
+        guard captureEnabled else {
             super.keyDown(with: event)
             return
         }
-        onKeyText?(text)
+        let input = Self.hostInput(event)
+        guard onKeyDown?(input) == true else {
+            super.keyDown(with: event)
+            return
+        }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard captureEnabled, onKeyUp?(Self.hostInput(event)) == true else {
+            super.keyUp(with: event)
+            return
+        }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        guard captureEnabled,
+              onFlagsChanged?(
+                event.keyCode,
+                event.modifierFlags.intersection(
+                    .deviceIndependentFlagsMask)) == true else {
+            super.flagsChanged(with: event)
+            return
+        }
+    }
+
+    override func resignFirstResponder() -> Bool {
+        onFocusLost?()
+        return super.resignFirstResponder()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -145,31 +220,12 @@ final class KeyCapturingMTKView: MTKView {
         super.mouseDown(with: event)
     }
 
-    /// Map a macOS key event to the character sequence expected by the
-    /// Ultimate keyboard API (PETSCII-ish plain text; RETURN = \r).
-    private static func c64Text(for event: NSEvent) -> String? {
-        switch event.keyCode {
-        case 36: return "\r"          // Return
-        case 51: return "\u{14}"      // Delete -> PETSCII DEL
-        case 53: return "\u{03}"      // Escape -> RUN/STOP
-        case 123: return "\u{9D}"     // Left cursor
-        case 124: return "\u{1D}"     // Right cursor
-        case 125: return "\u{11}"     // Down cursor
-        case 126: return "\u{91}"     // Up cursor
-        case 115: return "\u{13}"     // Home
-        case 122: return "\u{85}"     // F1
-        case 120: return "\u{89}"     // F2
-        case 99: return "\u{86}"      // F3
-        case 118: return "\u{8A}"     // F4
-        case 96: return "\u{87}"      // F5
-        case 97: return "\u{8B}"      // F6
-        case 98: return "\u{88}"      // F7
-        case 100: return "\u{8C}"     // F8
-        default:
-            guard let chars = event.characters, !chars.isEmpty else { return nil }
-            // Filter out function/modifier-only presses.
-            if event.modifierFlags.contains(.command) { return nil }
-            return chars
-        }
+    private static func hostInput(_ event: NSEvent) -> HostKeyInput {
+        HostKeyInput(
+            keyCode: event.keyCode,
+            characters: event.characters,
+            modifiers: event.modifierFlags.intersection(
+                .deviceIndependentFlagsMask),
+            isRepeat: event.isARepeat)
     }
 }

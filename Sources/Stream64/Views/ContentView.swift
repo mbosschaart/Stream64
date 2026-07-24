@@ -131,9 +131,18 @@ struct ContentView: View {
         guard arrowKeyMonitor == nil else { return }
         arrowKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard deviceStore.devices.count > 1,
-                  event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
                   event.keyCode == 123 || event.keyCode == 124 else {
                 return event
+            }
+            let modifiers = event.modifierFlags.intersection(
+                [.command, .option, .control, .shift])
+            let joystickMode = deviceStore.selectedDevice.map {
+                InputSettings.shared(for: $0.id).joystickEnabled
+            } ?? false
+            if joystickMode {
+                guard modifiers == [.option] else { return event }
+            } else {
+                guard modifiers.isEmpty else { return event }
             }
             switchStream(by: event.keyCode == 124 ? 1 : -1)
             return nil // consumed
@@ -307,6 +316,8 @@ struct MultiViewerGrid: View {
                         }
                         .onTapGesture {
                             deviceStore.selectedDeviceID = device.id
+                            GameControllerManager.shared.setTarget(
+                                session.input)
                         }
                         // Muting is centralized in ContentView.applyAudioPolicy;
                         // apply here too for sessions that connect after the
@@ -633,6 +644,7 @@ struct ViewerPane: View {
     /// This device's own rendering settings — observed so toolbar pickers
     /// and the video refresh when they change.
     @ObservedObject var display: DisplaySettings
+    @ObservedObject var input: InputSettings
     @EnvironmentObject var settings: AppSettings
     var isFullscreen: Bool = false
     /// Control-drop: deliver the file to every connected stream ("Multi Drop").
@@ -644,6 +656,7 @@ struct ViewerPane: View {
     init(session: DeviceSession, isFullscreen: Bool = false, multiDrop: ((URL) -> Void)? = nil) {
         self.session = session
         self.display = session.display
+        self.input = session.input.settings
         self.isFullscreen = isFullscreen
         self.multiDrop = multiDrop
     }
@@ -722,11 +735,26 @@ struct ViewerPane: View {
         .onChange(of: settings.volume) {
             session.applyAudioSettings()
         }
+        .onAppear {
+            GameControllerManager.shared.setTarget(session.input)
+        }
+        .onDisappear {
+            session.input.releaseAll()
+        }
         .onChange(of: display.tubeInput) {
             session.applyAudioSettings()
         }
         .onChange(of: display.filterMode) {
             session.applyAudioSettings()
+        }
+        .onChange(of: input.joystickEnabled) {
+            session.input.releaseAll()
+        }
+        .onChange(of: input.joystickPort) {
+            session.input.releaseAll()
+        }
+        .onChange(of: input.joystickFireKey) {
+            session.input.releaseAll()
         }
         .onReceive(NotificationCenter.default.publisher(for: .saveScreenshotRequested)) { _ in
             session.saveScreenshot()
@@ -973,6 +1001,23 @@ struct ViewerPane: View {
                 Label("On-Screen Keyboard", systemImage: "keyboard.badge.ellipsis")
             }
             .help("Show the on-screen C64 keyboard")
+
+            Toggle(isOn: $input.joystickEnabled) {
+                Label(
+                    input.joystickEnabled
+                        ? "Joystick Input" : "Keyboard Input",
+                    systemImage: "gamecontroller")
+            }
+            .disabled(input.capability != .supported)
+            .help(
+                "F10 toggles virtual joystick input; fire key is configurable "
+                    + "in Settings → Input")
+
+            Picker("Port", selection: $input.joystickPort) {
+                Text("Joy 1").tag(1)
+                Text("Joy 2").tag(2)
+            }
+            .help("Virtual joystick port (F11 switches)")
 
             Divider()
 

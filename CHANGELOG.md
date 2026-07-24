@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.96b — 2026-07-25
+
+### Added
+
+- Capability-probed matrix keyboard input with press/release holds, symbolic/positional/custom keymaps, and safe KERNAL-buffer fallback.
+- Virtual joystick mode for Arrow keys plus a configurable keyboard fire button (Backquote by default), along with native macOS game controllers, port switching, deadzone handling, merged input sources, and release-all lifecycle safety.
+- Automatic Ultimate DMA/Web service readiness checks and persisted per-device Input settings.
+- Capability-probed Ultimate `menu_screen` child window with live 40×25 character/colour rendering and keyboard control, falling back to the existing streamed-menu behavior.
+- Assembly64 and Commander Run/Play/Mount/Mount & Run target pickers support any configured machine or simultaneous dispatch to **All Connected C64s**.
+
+### Fixed
+
+- Stream pickup now counts only structurally valid VIC/audio packets, so malformed 46-byte UDP noise cannot make Stream64 skip the real stream-start command.
+- Silent-stream diagnostics now explain that Ultimate 64 A/V requires the wired Ethernet interface even when REST remains reachable over Wi-Fi.
+- Remote menu rendering now treats printable bytes as literal ASCII and maps only the firmware-defined 0x00–0x13 UI glyphs, eliminating spurious dots and substituted letters.
+- Settings now uses an explicit toolbar instead of macOS's stale `TabView` metadata, guaranteeing distinct Display/Input labels; Devices uses a power-plug icon.
+
 ## 0.95b — 2026-07-22
 
 ### Added

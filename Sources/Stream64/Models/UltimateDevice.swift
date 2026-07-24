@@ -1,5 +1,10 @@
 import Foundation
 
+enum DeviceActionTarget: Hashable {
+    case device(UUID)
+    case allConnected
+}
+
 /// A configured Commodore 64 Ultimate (Ultimate 64 / Ultimate-II+) device.
 struct UltimateDevice: Identifiable, Codable, Hashable {
     var id: UUID = UUID()

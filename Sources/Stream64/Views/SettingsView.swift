@@ -1,22 +1,210 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The app preferences window (⌘,) with tabs for General, Devices,
-/// Video, Audio and Network.
+/// Display, Audio, Input and Network.
 struct SettingsView: View {
+    private enum Tab: String, CaseIterable, Identifiable {
+        case general, devices, display, audio, input, network
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+    }
+
+    @State private var selection: Tab = .general
+
     var body: some View {
-        TabView {
-            GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }
-            DevicesSettingsTab()
-                .tabItem { Label("Devices", systemImage: "desktopcomputer") }
-            VideoSettingsTab()
-                .tabItem { Label("Video", systemImage: "display") }
-            AudioSettingsTab()
-                .tabItem { Label("Audio", systemImage: "speaker.wave.2") }
-            NetworkSettingsTab()
-                .tabItem { Label("Network", systemImage: "network") }
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                ForEach(Tab.allCases) { tab in
+                    settingsTabButton(tab)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+
+            Divider()
+
+            settingsContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 560, height: 420)
+        .navigationTitle(selection.title)
+        .frame(width: 600, height: 470)
+    }
+
+    private func settingsTabButton(_ tab: Tab) -> some View {
+        Button {
+            selection = tab
+        } label: {
+            VStack(spacing: 3) {
+                settingsIcon(tab)
+                    .frame(width: 34, height: 27)
+                Text(verbatim: tab.title)
+                    .font(.caption)
+            }
+            .foregroundStyle(
+                selection == tab ? Color.accentColor : Color.primary)
+            .frame(width: 70, height: 52)
+            .background(
+                selection == tab
+                    ? Color.accentColor.opacity(0.12) : .clear,
+                in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func settingsIcon(_ tab: Tab) -> some View {
+        switch tab {
+        case .general:
+            Image(systemName: "gearshape")
+                .font(.system(size: 25))
+        case .devices:
+            Image(systemName: "powerplug")
+                .font(.system(size: 25))
+        case .display:
+            Image(systemName: "display")
+                .font(.system(size: 25))
+        case .audio:
+            Image(systemName: "speaker.wave.2")
+                .font(.system(size: 25))
+        case .input:
+            Image(systemName: "gamecontroller")
+                .font(.system(size: 25))
+        case .network:
+            Image(systemName: "network")
+                .font(.system(size: 25))
+        }
+    }
+
+    @ViewBuilder
+    private var settingsContent: some View {
+        switch selection {
+        case .general: GeneralSettingsTab()
+        case .devices: DevicesSettingsTab()
+        case .display: VideoSettingsTab()
+        case .audio: AudioSettingsTab()
+        case .input: InputSettingsTab()
+        case .network: NetworkSettingsTab()
+        }
+    }
+}
+
+// MARK: - Input
+
+struct InputSettingsTab: View {
+    @EnvironmentObject var deviceStore: DeviceStore
+
+    var body: some View {
+        if let device = deviceStore.selectedDevice {
+            DeviceInputSettings(
+                device: device,
+                input: InputSettings.shared(for: device.id))
+                .id(device.id)
+        } else {
+            ContentUnavailableView(
+                "No Device Selected",
+                systemImage: "gamecontroller",
+                description: Text(
+                    "Input settings are per device—select one first."))
+        }
+    }
+}
+
+private struct DeviceInputSettings: View {
+    let device: UltimateDevice
+    @ObservedObject var input: InputSettings
+    @State private var importingKeymap = false
+    @State private var importError: String?
+
+    var body: some View {
+        Form {
+            Section("Keyboard") {
+                Picker("Input transport", selection: $input.transport) {
+                    ForEach(InputTransportPreference.allCases) {
+                        Text($0.rawValue).tag($0)
+                    }
+                }
+                Picker("Keymap", selection: $input.keymap) {
+                    ForEach(C64KeymapChoice.allCases) {
+                        Text($0.rawValue).tag($0)
+                    }
+                }
+                HStack {
+                    Button("Import Keymap…") {
+                        importingKeymap = true
+                    }
+                    if let name = input.customKeymapName {
+                        Text(name).foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("Capability", value: input.capability.label)
+                LabeledContent(
+                    "Network services",
+                    value: input.servicesReady ? "Ready" : "Not verified")
+            }
+
+            Section {
+                Toggle(
+                    "Use keyboard as virtual joystick",
+                    isOn: $input.joystickEnabled)
+                    .disabled(input.capability != .supported)
+                Picker("Joystick port", selection: $input.joystickPort) {
+                    Text("Port 1").tag(1)
+                    Text("Port 2").tag(2)
+                }
+                .pickerStyle(.segmented)
+                Picker(
+                    "Keyboard fire button",
+                    selection: $input.joystickFireKey
+                ) {
+                    ForEach(JoystickFireKey.allCases) {
+                        Text($0.rawValue).tag($0)
+                    }
+                }
+                Toggle(
+                    "Enable connected game controllers",
+                    isOn: $input.gameControllerEnabled)
+                HStack {
+                    Text("Stick deadzone")
+                    Slider(value: $input.deadzone, in: 0.1...0.8)
+                    Text(input.deadzone, format: .percent)
+                        .monospacedDigit()
+                        .frame(width: 48)
+                }
+                LabeledContent(
+                    "Controller",
+                    value: input.connectedControllerName ?? "None")
+            } header: {
+                Text("Virtual Joystick")
+            } footer: {
+                Text(
+                    "F10 toggles joystick mode; F11 switches ports. "
+                        + "Matrix input requires supported Ultimate firmware.")
+            }
+        }
+        .formStyle(.grouped)
+        .fileImporter(
+            isPresented: $importingKeymap,
+            allowedContentTypes: [.plainText, .data]
+        ) { result in
+            do {
+                try input.importKeymap(from: result.get())
+            } catch {
+                importError = error.localizedDescription
+            }
+        }
+        .alert(
+            "Keymap Import Failed",
+            isPresented: Binding(
+                get: { importError != nil },
+                set: { if !$0 { importError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(importError ?? "")
+        }
     }
 }
 
@@ -122,7 +310,7 @@ struct DevicesSettingsTab: View {
     }
 }
 
-// MARK: - Video
+// MARK: - Display
 
 struct VideoSettingsTab: View {
     @EnvironmentObject var deviceStore: DeviceStore

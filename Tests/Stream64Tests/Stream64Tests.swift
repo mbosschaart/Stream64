@@ -216,6 +216,22 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(BezelChoice.c1702.dotPitchMillimeters, 0.64)
     }
 
+    func testStreamPickupRejectsMalformedUDPNoise() {
+        XCTAssertFalse(VideoReceiver.isStructurallyValidPacket(
+            Data(repeating: 0, count: 46)))
+        XCTAssertFalse(AudioReceiver.isStructurallyValidPacket(
+            Data(repeating: 0, count: 46)))
+
+        var video = Data(repeating: 0, count: 12 + 384 / 2)
+        video[6] = 0x80
+        video[7] = 0x01
+        video[8] = 1
+        video[9] = 4
+        XCTAssertTrue(VideoReceiver.isStructurallyValidPacket(video))
+        XCTAssertTrue(AudioReceiver.isStructurallyValidPacket(
+            Data(repeating: 0, count: 770)))
+    }
+
     func testDiscoveryHostsStayBoundedAndExcludeLocalAddress() {
         let interface = LocalNetwork.IPv4Interface(
             name: "en0",
@@ -564,6 +580,230 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(model.markedIDs, [second.id])
     }
 
+    func testMachineInputRequestAndServiceAutoEnable() async throws {
+        let transport = ScriptedInputTransport()
+        let device = UltimateDevice(name: "Input", host: "192.168.1.64")
+        let client = UltimateAPIClient(
+            device: device, transport: transport)
+
+        let status = try await client.ensureInputServicesEnabled()
+        XCTAssertTrue(status.changed)
+        try await client.sendMachineInput([
+            .keyboard(["left_shift", "1"], transition: .tap),
+            .joystick("left", port: 2, transition: .press),
+        ])
+
+        let requests = await transport.requests
+        XCTAssertTrue(requests.contains {
+            $0.url?.path.contains("Ultimate DMA Service") == true
+        })
+        XCTAssertTrue(requests.contains {
+            $0.url?.path == "/v1/configs:save_to_flash"
+        })
+        let inputRequest = try XCTUnwrap(requests.last {
+            $0.url?.path == "/v1/machine:input"
+        })
+        XCTAssertEqual(inputRequest.httpMethod, "POST")
+        let envelope = try JSONDecoder().decode(
+            C64MachineInputEnvelope.self,
+            from: try XCTUnwrap(inputRequest.httpBody))
+        XCTAssertEqual(envelope.events.count, 2)
+        XCTAssertEqual(envelope.events[1].port, 2)
+        XCTAssertEqual(envelope.events[1].inputs, ["left"])
+    }
+
+    @MainActor
+    func testHostKeyMappingAndJoystickTransitions() async throws {
+        let device = UltimateDevice(
+            id: UUID(), name: "Input", host: "192.168.1.64")
+        let transport = ScriptedInputTransport()
+        let controller = C64InputController(
+            device: device, transport: transport)
+        controller.settings.transport = .matrix
+        controller.settings.keymap = .symbolic
+        controller.settings.joystickEnabled = true
+
+        let arrow = HostKeyInput(
+            keyCode: 123, characters: nil,
+            modifiers: [], isRepeat: false)
+        XCTAssertEqual(
+            C64HostKeyMapper.action(
+                for: arrow, settings: controller.settings),
+            .joystick(.left))
+        let backquote = HostKeyInput(
+            keyCode: 50, characters: "`",
+            modifiers: [], isRepeat: false)
+        XCTAssertEqual(
+            C64HostKeyMapper.action(
+                for: backquote, settings: controller.settings),
+            .joystick(.fire))
+        let space = HostKeyInput(
+            keyCode: 49, characters: " ",
+            modifiers: [], isRepeat: false)
+        XCTAssertEqual(
+            C64HostKeyMapper.action(
+                for: space, settings: controller.settings),
+            .key(C64KeyBinding(
+                inputs: ["space"], fallback: 0x20,
+                holdable: true)))
+        XCTAssertEqual(
+            C64HostKeyMapper.joystickModifier(
+                keyCode: 55, modifiers: [.command], enabled: true,
+                fireKey: .command)?.input,
+            .fire)
+        XCTAssertEqual(
+            C64HostKeyMapper.joystickModifier(
+                keyCode: 55, modifiers: [], enabled: true,
+                fireKey: .command)?.pressed,
+            false)
+
+        controller.setJoystick(
+            source: "keyboard", input: .left, pressed: true)
+        controller.setJoystick(
+            source: "gamepad", input: .right, pressed: true)
+        controller.setJoystick(
+            source: "gamepad", input: .right, pressed: false)
+        for _ in 0..<100 {
+            if await transport.inputEventCount >= 3 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let events = await transport.allInputEvents
+        XCTAssertTrue(events.contains {
+            $0.inputs == ["left"] && $0.transition == .press
+        })
+        XCTAssertTrue(events.contains {
+            $0.inputs == ["left"] && $0.transition == .release
+        })
+
+        controller.keyDown(
+            hostKeyCode: 0, inputs: ["a"],
+            fallback: 0x41, holdable: true)
+        controller.keyDown(
+            hostKeyCode: 0, inputs: ["a"],
+            fallback: 0x41, holdable: true)
+        controller.keyUp(hostKeyCode: 0)
+        controller.releaseAll()
+        for _ in 0..<100 {
+            if await transport.inputEventCount >= 6 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let finalEvents = await transport.allInputEvents
+        XCTAssertEqual(finalEvents.filter {
+            $0.inputs == ["a"] && $0.transition == .press
+        }.count, 1)
+        XCTAssertEqual(finalEvents.filter {
+            $0.inputs == ["a"] && $0.transition == .release
+        }.count, 1)
+        XCTAssertTrue(finalEvents.contains { $0.kind == .releaseAll })
+    }
+
+    func testPETSCIIToMatrixAndCustomKeymapParsing() throws {
+        XCTAssertEqual(
+            C64MatrixMapper.chord(for: 0x21),
+            ["left_shift", "1"])
+        XCTAssertEqual(
+            C64MatrixMapper.chord(for: 0x91),
+            ["left_shift", "cursor_up_down"])
+        let keymap = try C64KeymapFile.parse("""
+        [meta]
+        name=Test Map
+        type=positional
+        [map]
+        KeyA=0x41
+        Shift+KeyA=0xC1
+        """)
+        XCTAssertEqual(keymap.name, "Test Map")
+        XCTAssertEqual(keymap.type, .positional)
+        XCTAssertEqual(keymap.mappings["KeyA"], 0x41)
+    }
+
+    @MainActor
+    func testLegacyInputClearsStopFlagAndWritesOrderedBuffer() async throws {
+        let device = UltimateDevice(
+            id: UUID(), name: "Legacy", host: "192.168.1.64")
+        let transport = ScriptedInputTransport()
+        let controller = C64InputController(
+            device: device, transport: transport)
+        controller.settings.transport = .legacy
+        controller.tapPETSCII([0x41])
+        for _ in 0..<100 {
+            if await transport.requests.count >= 5 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let requests = await transport.requests
+        let writeAddresses = requests.compactMap { request -> String? in
+            guard request.url?.path == "/v1/machine:writemem" else {
+                return nil
+            }
+            return URLComponents(
+                url: request.url!,
+                resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "address" }?.value
+        }
+        XCTAssertTrue(writeAddresses.contains("0091"))
+        XCTAssertTrue(writeAddresses.contains("0277"))
+        XCTAssertTrue(writeAddresses.contains("00C6"))
+    }
+
+    func testLiveMatrixInputCapabilityWhenConfigured() async throws {
+        guard let host = ProcessInfo.processInfo.environment[
+            "UV_LIVE_INPUT_HOST"
+        ] else {
+            throw XCTSkip("Set UV_LIVE_INPUT_HOST for live input probing")
+        }
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Input Probe", host: host))
+        let services = try await client.ensureInputServicesEnabled()
+        XCTAssertTrue(services.dmaEnabled)
+        XCTAssertTrue(services.webRemoteEnabled)
+        do {
+            try await client.releaseAllInput()
+        } catch UltimateAPIClient.APIError.httpError(let code, _) {
+            XCTAssertTrue([404, 405, 501].contains(code))
+        }
+    }
+
+    func testMenuScreenDecodingAndRequest() async throws {
+        let transport = MenuScreenHTTPTransport()
+        let client = UltimateAPIClient(
+            device: UltimateDevice(
+                name: "Menu", host: "192.168.1.64"),
+            transport: transport)
+        let screen = try await client.fetchMenuScreen()
+
+        XCTAssertEqual(screen.characters.count, 1000)
+        XCTAssertEqual(screen.colors.count, 1000)
+        XCTAssertEqual(screen.character(at: 0, row: 0), 1)
+        XCTAssertEqual(screen.color(at: 0, row: 0), 0x16)
+        XCTAssertEqual(UltimateMenuGlyph.character(0x42), "B")
+        XCTAssertEqual(UltimateMenuGlyph.character(0x00), " ")
+        XCTAssertEqual(UltimateMenuGlyph.character(0x01), "┌")
+        XCTAssertEqual(UltimateMenuGlyph.character(0x82), "─")
+        let request = await transport.lastRequest
+        XCTAssertEqual(
+            request?.url?.path,
+            "/v1/machine:menu_screen")
+    }
+
+    func testLiveMenuScreenCapabilityWhenConfigured() async throws {
+        guard let host = ProcessInfo.processInfo.environment[
+            "UV_LIVE_MENU_HOST"
+        ] else {
+            throw XCTSkip("Set UV_LIVE_MENU_HOST for live menu probing")
+        }
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Menu Probe", host: host))
+        try await client.menuButton()
+        defer { Task { try? await client.menuButton() } }
+        try await Task.sleep(for: .milliseconds(250))
+        do {
+            let screen = try await client.fetchMenuScreen()
+            XCTAssertEqual(screen.characters.count, 1000)
+        } catch UltimateAPIClient.APIError.httpError(let code, _) {
+            XCTAssertEqual(code, 404)
+        }
+    }
+
     @MainActor
     func testOldDisplaySnapshotDefaultsToColorCRT() throws {
         let id = UUID()
@@ -654,5 +894,59 @@ private actor RecordingHTTPTransport: HTTPTransport {
             httpVersion: "HTTP/1.1",
             headerFields: nil)!
         return (Data(#"{"errors":[]}"#.utf8), response)
+    }
+}
+
+private actor ScriptedInputTransport: HTTPTransport {
+    private(set) var requests: [URLRequest] = []
+
+    var allInputEvents: [C64MachineInputEvent] {
+        requests.compactMap(\.httpBody).flatMap {
+            (try? JSONDecoder().decode(
+                C64MachineInputEnvelope.self, from: $0).events) ?? []
+        }
+    }
+
+    var inputEventCount: Int { allInputEvents.count }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        requests.append(request)
+        let path = request.url?.path ?? ""
+        let data: Data
+        if path == "/v1/configs/Network Settings" {
+            data = Data("""
+            {"Network Settings":{
+              "Ultimate DMA Service":"Disabled",
+              "Web Remote Control Service":"Enabled"
+            },"errors":[]}
+            """.utf8)
+        } else if path == "/v1/machine:readmem" {
+            data = Data([0])
+        } else {
+            data = Data(#"{"errors":[]}"#.utf8)
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: nil)!
+        return (data, response)
+    }
+}
+
+private actor MenuScreenHTTPTransport: HTTPTransport {
+    private(set) var lastRequest: URLRequest?
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        lastRequest = request
+        var bytes = Data(repeating: 0, count: 2000)
+        bytes[0] = 1
+        bytes[1000] = 0x16
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: nil)!
+        return (bytes, response)
     }
 }
