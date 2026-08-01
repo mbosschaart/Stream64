@@ -104,6 +104,23 @@ struct StreamContextMenu: View {
         }
         .disabled(!session.isConnected)
 
+        if session.supportsDebugFeatures {
+            Button("Debug Trace…", systemImage: "waveform.path.ecg") {
+                DebugTraceWindowController.show(session: session)
+            }
+            .disabled(!session.isConnected)
+
+            Button("Machine Monitor…", systemImage: "terminal") {
+                session.openTelnetMonitor()
+            }
+            .disabled(!session.isConnected)
+
+            Button("SID Oscilloscope…", systemImage: "waveform") {
+                session.openSIDOscilloscope()
+            }
+            .disabled(!session.isConnected)
+        }
+
         Divider()
 
         // Display settings — this stream only

@@ -18,6 +18,9 @@ struct UltimateDevice: Identifiable, Codable, Hashable {
     var videoPort: Int = 11000
     /// UDP port on which this machine receives the audio stream.
     var audioPort: Int = 11001
+    /// UDP port on which this machine receives the debug bus-trace stream
+    /// (U64/U64 Elite only — see `DeviceSession.startDebugTrace`).
+    var debugPort: Int = 11002
     /// Automatically connect and start streaming when the device is selected.
     var autoConnect: Bool = true
     var notes: String = ""
@@ -53,16 +56,19 @@ struct UltimateDevice: Identifiable, Codable, Hashable {
 
     /// Default for a new device with local UDP ports not used by any
     /// existing device — every device needs its own receive ports for
-    /// simultaneous streaming.
+    /// simultaneous streaming. Allocates video/audio/debug as a triplet so
+    /// the debug port never collides with another device's video or audio
+    /// port either.
     static func makeDefault(avoiding existing: [UltimateDevice]) -> UltimateDevice {
         var device = makeDefault()
-        let used = Set(existing.flatMap { [$0.videoPort, $0.audioPort] })
+        let used = Set(existing.flatMap { [$0.videoPort, $0.audioPort, $0.debugPort] })
         var port = 11000
-        while used.contains(port) || used.contains(port + 1) {
-            port += 2
+        while used.contains(port) || used.contains(port + 1) || used.contains(port + 2) {
+            port += 3
         }
         device.videoPort = port
         device.audioPort = port + 1
+        device.debugPort = port + 2
         return device
     }
 }

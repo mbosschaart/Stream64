@@ -318,16 +318,17 @@ final class Assembly64FeatureTests: XCTestCase {
         let existing = [
             UltimateDevice(
                 name: "One", host: "192.168.1.20",
-                videoPort: 11000, audioPort: 11001),
+                videoPort: 11000, audioPort: 11001, debugPort: 11002),
             UltimateDevice(
                 name: "Two", host: "192.168.1.21",
-                videoPort: 11002, audioPort: 11003),
+                videoPort: 11003, audioPort: 11004, debugPort: 11005),
         ]
 
         let device = UltimateDevice.makeDefault(avoiding: existing)
 
-        XCTAssertEqual(device.videoPort, 11004)
-        XCTAssertEqual(device.audioPort, 11005)
+        XCTAssertEqual(device.videoPort, 11006)
+        XCTAssertEqual(device.audioPort, 11007)
+        XCTAssertEqual(device.debugPort, 11008)
     }
 
     func testFTPMLSDAndLISTParsing() throws {
@@ -804,6 +805,359 @@ final class Assembly64FeatureTests: XCTestCase {
         }
     }
 
+    func testDebugStreamEntryDecodes6510VICWordLayout() {
+        let word: UInt32 = (1 << 31)             // PHI2
+            | (0 << 30)                          // GAME# = 0
+            | (1 << 29)                          // EXROM# = 1
+            | (1 << 28)                          // BA = 1
+            | (0 << 27)                          // IRQ# = 0
+            | (1 << 26)                          // ROM# = 1
+            | (0 << 25)                          // NMI# = 0
+            | (1 << 24)                          // R/W# = read
+            | (UInt32(0xAB) << 16)                // Data
+            | UInt32(0x1234)                      // Address
+
+        let entry = DebugStreamEntry(word: word, source: .cpu6510)
+        XCTAssertTrue(entry.phi2)
+        XCTAssertFalse(entry.game)
+        XCTAssertTrue(entry.exrom)
+        XCTAssertTrue(entry.ba)
+        XCTAssertFalse(entry.irq)
+        XCTAssertTrue(entry.rom)
+        XCTAssertFalse(entry.nmi)
+        XCTAssertTrue(entry.isRead)
+        XCTAssertEqual(entry.data, 0xAB)
+        XCTAssertEqual(entry.address, 0x1234)
+    }
+
+    func testDebugStreamEntryDecodes1541WordLayout() {
+        let word: UInt32 = (0 << 31)
+            | (1 << 30)                           // ATN
+            | (0 << 29)                           // DATA
+            | (1 << 28)                           // CLOCK
+            | (1 << 27)                           // SYNC
+            | (0 << 26)                           // BYTE_READY
+            | (1 << 25)                           // IRQ#
+            | (0 << 24)                           // R/W# = write
+            | (UInt32(0x55) << 16)
+            | UInt32(0x0300)
+
+        let entry = DebugStreamEntry(word: word, source: .drive1541)
+        XCTAssertFalse(entry.phi2)
+        XCTAssertTrue(entry.atn)
+        XCTAssertFalse(entry.dataLine)
+        XCTAssertTrue(entry.clock)
+        XCTAssertTrue(entry.sync)
+        XCTAssertFalse(entry.byteReady)
+        XCTAssertTrue(entry.irq)
+        XCTAssertFalse(entry.isRead)
+        XCTAssertEqual(entry.data, 0x55)
+        XCTAssertEqual(entry.address, 0x0300)
+    }
+
+    func testDebugStreamPacketParsingDecodesSequenceAndMultipleEntries() {
+        var packet = Data([0x05, 0x16, 0x00, 0x00]) // seq 0x1605, reserved
+        let word1: UInt32 = (1 << 31) | (1 << 24) | (UInt32(0x20) << 16) | 0x0400
+        let word2: UInt32 = (UInt32(0x02) << 16) | 0xD020
+        for word in [word1, word2] {
+            packet.append(contentsOf: [
+                UInt8(word & 0xFF),
+                UInt8((word >> 8) & 0xFF),
+                UInt8((word >> 16) & 0xFF),
+                UInt8((word >> 24) & 0xFF),
+            ])
+        }
+
+        let (sequence, entries) = DebugStreamEntry.parsePacket(packet, source: .cpu6510)
+        XCTAssertEqual(sequence, 0x1605)
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[0].address, 0x0400)
+        XCTAssertEqual(entries[0].data, 0x20)
+        XCTAssertTrue(entries[0].isRead)
+        XCTAssertEqual(entries[1].address, 0xD020)
+        XCTAssertEqual(entries[1].data, 0x02)
+        XCTAssertFalse(entries[1].isRead)
+    }
+
+    func testMemoryHeatmapRecordsReadsAndWritesIndependently() {
+        let heatmap = MemoryHeatmap()
+        let readWord: UInt32 = (1 << 24) | UInt32(0x1234) // R/W#=1 (read)
+        let writeWord: UInt32 = UInt32(0x5678)            // R/W#=0 (write)
+        let readEntry = DebugStreamEntry(word: readWord, source: .cpu6510)
+        let writeEntry = DebugStreamEntry(word: writeWord, source: .cpu6510)
+
+        heatmap.record([readEntry, writeEntry])
+
+        XCTAssertGreaterThan(heatmap.lastRead[0x1234], 0)
+        XCTAssertEqual(heatmap.lastWrite[0x1234], 0)
+        XCTAssertGreaterThan(heatmap.lastWrite[0x5678], 0)
+        XCTAssertEqual(heatmap.lastRead[0x5678], 0)
+
+        heatmap.reset()
+        XCTAssertEqual(heatmap.lastRead[0x1234], 0)
+        XCTAssertEqual(heatmap.lastWrite[0x5678], 0)
+    }
+
+    func testDebugStreamPacketParsingToleratesShortPacket() {
+        let (sequence, entries) = DebugStreamEntry.parsePacket(Data([0x01]), source: .vic)
+        XCTAssertEqual(sequence, 0)
+        XCTAssertTrue(entries.isEmpty)
+    }
+
+    func testVT100ScreenHandlesCursorPositioningAndText() {
+        let screen = VT100Screen(columns: 10, rows: 3)
+        screen.feed(Data("\u{1B}[2;3HHi".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 2, row: 1).character, "H")
+        XCTAssertEqual(screen.cell(atColumn: 3, row: 1).character, "i")
+        XCTAssertEqual(screen.cursorRow, 1)
+        XCTAssertEqual(screen.cursorColumn, 4)
+    }
+
+    func testVT100ScreenErasesDisplayAndAppliesSGRColors() {
+        let screen = VT100Screen(columns: 5, rows: 2)
+        screen.feed(Data("ABCDE".utf8))
+        screen.feed(Data("\u{1B}[2J".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, " ")
+
+        // ED does not move the cursor — reposition explicitly before
+        // writing, rather than relying on where "ABCDE" happened to wrap.
+        screen.feed(Data("\u{1B}[1;1H\u{1B}[31mX".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "X")
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).foreground, 1)
+
+        screen.feed(Data("\u{1B}[0mY".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 1, row: 0).foreground, 7)
+    }
+
+    func testVT100ScreenWrapsAndScrollsOnOverflow() {
+        let screen = VT100Screen(columns: 3, rows: 2)
+        screen.feed(Data("ABCDEF".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "D")
+        XCTAssertEqual(screen.cell(atColumn: 2, row: 0).character, "F")
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 1).character, " ")
+
+        screen.feed(Data("GHI".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "G")
+        XCTAssertEqual(screen.cell(atColumn: 2, row: 0).character, "I")
+    }
+
+    func testVT100ScreenHandlesCarriageReturnAndLineFeedIndependently() {
+        let screen = VT100Screen(columns: 5, rows: 2)
+        screen.feed(Data("AB\r\nCD".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "A")
+        XCTAssertEqual(screen.cell(atColumn: 1, row: 0).character, "B")
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 1).character, "C")
+        XCTAssertEqual(screen.cell(atColumn: 1, row: 1).character, "D")
+    }
+
+    func testSIDVoiceRegistersDecodeFrequencyPulseWidthAndControlBits() {
+        var registers = SIDVoiceRegisters()
+        registers.write(offset: 0, value: 0x34) // freq lo
+        registers.write(offset: 1, value: 0x12) // freq hi
+        registers.write(offset: 2, value: 0xAB) // pulse width lo
+        registers.write(offset: 3, value: 0xFF) // pulse width hi (masked to 4 bits)
+        let gate: UInt8 = 0x01, triangle: UInt8 = 0x10, pulse: UInt8 = 0x40, noise: UInt8 = 0x80
+        registers.write(offset: 4, value: gate | triangle | pulse | noise)
+        registers.write(offset: 5, value: 0x9A) // attack=9, decay=A
+        registers.write(offset: 6, value: 0x5C) // sustain=5, release=C
+
+        XCTAssertEqual(registers.frequency, 0x1234)
+        XCTAssertEqual(registers.pulseWidth, 0x0FAB)
+        XCTAssertTrue(registers.gate)
+        XCTAssertFalse(registers.syncEnabled)
+        XCTAssertFalse(registers.ringModEnabled)
+        XCTAssertFalse(registers.test)
+        XCTAssertTrue(registers.triangleEnabled)
+        XCTAssertFalse(registers.sawtoothEnabled)
+        XCTAssertTrue(registers.pulseEnabled)
+        XCTAssertTrue(registers.noiseEnabled)
+        XCTAssertEqual(registers.attack, 9)
+        XCTAssertEqual(registers.decay, 0xA)
+        XCTAssertEqual(registers.sustain, 5)
+        XCTAssertEqual(registers.release, 0xC)
+    }
+
+    func testSIDVoiceSynthTriangleReachesFullRangeAfterAttack() {
+        var registers = SIDVoiceRegisters()
+        registers.write(offset: 1, value: 0x10) // frequency = 0x1000 (~240 Hz)
+        registers.write(offset: 4, value: 0x11) // gate + triangle
+        registers.write(offset: 5, value: 0x00) // fastest attack/decay
+        registers.write(offset: 6, value: 0xF0) // full sustain, fastest release
+
+        var synth = SIDVoiceSynth()
+        let dt = 1.0 / SIDVoiceSynth.clockHz
+        let totalSteps = Int(0.05 / dt)
+        var minValue = 1.0, maxValue = -1.0
+        for step in 0..<totalSteps {
+            let sample = synth.step(dt: dt, registers: registers, neighborPhase: 0)
+            if step > totalSteps / 2 { // only once envelope/oscillator have settled
+                minValue = min(minValue, sample)
+                maxValue = max(maxValue, sample)
+            }
+        }
+        XCTAssertGreaterThan(maxValue, 0.9)
+        XCTAssertLessThan(minValue, -0.9)
+    }
+
+    func testSIDVoiceSynthEnvelopeReleasesTowardZeroWhenGateClears() {
+        var registers = SIDVoiceRegisters()
+        registers.write(offset: 1, value: 0x10)
+        registers.write(offset: 4, value: 0x11) // gate + triangle
+        registers.write(offset: 5, value: 0x00) // fastest attack/decay
+        registers.write(offset: 6, value: 0xF0) // full sustain, fastest release
+
+        var synth = SIDVoiceSynth()
+        let dt = 1.0 / SIDVoiceSynth.clockHz
+        for _ in 0..<Int(0.02 / dt) {
+            _ = synth.step(dt: dt, registers: registers, neighborPhase: 0)
+        }
+        XCTAssertGreaterThan(synth.envelope, 0.9) // fully attacked into sustain
+
+        registers.write(offset: 4, value: 0x10) // clear gate, keep triangle selected
+        for _ in 0..<Int(0.05 / dt) {
+            _ = synth.step(dt: dt, registers: registers, neighborPhase: 0)
+        }
+        XCTAssertLessThan(synth.envelope, 0.1)
+    }
+
+    func testSIDVoiceSynthPulseRespectsPulseWidth() {
+        var registers = SIDVoiceRegisters()
+        registers.write(offset: 1, value: 0x08) // frequency = 0x0800 (~120 Hz)
+        registers.write(offset: 2, value: 0x00)
+        registers.write(offset: 3, value: 0x02) // pulse width = 0x200 → duty ≈ 12.5%
+        registers.write(offset: 4, value: 0x41) // gate + pulse
+        registers.write(offset: 5, value: 0x00)
+        registers.write(offset: 6, value: 0xF0) // full sustain
+
+        var synth = SIDVoiceSynth()
+        let dt = 1.0 / SIDVoiceSynth.clockHz
+        for _ in 0..<Int(0.01 / dt) { // let the envelope settle first
+            _ = synth.step(dt: dt, registers: registers, neighborPhase: 0)
+        }
+
+        var highCount = 0
+        var total = 0
+        for _ in 0..<Int(0.2 / dt) { // ~24 periods, enough to average out edge effects
+            let sample = synth.step(dt: dt, registers: registers, neighborPhase: 0)
+            total += 1
+            if sample > 0 { highCount += 1 }
+        }
+        let ratio = Double(highCount) / Double(total)
+        XCTAssertEqual(ratio, 512.0 / 4095.0, accuracy: 0.02)
+    }
+
+    func testSIDSpectrumAnalyzerPeaksAtInputSineFrequency() throws {
+        let sampleRate = 48000.0
+        let analyzer = SIDSpectrumAnalyzer(sampleRate: sampleRate)
+        let toneHz = 2000.0
+
+        // Feed enough sine samples for several FFT frames so the window
+        // has settled; keep the last non-nil bar spectrum.
+        var lastBars: [Float]?
+        var phase = 0.0
+        let totalSamples = SIDSpectrumAnalyzer.fftSize * 4
+        var samples = [Float](repeating: 0, count: totalSamples)
+        for i in 0..<totalSamples {
+            samples[i] = Float(sin(phase))
+            phase += 2 * Double.pi * toneHz / sampleRate
+        }
+        // Feed in FFT-sized chunks, same as a real caller would.
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + 256, samples.count)
+            if let bars = analyzer.ingest(Array(samples[offset..<end])) {
+                lastBars = bars
+            }
+            offset = end
+        }
+
+        let bars = try XCTUnwrap(lastBars)
+        XCTAssertEqual(bars.count, SIDSpectrumAnalyzer.barCount)
+
+        // The loudest bar should be one whose log-spaced frequency range
+        // covers (or is very close to) 2 kHz.
+        let peakIndex = bars.indices.max(by: { bars[$0] < bars[$1] })!
+        let nyquist = sampleRate / 2
+        let minFrequency = 40.0
+        let peakBarFrequency = minFrequency * pow(nyquist / minFrequency, Double(peakIndex) / Double(bars.count))
+        XCTAssertEqual(peakBarFrequency, toneHz, accuracy: toneHz * 0.5)
+    }
+
+    func testSIDFilterRegistersDecodeCutoffResonanceRoutingAndMode() {
+        var filter = SIDFilterRegisters()
+        filter.write(offset: 0, value: 0x05) // cutoff lo (3 bits used)
+        filter.write(offset: 1, value: 0x3C) // cutoff hi
+        let resonance: UInt8 = 0x90 // resonance=9, voice1+voice2 routed
+        filter.write(offset: 2, value: resonance | 0x03)
+        let mode: UInt8 = 0x0A | 0x10 // volume=10, low-pass enabled
+        filter.write(offset: 3, value: mode)
+
+        XCTAssertEqual(filter.cutoffValue, (0x3C << 3) | 0x05)
+        XCTAssertEqual(filter.resonance, 9)
+        XCTAssertTrue(filter.voiceRouted(0))
+        XCTAssertTrue(filter.voiceRouted(1))
+        XCTAssertFalse(filter.voiceRouted(2))
+        XCTAssertFalse(filter.externalRouted)
+        XCTAssertEqual(filter.volume, 10)
+        XCTAssertTrue(filter.lowPassEnabled)
+        XCTAssertFalse(filter.bandPassEnabled)
+        XCTAssertFalse(filter.highPassEnabled)
+        XCTAssertFalse(filter.voice3Disconnected)
+
+        // Cutoff-to-Hz is a monotonic approximation, not a specific value.
+        XCTAssertLessThan(
+            SIDFilterRegisters.approximateCutoffHz(0),
+            SIDFilterRegisters.approximateCutoffHz(2047))
+    }
+
+    @MainActor
+    func testSIDVoiceChannelNoteHistoryRecordsGateAndFrequencyOverTime() {
+        var channel = SIDVoiceChannel(
+            id: 0, chipIndex: 0, voiceIndex: 0, bufferSize: 8, noteHistoryLength: 4)
+        channel.registers.write(offset: 0, value: 0x00)
+        channel.registers.write(offset: 1, value: 0x10) // some frequency
+        channel.registers.write(offset: 4, value: 0x01) // gate on
+
+        channel.pushNoteHistory()
+        channel.registers.write(offset: 4, value: 0x00) // gate off
+        channel.pushNoteHistory()
+
+        let history = channel.orderedNoteHistory
+        XCTAssertEqual(history.count, 4) // fixed ring-buffer size
+        // Most recent two entries (end of the chronological array) are the
+        // ones just pushed: gate-on then gate-off, same frequency.
+        XCTAssertTrue(history[2].gate)
+        XCTAssertFalse(history[3].gate)
+        XCTAssertEqual(history[2].frequencyHz, history[3].frequencyHz, accuracy: 0.01)
+    }
+
+    func testSIDNoteNameConversionMatchesStandardTuning() {
+        XCTAssertEqual(SIDVoiceChannel.noteName(forHz: 440), "A4")
+        XCTAssertEqual(SIDVoiceChannel.noteName(forHz: 261.63), "C4")
+        XCTAssertEqual(SIDVoiceChannel.noteName(forHz: 0), "—")
+    }
+
+    /// Covers the register read/write hex round-trip only — mode selection
+    /// for the debug *stream* goes through `setConfigItem` (see
+    /// `testMachineInputRequestAndServiceAutoEnable`/HANDOVER.md §14), not
+    /// this register.
+    func testDebugRegisterValueRoundTripsThroughHexEncoding() async throws {
+        let transport = DebugRegisterHTTPTransport()
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Debug", host: "192.168.1.64"),
+            transport: transport)
+
+        let value = try await client.writeDebugRegister(0x0A)
+        XCTAssertEqual(value, 0x2C)
+        let request = await transport.lastRequest
+        XCTAssertEqual(request?.url?.path, "/v1/machine:debugreg")
+        XCTAssertEqual(request?.httpMethod, "PUT")
+        XCTAssertEqual(
+            URLComponents(url: try XCTUnwrap(request?.url), resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "value" })?.value,
+            "0A")
+    }
+
     @MainActor
     func testOldDisplaySnapshotDefaultsToColorCRT() throws {
         let id = UUID()
@@ -931,6 +1285,20 @@ private actor ScriptedInputTransport: HTTPTransport {
             url: request.url!, statusCode: 200,
             httpVersion: "HTTP/1.1", headerFields: nil)!
         return (data, response)
+    }
+}
+
+private actor DebugRegisterHTTPTransport: HTTPTransport {
+    private(set) var lastRequest: URLRequest?
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        lastRequest = request
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: nil)!
+        return (Data(#"{"value":"0x2C","errors":[]}"#.utf8), response)
     }
 }
 

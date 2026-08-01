@@ -81,6 +81,27 @@ final class AudioReceiver {
 
     private var started = false
 
+    /// Multiple visualization windows (Spectrum Analyzer, Lissajous Scope,
+    /// Spectrogram) can tap the real decoded audio at once, so — same
+    /// multicast pattern `DebugStreamReceiver` uses for trace entries —
+    /// observers are keyed by token rather than a single closure.
+    /// Broadcasts interleaved stereo `[Float]` (L, R, L, R, ...) once per
+    /// packet, from inside `handlePacket` on the receiver's own queue —
+    /// never from the real-time `render(...)` audio-thread callback, so
+    /// taps add no risk to playback.
+    private var sampleObservers: [UUID: ([Float]) -> Void] = [:]
+
+    @discardableResult
+    func addSampleObserver(_ observer: @escaping ([Float]) -> Void) -> UUID {
+        let id = UUID()
+        queue.async { [weak self] in self?.sampleObservers[id] = observer }
+        return id
+    }
+
+    func removeSampleObserver(_ id: UUID) {
+        queue.async { [weak self] in self?.sampleObservers.removeValue(forKey: id) }
+    }
+
     init() {
         // Standard (deinterleaved) stereo float — AVAudioEngine node
         // connections require non-interleaved formats.
@@ -198,6 +219,12 @@ final class AudioReceiver {
         let frameCount = payload.count / 4 // 2 channels × 2 bytes
         guard frameCount > 0 else { return }
 
+        // Skip building the tap buffer entirely when nobody's listening —
+        // the common case (no visualization window open).
+        let tapping = !sampleObservers.isEmpty
+        var tapSamples: [Float] = []
+        if tapping { tapSamples.reserveCapacity(frameCount * 2) }
+
         payload.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             let base = raw.baseAddress!
             os_unfair_lock_lock(lock)
@@ -209,12 +236,22 @@ final class AudioReceiver {
                 }
                 let l = base.loadUnaligned(fromByteOffset: i * 4, as: Int16.self)
                 let r = base.loadUnaligned(fromByteOffset: i * 4 + 2, as: Int16.self)
-                ring[writeIndex * 2] = Float(l) / 32768.0
-                ring[writeIndex * 2 + 1] = Float(r) / 32768.0
+                let lf = Float(l) / 32768.0
+                let rf = Float(r) / 32768.0
+                ring[writeIndex * 2] = lf
+                ring[writeIndex * 2 + 1] = rf
                 writeIndex = (writeIndex + 1) % Self.capacityFrames
                 framesAvailable += 1
+                if tapping {
+                    tapSamples.append(lf)
+                    tapSamples.append(rf)
+                }
             }
             os_unfair_lock_unlock(lock)
+        }
+
+        if tapping {
+            for observer in sampleObservers.values { observer(tapSamples) }
         }
     }
 

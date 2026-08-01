@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.98b — 2026-08-01
+
+### Added
+
+- **SID Oscilloscope: 8 new visualization modes**, selectable from a toolbar "Visualize" menu and a matching right-click context menu on the window (plus an independent Phosphor Glow overlay toggle in the same menu): **ADSR Envelope** and **Mixer Console** (per-channel grid, reusing the existing register-driven synth data), **Piano Roll** (all channels on one shared pitch axis, from a new ~10 s per-voice note-history buffer), **Wiring Diagram** (per-chip ring-mod/sync connector diagram — visualizes flags the synth already decodes but doesn't fully act on), **Filter Curve** (newly decoded per-chip filter/resonance/mode registers plotted as an approximate frequency response), **Spectrum Analyzer** and **Spectrogram** (real FFT bar graph / scrolling heatmap off the actual post-mix audio via a new `Accelerate`/`vDSP` engine, `SIDSpectrumAnalyzer`), and **Lissajous Scope** (real left-vs-right channel stereo-phase plot).
+- `AudioReceiver` gained a multicast sample tap (`addSampleObserver`/`removeSampleObserver`, same pattern as `DebugStreamReceiver`'s trace-entry observers) so multiple visualization windows can read the real decoded audio without affecting live playback.
+
+## 0.97b — 2026-08-01
+
+### Added
+
+- **Debug Trace window** (U64/U64 Elite only) — starts the Ultimate's cycle-accurate 6510/VIC/1541 bus-trace stream, decodes it live into a scrolling table (address, data, R/W, PHI2, signal flags) or a real-time 256×256 memory-map heatmap with a live-adjustable decay slider (last read/write per address flashes green/orange and fades out fast — row = address page, with every notable C64 region (RAM, BASIC/KERNAL ROM, VIC-II, SID, color RAM, both CIAs, cartridge I/O) or, for a 1541 drive trace, its own much smaller memory map (RAM, both VIAs, DOS ROM) labelled in a side gutter so labels never overlap the grid), and exports either the raw capture (compatible with the official `grab_debug.py`/`dump_bus_trace.c`/GtkWave pipeline) or the visible table rows as CSV. Runs alongside video/audio streaming rather than interrupting it — despite Ultimate's docs claiming the debug and video streams are mutually exclusive, live testing against a real U64-II showed all three streaming simultaneously without issue. Trace-source selection (6510/VIC/1541, plus two firmware-3.15 IEC variants) was also verified live and uses the `Data Streams`/`Debug Stream Mode` config item, not the debug register as first assumed.
+- **Machine Monitor window** (U64/U64 Elite only) — a VT100 terminal view onto the Ultimate's Telnet server (port 23), the documented remote-control path for the on-device menu system and Machine Code Monitor, which has no REST equivalent. Arrow/function keys drive navigation; `Command+letter` is sent as a best-effort stand-in for the physical `C=` modifier.
+- **SID Oscilloscope window** (U64/U64 Elite only) — a live per-voice waveform display for the SID (3 channels, or 6 with a second SID configured — base address and channel count auto-detected from `SID Addressing`/`SID Sockets Configuration`, confirmed live against a real dual-8580 U64-II). Each voice's waveform is reconstructed from register writes seen on a 6510-inclusive debug trace through a small approximate SID emulation core (oscillator shapes, standard-timing-table ADSR, a noise LFSR, approximate ring modulation); shows waveform combination, frequency, nearest note name, and gate state per channel. `DebugStreamReceiver` was refactored to multicast entries/stats to multiple observers so this window and the Debug Trace window can watch the same running trace simultaneously without stealing each other's feed.
+- New capability probe (`GET /v1/machine:debugreg`) gates all three new windows to devices that actually implement the U64 debug register — Ultimate-II+ and C64 Ultimate hardware do not, and no longer show the menu entries.
+- Devices gained a third local UDP port (Debug Port, default 11002) alongside Video/Audio; new-device port allocation now assigns all three as a collision-free triplet.
+
 ## 0.96b — 2026-07-25
 
 ### Added

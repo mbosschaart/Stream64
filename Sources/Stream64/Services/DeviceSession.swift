@@ -33,9 +33,25 @@ final class DeviceSession: ObservableObject {
         case failed(String)
     }
 
+    /// Lifecycle of the debug bus-trace stream (see `startDebugTrace`).
+    enum DebugTraceState: Equatable {
+        case inactive
+        case starting
+        case active(DebugStreamMode)
+        case error(String)
+    }
+
+    @Published private(set) var debugTraceState: DebugTraceState = .inactive
+    /// Whether this device's firmware implements the U64 debug register —
+    /// Ultimate-II+ and C64 Ultimate hardware do not. Populated by a
+    /// silent, best-effort probe once connected; gates the Debug Trace /
+    /// Machine Monitor menu entries.
+    @Published private(set) var supportsDebugFeatures = false
+
     let device: UltimateDevice
     let videoReceiver = VideoReceiver()
     let audioReceiver = AudioReceiver()
+    let debugStreamReceiver = DebugStreamReceiver()
     /// How this stream looks — per-device, persisted by device ID.
     let display: DisplaySettings
     let input: C64InputController
@@ -292,6 +308,7 @@ final class DeviceSession: ObservableObject {
                 recoverAudioQuietly()
             }
             watchForSilentStream()
+            probeDebugCapability()
         } catch {
             videoReceiver.stop()
             audioReceiver.stop()
@@ -434,12 +451,82 @@ final class DeviceSession: ObservableObject {
         if stopRemoteStreams {
             try? await client.stopVideoStream()
             try? await client.stopAudioStream()
+            if debugTraceState != .inactive {
+                try? await client.stopDebugStream()
+            }
         }
         videoReceiver.stop()
         audioReceiver.stop()
+        debugStreamReceiver.stop()
+        debugTraceState = .inactive
         fps = 0
         isPaused = false
         state = .disconnected
+    }
+
+    // MARK: - Debug bus-trace stream (U64/U64 Elite only)
+
+    /// Silent, best-effort probe for U64 debug register support. Never
+    /// surfaces as a connection error — Ultimate-II+/C64 Ultimate hardware
+    /// simply fails this and keeps the debug features hidden.
+    private func probeDebugCapability() {
+        Task { [weak self] in
+            guard let self else { return }
+            let probeClient = UltimateAPIClient(device: self.device, timeout: 3)
+            let supported = (try? await probeClient.readDebugRegister()) != nil
+            guard self.isConnected else { return }
+            self.supportsDebugFeatures = supported
+        }
+    }
+
+    /// Start the debug bus-trace stream in `mode`, alongside whatever
+    /// video/audio streaming is already happening.
+    ///
+    /// Ultimate's documentation claims the debug and video streams are
+    /// mutually exclusive on the shared 100 Mbps link ("turning on the
+    /// video stream will automatically turn off the debug stream"). Live
+    /// testing against a real U64-II (firmware 3.15) disproved this in
+    /// both directions: starting the debug stream while video/audio were
+    /// already running did not interrupt them, and (re)starting video
+    /// while the debug stream was running did not interrupt that either —
+    /// all three kept delivering packets simultaneously. So this
+    /// deliberately does **not** touch the video/audio streams at all.
+    func startDebugTrace(mode: DebugStreamMode) async {
+        guard isConnected else { return }
+        debugTraceState = .starting
+        guard let localIP = LocalNetwork.primaryIPv4Address(reachingDevice: device.host) else {
+            debugTraceState = .error("Could not determine this Mac's address on the Ultimate's network.")
+            return
+        }
+
+        do {
+            // Mode selection is a config item, not the debug register —
+            // confirmed against real U64-II hardware on firmware 3.15 via
+            // `GET /v1/configs/Data%20Streams`, which lists exactly this
+            // enum's raw values under "Debug Stream Mode". Writing the
+            // debug register ($D7FF) has no effect on stream source.
+            try await client.setConfigItem(
+                category: "Data Streams",
+                item: "Debug Stream Mode",
+                value: mode.rawValue)
+            debugStreamReceiver.source = mode.decodeSource
+            try debugStreamReceiver.start(port: UInt16(device.debugPort))
+            try await client.startDebugStream(
+                destinationHost: localIP, port: device.debugPort)
+            debugTraceState = .active(mode)
+        } catch {
+            debugStreamReceiver.stop()
+            debugTraceState = .error(error.localizedDescription)
+        }
+    }
+
+    /// Stop the debug stream. Video/audio were never touched by
+    /// `startDebugTrace`, so there's nothing to restart here.
+    func stopDebugTrace() async {
+        guard debugTraceState != .inactive else { return }
+        try? await client.stopDebugStream()
+        debugStreamReceiver.stop()
+        debugTraceState = .inactive
     }
 
     // MARK: - Machine control
@@ -541,6 +628,22 @@ final class DeviceSession: ObservableObject {
 
     func closeRemoteMenuFromWindow() async {
         try? await client.menuButton()
+    }
+
+    /// Open a Telnet/VT100 window onto the Ultimate's menu system and
+    /// Machine Code Monitor — native firmware UI with no REST equivalent
+    /// (see `TelnetMonitorWindowController`).
+    func openTelnetMonitor() {
+        TelnetMonitorWindowController.show(session: self)
+    }
+
+    /// Open a live oscilloscope window reconstructing each SID voice's
+    /// waveform from register writes seen on the debug bus-trace stream
+    /// (see `SIDOscilloscopeWindowController`). Independent of, and can
+    /// run alongside, the Debug Trace window — both simply observe
+    /// whatever 6510-inclusive trace is currently running.
+    func openSIDOscilloscope() {
+        SIDOscilloscopeWindowController.show(session: self)
     }
 
     func togglePause() async {

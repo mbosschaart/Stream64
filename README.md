@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.96b-purple)
+![Version](https://img.shields.io/badge/version-0.98b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -25,6 +25,8 @@ Designed by Martijn Bosschaart, 2026.
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, menu, and power off; firmware supporting `menu_screen` immediately opens a keyboard-controlled live 40×25 child, while older firmware falls back to the streamed menu
+- **Debug Trace & Machine Monitor** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export, and a Telnet/VT100 window onto the on-device Machine Code Monitor; both are hidden automatically on hardware that doesn't implement the U64 debug register
+- **SID Oscilloscope** (Ultimate 64/Elite only) — a 9-mode SID visualizer switchable from a toolbar menu or right-click: per-voice Oscilloscope/ADSR Envelope/Mixer Console (reconstructed from register writes on the debug bus-trace), Piano Roll, ring-mod/sync Wiring Diagram, an approximate Filter Curve, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, and Spectrogram modes — with an optional phosphor-glow overlay
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -56,6 +58,172 @@ Browse any configured Ultimate or mounted Mac volume in either pane, then queue 
 - Ultimate 64/Elite firmware **3.11+**, or C64 Ultimate firmware **1.1+**, on the same network
 - UDP path from device to Mac (no firewall blocking the stream ports)
 
+## Upcoming Ultimate Firmware 3.15
+
+Matrix-level keyboard capture, virtual joystick injection, and the remote \
+character-based menu require the new REST input APIs in **Ultimate firmware \
+3.15 or newer**. Firmware 3.15 currently exists as an official \
+[source-tagged release candidate](https://github.com/GideonZ/1541ultimate/tree/v3.15), \
+but the public [Ultimate firmware download page](https://ultimate64.com/Firmware) \
+still lists 3.14d as the latest normal end-user download.
+
+Stream64 capability-probes these endpoints and never assumes support from the \
+version string alone:
+
+### Matrix keyboard input
+
+```http
+POST /v1/machine:input
+Content-Type: application/json
+```
+
+```json
+{"events":[{"kind":"keyboard","inputs":["a"],"transition":"press"}]}
+```
+
+Keyboard events support `tap`, `press`, and `release`, including chords such \
+as `["left_shift","1"]`. This enables held keys and software that scans the \
+C64 keyboard matrix directly. Unsupported firmware automatically falls back \
+to ordered KERNAL-buffer typing over DMA.
+
+### Virtual joystick input
+
+```json
+{"events":[{"kind":"joystick","port":2,"inputs":["left"],"transition":"press"}]}
+```
+
+Joystick inputs are `up`, `down`, `left`, `right`, and `fire`, sent with \
+matching press/release transitions. Stream64 maps Arrow keys plus a configurable \
+fire key, and also supports Apple GameController D-pads, sticks, and buttons.
+
+### Input cleanup
+
+```json
+{"events":[{"kind":"release_all"}]}
+```
+
+Stream64 sends `release_all` on focus loss, controller disconnect, device \
+switching, reset/reboot, and teardown so no key or joystick direction remains \
+stuck.
+
+### Remote menu screen
+
+```http
+GET /v1/machine:menu_screen
+```
+
+The response is exactly 2,000 bytes: a 40×25 character matrix followed by a \
+40×25 foreground/background colour matrix. Stream64 renders it in a live, \
+keyboard-controlled child window. Older firmware returns 404 and keeps using \
+the normal video-stream menu.
+
+See the upstream [CIA-level input implementation PR](https://github.com/chrisgleissner/c64stream/pull/120) \
+and [menu-screen firmware PR](https://github.com/GideonZ/1541ultimate/pull/703) \
+for the originating protocol details. U2-family cartridges reportedly do not \
+support matrix/joystick input, and the C64 Ultimate 1.x firmware line requires \
+independent capability probing.
+
+## Debug Trace, Machine Monitor & SID Oscilloscope (U64/U64 Elite)
+
+Three more capability-probed windows expose facilities documented in the \
+[Ultimate data-streams](https://1541u-documentation.readthedocs.io/en/latest/data_streams.html) \
+and [API](https://1541u-documentation.readthedocs.io/en/latest/api/api_calls.html) \
+docs. All three are U64/U64 Elite only — Stream64 probes `GET /v1/machine:debugreg` \
+once connected and hides the menu entries entirely on hardware that returns an \
+error (Ultimate-II+, C64 Ultimate).
+
+### Debug Trace
+
+```http
+PUT /v1/configs/Data Streams/Debug Stream Mode?value=<mode>
+PUT /v1/streams/debug:start?ip=<mac>:<port>
+```
+
+Streams cycle-accurate 6510, VIC, or 1541 drive bus accesses as UDP packets \
+(default port 11002) and decodes them live into a table of address/data/R-W/ \
+PHI2/signal-flag columns, alongside whatever video/audio is already \
+streaming — Ultimate's docs claim the debug and video streams are mutually \
+exclusive, but that didn't hold up against a real device (see below), so \
+Stream64 no longer stops the picture to take a trace. Raw capture exports \
+in the same layout the official `grab_debug.py`/`dump_bus_trace.c`/GtkWave \
+pipeline already expects; visible rows can also be exported as CSV.
+
+Mode selection uses the `Data Streams` → `Debug Stream Mode` config item — \
+confirmed live against a real Ultimate 64-II on firmware 3.15, which also \
+exposed two IEC-bus variants (`6510 w/IEC`, `6510 & VIC w/IEC`) beyond the \
+five modes the public docs describe. An earlier version of this feature \
+guessed the U64 debug register ($D7FF) controlled mode selection instead; \
+live testing disproved that directly (every value produced identical \
+output) before the real mechanism was found. The register is still real and \
+still U64-only — Stream64 just uses it for capability detection now, not \
+mode selection.
+
+Mutual exclusivity with video/audio was tested the same way and also \
+disproved: starting a debug trace while video/audio were already running \
+didn't interrupt them, and (re)starting video while a trace was running \
+didn't interrupt that either — all three streamed simultaneously for the \
+full test window.
+
+A **Memory Map** view (toggle in the toolbar, the default) shows the same \
+trace as a live 256×256 heatmap instead of a table — row = address page, \
+column = address low byte, so every notable region (zero page, stack, \
+screen RAM, BASIC ROM, VIC-II, SID, color RAM, both CIAs, cartridge I/O, \
+KERNAL ROM) forms its own recognizable horizontal band, labelled in a side \
+gutter that never overlaps the grid. Landmarks switch automatically for a \
+1541 drive trace, which has a completely different, much smaller memory \
+map (RAM, two 6522 VIAs, DOS ROM — no VIC/SID/CIA equivalents). Whichever \
+of read/write happened most recently for an address picks its color \
+(green/orange) and fades out quickly; the decay time is a live slider \
+(20 ms–1 s, default 150 ms) since a busy trace needs a much shorter fade \
+than a quiet one to avoid the whole grid saturating solid green.
+
+### Machine Monitor
+
+The on-device menu system and Machine Code Monitor are native firmware UI \
+with no REST equivalent. Stream64 opens a VT100 terminal window over the \
+Ultimate's Telnet server (port 23) instead — the transport its own manual \
+documents for remote menu/monitor control. Arrow and function keys navigate \
+using standard xterm escape sequences; `Command+letter` sends the \
+conventional "Meta sends escape" prefix as a best-effort stand-in for the \
+physical `C=` modifier (`C=+O` opens the monitor, `C=+I` swaps overlay/freeze \
+mode, and so on) — unverified over Telnet, since modifier-heavy shortcuts are \
+known to sometimes need different handling on that transport.
+
+### SID Oscilloscope
+
+A 9-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+configured (base address and channel count auto-detected from `SID \
+Addressing`/`SID Sockets Configuration`, confirmed live against a real \
+dual-8580 U64-II). A toolbar "Visualize" menu and a matching right-click \
+context menu on the window switch between modes; a separate Phosphor Glow \
+toggle in the same menu layers a CRT-bloom style overlay on top of whichever \
+mode is active.
+
+Six modes are register-driven — reconstructed from SID register *writes* \
+seen on a 6510-capable Debug Trace, since there's no way to read individual \
+voices off the wire (the audio stream is only the final post-mix output), \
+through a small approximate SID emulation core (oscillator shapes, a \
+standard-timing-table ADSR envelope, a noise LFSR, and a simplified \
+ring-modulation approximation — not cycle-exact; see `HANDOVER.md` §15-16 \
+for specifics worth knowing before treating any of it as reference-accurate):
+
+- **Oscilloscope** — the original per-channel scrolling waveform, with waveform combination, frequency, note name, and gate state
+- **ADSR Envelope** — the same per-channel grid, plotting the envelope curve instead of the waveform
+- **Mixer Console** — a denser per-channel strip: waveform + VU meter + ADSR-stage badge + note/frequency
+- **Piano Roll** — all channels on one shared pitch axis, showing note-on runs over the last ~10 seconds
+- **Wiring Diagram** — per-chip triangle of channel boxes with a connector that lights up when a channel's sync/ring-mod bits are actually set
+- **Filter Curve** — an approximate frequency-response curve per chip from the (newly decoded) filter/resonance/mode registers, plus which channels are routed through it
+
+Three modes read the real post-mix Ultimate audio stream instead (so they reflect genuine SID output, including real filter behavior the register-driven modes only approximate):
+
+- **Spectrum Analyzer** — a classic FFT bar-graph EQ display
+- **Lissajous Scope** — left channel plotted against right channel (stereo-phase visualization)
+- **Spectrogram** — a scrolling time-vs-frequency heatmap built from the same FFT engine
+
+Needs a 6510-inclusive trace running for the register-driven modes (a \
+one-click button starts one if nothing is); can run alongside the Debug \
+Trace window watching the very same trace.
+
 ## Building & Running
 
 Stream64 is a Swift Package — no Xcode project needed:
@@ -72,10 +240,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.96b BUILD_NUMBER=96 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.97b BUILD_NUMBER=97 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.96b BUILD_NUMBER=96 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.97b BUILD_NUMBER=97 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -133,7 +301,11 @@ Sources/Stream64/
 │   ├── DisplaySettings.swift  Per-device rendering settings, persisted by device UUID
 │   ├── Assembly64LibraryStore.swift  Favorites, recents, saved searches/actions
 │   ├── Assembly64SearchQuery.swift   Tested AQL query composition
-│   └── PETSCII.swift          ASCII/Unicode → PETSCII encoding for keyboard input
+│   ├── PETSCII.swift           ASCII/Unicode → PETSCII encoding for keyboard input
+│   ├── DebugStreamEntry.swift   6510/VIC/1541 bus-trace word decode + mode table
+│   ├── MemoryHeatmap.swift     64K-address last-read/last-write timestamps
+│   ├── SIDVoiceState.swift     Approximate SID register decode + oscillator/ADSR synth
+│   └── VT100Screen.swift       Minimal ANSI/VT100 terminal buffer + parser
 ├── Services/
 │   ├── UltimateAPIClient.swift  REST client for the Ultimate's /v1 API
 │   ├── Assembly64Client.swift   Assembly64 search, metadata, archive/download API
@@ -143,7 +315,9 @@ Sources/Stream64/
 │   ├── SingleInstanceLock.swift Process lock preventing duplicate UDP listeners
 │   ├── DeviceSession.swift      Connection lifecycle, keyboard queue, file loading
 │   ├── VideoReceiver.swift      UDP listener; assembles 4bpp packets into frames
-│   └── AudioReceiver.swift      UDP listener; ring buffer → AVAudioSourceNode; RF filter
+│   ├── AudioReceiver.swift      UDP listener; ring buffer → AVAudioSourceNode; RF filter
+│   ├── DebugStreamReceiver.swift  UDP listener for the 6510/VIC/1541 bus-trace stream
+│   └── UltimateTelnetClient.swift  TCP client for the Ultimate's Telnet (VT100) server
 ├── Rendering/
 │   └── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)
 ├── Resources/
@@ -157,6 +331,10 @@ Sources/Stream64/
     ├── OnScreenKeyboardView.swift  Full C64 keyboard layout
     ├── DeviceEditSheet.swift    Add/edit device with connection test
     ├── SettingsView.swift       Preferences window (per-device video tab)
+    ├── DebugTraceView.swift     Debug bus-trace window (U64/Elite only)
+    ├── MemoryMapView.swift      Live 256×256 memory-access heatmap for the trace window
+    ├── TelnetMonitorView.swift  Telnet/VT100 Machine Monitor window (U64/Elite only)
+    ├── SIDOscilloscopeView.swift  Live per-voice SID waveform window (U64/Elite only)
     └── HelpView.swift           In-app documentation window
 Tests/Stream64Tests/             AQL/CSDB, persistence/migration, ZIP safety, CRT constants, lock and Metal compile tests
 Scripts/build-release.sh         arm64/x86_64 ad-hoc app/ZIP/DMG packaging
@@ -247,8 +425,10 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 | `PUT /v1/streams/video:start?ip=<mac>:<port>` | Start VIC stream to this Mac (same for audio) |
 | `PUT /v1/machine:reset / :reboot / :pause / :resume / :poweroff / :menu_button` | Machine control |
 | `GET/PUT /v1/machine:readmem / :writemem` | Keyboard-buffer injection ($0277/$C6) |
-| `POST /v1/machine:input` | Capability-gated matrix keyboard/joystick press, release, tap, and release-all |
-| `GET /v1/machine:menu_screen` | Capability-gated 40×25 menu character and colour matrices |
+| `POST /v1/machine:input` | Upcoming 3.15+: matrix keyboard/joystick press, release, tap, and release-all |
+| `GET /v1/machine:menu_screen` | Upcoming 3.15+: 40×25 menu character and colour matrices |
+| `GET/PUT /v1/machine:debugreg` | U64/Elite only: read/write the debug register ($D7FF) that selects the bus-trace source |
+| `PUT /v1/streams/debug:start` / `:stop` | U64/Elite only: 6510/VIC/1541 cycle-accurate bus-trace stream (mutually exclusive with video) |
 | `GET/PUT /v1/configs/...` | Verify and automatically enable/save required network services |
 | `POST /v1/runners:run_prg` | Upload + run a PRG (binary body) |
 | `POST /v1/drives/a:mount` | Upload + mount a disk image (multipart) |

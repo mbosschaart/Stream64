@@ -117,6 +117,54 @@ struct UltimateAPIClient {
             queryItems: [URLQueryItem(name: "value", value: value)])
     }
 
+    private func fetchConfigCategory(_ category: String) async throws -> [String: Any] {
+        let request = try makeRequest(path: "/v1/configs/\(category)", method: "GET")
+        let data = try await perform(request)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let inner = object[category] as? [String: Any] else {
+            throw APIError.httpError(200, "\(category) response was malformed")
+        }
+        return inner
+    }
+
+    struct SIDConfiguration: Equatable {
+        let socket1Address: UInt16
+        /// nil when a second SID isn't enabled/detected.
+        let socket2Address: UInt16?
+    }
+
+    /// Best-effort discovery of the configured SID base address(es), used
+    /// to decide whether the SID Oscilloscope shows 3 or 6 channels and
+    /// where each chip's registers live. Confirmed against a real U64-II
+    /// (2026-08-01): `SID Addressing` holds `"SID Socket 1/2 Address"` as
+    /// `"$D400"`-style strings, `SID Sockets Configuration` holds
+    /// `"SID Socket 2"` (`"Enabled"`/`"Disabled"`) and
+    /// `"SID Detected Socket 2"` (a chip model string, or absent/"None").
+    /// Falls back to the common single-SID default ($D400 only) on any
+    /// failure — this is a debugging aid, not something that should ever
+    /// block or error out the UI.
+    func fetchSIDConfiguration() async -> SIDConfiguration {
+        let fallback = SIDConfiguration(socket1Address: 0xD400, socket2Address: nil)
+        guard let addressing = try? await fetchConfigCategory("SID Addressing"),
+              let sockets = try? await fetchConfigCategory("SID Sockets Configuration") else {
+            return fallback
+        }
+        let socket1 = Self.parseHexAddress(addressing["SID Socket 1 Address"] as? String) ?? 0xD400
+        let socket2Enabled = (sockets["SID Socket 2"] as? String) == "Enabled"
+        let detected = sockets["SID Detected Socket 2"] as? String
+        let socket2Detected = detected.map { !$0.isEmpty && $0 != "None" } ?? false
+        let socket2 = (socket2Enabled && socket2Detected)
+            ? Self.parseHexAddress(addressing["SID Socket 2 Address"] as? String)
+            : nil
+        return SIDConfiguration(socket1Address: socket1, socket2Address: socket2)
+    }
+
+    private static func parseHexAddress(_ string: String?) -> UInt16? {
+        guard var hex = string else { return nil }
+        if hex.hasPrefix("$") { hex.removeFirst() }
+        return UInt16(hex, radix: 16)
+    }
+
     // MARK: - Matrix keyboard / joystick input
 
     func sendMachineInput(
@@ -318,6 +366,63 @@ struct UltimateAPIClient {
 
     func stopAudioStream() async throws {
         try await put("/v1/streams/audio:stop")
+    }
+
+    /// Start the debug bus-trace stream (6510/VIC/1541 cycle trace) toward
+    /// `destinationHost:port`. U64/U64 Elite only. The firmware stops the
+    /// video stream when the debug stream starts (and vice versa), since
+    /// both share the same 100 Mbps link budget.
+    func startDebugStream(destinationHost: String, port: Int, durationSeconds: Int = 0) async throws {
+        var items = [URLQueryItem(name: "ip", value: "\(destinationHost):\(port)")]
+        if durationSeconds > 0 {
+            items.append(URLQueryItem(name: "duration", value: String(durationSeconds)))
+        }
+        try await put("/v1/streams/debug:start", queryItems: items)
+    }
+
+    func stopDebugStream() async throws {
+        try await put("/v1/streams/debug:stop")
+    }
+
+    // MARK: - Debug register ($D7FF, U64 only)
+
+    private struct DebugRegisterResponse: Decodable {
+        let value: String
+    }
+
+    /// Read the U64 debug register ($D7FF), which also selects the debug
+    /// stream's trace source (6510/VIC/1541). Throws on Ultimate-II+/C64
+    /// Ultimate hardware, which does not implement this register — callers
+    /// use that failure to gate the debug features in the UI.
+    func readDebugRegister() async throws -> UInt8 {
+        let request = try makeRequest(path: "/v1/machine:debugreg", method: "GET")
+        let data = try await perform(request)
+        return try Self.parseDebugRegisterValue(data)
+    }
+
+    @discardableResult
+    func writeDebugRegister(_ value: UInt8) async throws -> UInt8 {
+        let request = try makeRequest(path: "/v1/machine:debugreg", method: "PUT", queryItems: [
+            URLQueryItem(name: "value", value: String(format: "%02X", value)),
+        ])
+        let data = try await perform(request)
+        return try Self.parseDebugRegisterValue(data)
+    }
+
+    private static func parseDebugRegisterValue(_ data: Data) throws -> UInt8 {
+        let response = try JSONDecoder().decode(DebugRegisterResponse.self, from: data)
+        var hex = response.value.trimmingCharacters(in: .whitespaces)
+        if hex.hasPrefix("0x") || hex.hasPrefix("0X") {
+            hex.removeFirst(2)
+        }
+        if hex.hasPrefix("$") {
+            hex.removeFirst()
+        }
+        guard let value = UInt8(hex, radix: 16) else {
+            throw APIError.httpError(
+                200, "debugreg returned unparsable value '\(response.value)'")
+        }
+        return value
     }
 
     // MARK: - Info

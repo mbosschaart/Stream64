@@ -61,6 +61,7 @@ struct DeviceEditSheet: View {
                 Section {
                     TextField("Video Port (local)", value: $device.videoPort, format: .number.grouping(.never))
                     TextField("Audio Port (local)", value: $device.audioPort, format: .number.grouping(.never))
+                    TextField("Debug Port (local)", value: $device.debugPort, format: .number.grouping(.never))
                     Toggle("Connect automatically when selected", isOn: $device.autoConnect)
                 } header: {
                     Text("Streaming")
