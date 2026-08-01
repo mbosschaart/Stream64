@@ -45,8 +45,17 @@ final class DeviceSession: ObservableObject {
     /// Whether this device's firmware implements the U64 debug register —
     /// Ultimate-II+ and C64 Ultimate hardware do not. Populated by a
     /// silent, best-effort probe once connected; gates the Debug Trace /
-    /// Machine Monitor menu entries.
+    /// Ultimate Menu menu entries.
     @Published private(set) var supportsDebugFeatures = false
+    /// Changes every time the user explicitly resets/reboots/powers off
+    /// the machine. Visualizations that reconstruct state purely from
+    /// register *writes* (SID Oscilloscope, most of all) have no
+    /// reliable way to detect "the chip went silent" from the debug
+    /// trace alone — a reset may not itself generate any register
+    /// writes — so they observe this instead and clear their own
+    /// reconstructed state proactively rather than keep showing
+    /// whatever was last derived before the reset.
+    @Published private(set) var machineResetToken = UUID()
 
     let device: UltimateDevice
     let videoReceiver = VideoReceiver()
@@ -534,10 +543,12 @@ final class DeviceSession: ObservableObject {
     func reset() async {
         await flushPendingKeys()
         await run { try await self.client.reset() }
+        machineResetToken = UUID()
     }
     func reboot() async {
         await flushPendingKeys()
         await run { try await self.client.reboot() }
+        machineResetToken = UUID()
         // Rebooting stops the device-side streams; restart them once the
         // Ultimate is back up (poll until it responds, then re-arm).
         guard isConnected else { return }
@@ -561,6 +572,7 @@ final class DeviceSession: ObservableObject {
             state = .error("Reboot failed: \(error.localizedDescription)")
             return
         }
+        machineResetToken = UUID()
         for _ in 0..<20 {
             try? await Task.sleep(for: .seconds(1))
             if (try? await client.fetchInfo()) != nil {
@@ -578,6 +590,7 @@ final class DeviceSession: ObservableObject {
             state = .error(error.localizedDescription)
             return
         }
+        machineResetToken = UUID()
 
         if display.filterMode == .crtTube {
             beginPowerOffVisualEffect?()
@@ -632,18 +645,52 @@ final class DeviceSession: ObservableObject {
 
     /// Open a Telnet/VT100 window onto the Ultimate's menu system and
     /// Machine Code Monitor — native firmware UI with no REST equivalent
-    /// (see `TelnetMonitorWindowController`).
+    /// (see `TelnetMonitorWindowController`). User-facing name is
+    /// "Ultimate Menu": in everyday use this is mostly a live,
+    /// non-interrupting view of the on-screen menu, unlike `menuButton()`
+    /// above (the REST-based `menu_button`/`menu_screen` path), which
+    /// simulates the physical menu button and pauses the C64 while open.
     func openTelnetMonitor() {
         TelnetMonitorWindowController.show(session: self)
     }
 
-    /// Open a live oscilloscope window reconstructing each SID voice's
-    /// waveform from register writes seen on the debug bus-trace stream
-    /// (see `SIDOscilloscopeWindowController`). Independent of, and can
-    /// run alongside, the Debug Trace window — both simply observe
-    /// whatever 6510-inclusive trace is currently running.
-    func openSIDOscilloscope() {
-        SIDOscilloscopeWindowController.show(session: self)
+    /// Opens every SID visualization mode at once, each in its own
+    /// window tiled into a grid across the screen (see
+    /// `SIDOscilloscopeWindowController.showAllInGrid`).
+    func openAllSIDVisualizations() {
+        SIDOscilloscopeWindowController.showAllInGrid(session: self)
+    }
+
+    /// Saves the current arrangement (mode, position, size) of every
+    /// open SID Oscilloscope window for this device, so it can be
+    /// restored later with `restoreWindowLayout()` — even after quitting
+    /// and relaunching the app.
+    func saveWindowLayout() {
+        let entries = SIDOscilloscopeWindowController.currentLayout(for: device.id)
+        SIDWindowLayoutStore.save(SIDWindowLayoutSnapshot(entries: entries, savedAt: Date()), for: device.id)
+    }
+
+    /// Re-opens whatever SID Oscilloscope window arrangement was last
+    /// saved with `saveWindowLayout()`, replacing any SID Oscilloscope
+    /// windows currently open for this device. Does nothing if nothing's
+    /// been saved yet.
+    func restoreWindowLayout() {
+        guard let snapshot = SIDWindowLayoutStore.load(for: device.id), !snapshot.entries.isEmpty else { return }
+        SIDOscilloscopeWindowController.restoreLayout(snapshot.entries, session: self)
+    }
+
+    /// Whether a SID Oscilloscope window layout has been saved for this
+    /// device — used to disable "Restore Window Layout" when there's
+    /// nothing to restore.
+    var hasSavedWindowLayout: Bool {
+        SIDWindowLayoutStore.hasSavedLayout(for: device.id)
+    }
+
+    /// Whether any SID Oscilloscope window is currently open for this
+    /// device — used to disable "Save Window Layout" when there's
+    /// nothing open to save.
+    var hasOpenSIDWindows: Bool {
+        SIDOscilloscopeWindowController.hasAnyOpenWindows(for: device.id)
     }
 
     func togglePause() async {

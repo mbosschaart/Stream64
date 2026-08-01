@@ -83,11 +83,6 @@ struct StreamContextMenu: View {
         }
         .disabled(!session.isConnected)
 
-        Button("Menu Button", systemImage: "filemenu.and.selection") {
-            Task { await session.menuButton() }
-        }
-        .disabled(!session.isConnected)
-
         Menu("Power", systemImage: "power") {
             Button("Reboot Ultimate", systemImage: "power.circle") {
                 Task { await session.reboot() }
@@ -110,13 +105,39 @@ struct StreamContextMenu: View {
             }
             .disabled(!session.isConnected)
 
-            Button("Machine Monitor…", systemImage: "terminal") {
+            Button("Ultimate Menu…", systemImage: "terminal") {
                 session.openTelnetMonitor()
             }
             .disabled(!session.isConnected)
 
-            Button("SID Oscilloscope…", systemImage: "waveform") {
-                session.openSIDOscilloscope()
+            // Every mode is its own entry here — picking one always opens
+            // a brand-new window already set to that mode, never
+            // switches whatever an existing window happens to be
+            // showing (see `SIDOscilloscopeWindowController.showNewWindow`
+            // and the matching in-window context menu in
+            // `SIDVisualizationMenuContent`, which behaves the same way).
+            Menu("SID Visualizations", systemImage: "waveform") {
+                ForEach(SIDVisualizationMode.allCases) { mode in
+                    Button {
+                        SIDOscilloscopeWindowController.showNewWindow(session: session, mode: mode)
+                    } label: {
+                        Label(mode.rawValue, systemImage: mode.systemImage)
+                    }
+                }
+                Divider()
+                Button("Open All in Grid", systemImage: "square.grid.3x3") {
+                    session.openAllSIDVisualizations()
+                }
+                Divider()
+                Button("Save Window Layout", systemImage: "square.and.arrow.down") {
+                    session.saveWindowLayout()
+                }
+                .disabled(!session.hasOpenSIDWindows)
+
+                Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
+                    session.restoreWindowLayout()
+                }
+                .disabled(!session.hasSavedWindowLayout)
             }
             .disabled(!session.isConnected)
         }

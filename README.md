@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.98b-purple)
+![Version](https://img.shields.io/badge/version-0.99b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -24,9 +24,9 @@ Designed by Martijn Bosschaart, 2026.
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
-- **Machine control** — reset, reboot, pause/resume, menu, and power off; firmware supporting `menu_screen` immediately opens a keyboard-controlled live 40×25 child, while older firmware falls back to the streamed menu
-- **Debug Trace & Machine Monitor** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export, and a Telnet/VT100 window onto the on-device Machine Code Monitor; both are hidden automatically on hardware that doesn't implement the U64 debug register
-- **SID Oscilloscope** (Ultimate 64/Elite only) — a 9-mode SID visualizer switchable from a toolbar menu or right-click: per-voice Oscilloscope/ADSR Envelope/Mixer Console (reconstructed from register writes on the debug bus-trace), Piano Roll, ring-mod/sync Wiring Diagram, an approximate Filter Curve, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, and Spectrogram modes — with an optional phosphor-glow overlay
+- **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
+- **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export, and a Telnet/VT100 window onto the on-device menu system (and, if navigated there, the Machine Code Monitor) that doesn't interrupt whatever's running on the C64; both are hidden automatically on hardware that doesn't implement the U64 debug register
+- **SID Oscilloscope** (Ultimate 64/Elite only) — an 18-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 18 at once, auto-tiled into a grid, via "Open All in Grid"), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -123,7 +123,7 @@ for the originating protocol details. U2-family cartridges reportedly do not \
 support matrix/joystick input, and the C64 Ultimate 1.x firmware line requires \
 independent capability probing.
 
-## Debug Trace, Machine Monitor & SID Oscilloscope (U64/U64 Elite)
+## Debug Trace, Ultimate Menu & SID Oscilloscope (U64/U64 Elite)
 
 Three more capability-probed windows expose facilities documented in the \
 [Ultimate data-streams](https://1541u-documentation.readthedocs.io/en/latest/data_streams.html) \
@@ -177,29 +177,60 @@ of read/write happened most recently for an address picks its color \
 (20 ms–1 s, default 150 ms) since a busy trace needs a much shorter fade \
 than a quiet one to avoid the whole grid saturating solid green.
 
-### Machine Monitor
+### Ultimate Menu
 
-The on-device menu system and Machine Code Monitor are native firmware UI \
-with no REST equivalent. Stream64 opens a VT100 terminal window over the \
+Opened from the toolbar's Menu button or the stream's right-click menu. \
+The on-device menu system and Machine Code Monitor are native firmware \
+UI with no REST equivalent. Stream64 opens a VT100 terminal window over the \
 Ultimate's Telnet server (port 23) instead — the transport its own manual \
-documents for remote menu/monitor control. Arrow and function keys navigate \
-using standard xterm escape sequences; `Command+letter` sends the \
-conventional "Meta sends escape" prefix as a best-effort stand-in for the \
-physical `C=` modifier (`C=+O` opens the monitor, `C=+I` swaps overlay/freeze \
-mode, and so on) — unverified over Telnet, since modifier-heavy shortcuts are \
-known to sometimes need different handling on that transport.
+documents for remote menu/monitor control, and, unlike the REST-based menu \
+button/`menu_screen` path, one that doesn't interrupt whatever's running on \
+the C64. In everyday use this window is mostly a live view of the on-screen \
+menu (hence its name), though the same VT100 session can also reach the \
+real Machine Code Monitor if navigated there. The menu's own text (labels, \
+status lines) is plain mixed-case ASCII and is decoded as such; its box \
+borders and side rails use the standard VT100 DEC Special Graphics \
+line-drawing character set (`ESC ( 0`/SO/SI) rather than PETSCII, and are \
+decoded as such too, instead of showing as literal "q"/"x"/"j"/"k" letters. \
+The decoder also correctly consumes DEC private-mode sequences like \
+`ESC[?25l` (cursor hide) instead of ending the escape sequence early and \
+dumping the rest onto the screen as text — on some firmware that toggles \
+these on every cursor blink, that bug could scroll all real menu content \
+off-screen, leaving the window looking blank/frozen. Telnet's own \
+protocol-negotiation bytes (sent by the device immediately on connect, \
+before any VT100 content) are filtered out before decoding too, instead \
+of showing up as a few stray characters at the very start of the screen. \
+Arrow and function keys navigate using standard xterm \
+escape sequences; `Command+letter` sends the conventional "Meta sends \
+escape" prefix as a best-effort stand-in for the physical `C=` modifier \
+(`C=+O` opens the monitor, `C=+I` swaps overlay/freeze mode, and so on) — \
+unverified over Telnet, since modifier-heavy shortcuts are known to \
+sometimes need different handling on that transport.
 
 ### SID Oscilloscope
 
-A 9-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+An 18-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
-dual-8580 U64-II). A toolbar "Visualize" menu and a matching right-click \
-context menu on the window switch between modes; a separate Phosphor Glow \
-toggle in the same menu layers a CRT-bloom style overlay on top of whichever \
-mode is active.
+dual-8580 U64-II). Reached from the stream's right-click menu under "SID \
+Visualizations", which lists every mode directly — picking one always opens \
+a brand-new, fully independent window already set to that mode, so, for \
+example, an Oscilloscope window and a Spectrum Analyzer window can both be \
+open and updating live side by side; there's deliberately no toolbar/pulldown \
+menu inside a visualization window itself for switching its mode — a window's \
+mode is fixed once opened, and its own right-click context menu offers the \
+same "pick a mode, get a new window" list (plus a Phosphor Glow toggle for a \
+CRT-bloom overlay) for convenience without having to go back to the stream's \
+menu. "Open All in Grid" (in both menus) opens every mode at once, each in \
+its own window at its minimum usable size, automatically tiled into a grid \
+centered on screen. However the windows end up arranged — from "Open All in \
+Grid" or hand-picked and nudged into place — "Save Window Layout" (also in \
+both menus) remembers every open window's mode, position, and size per \
+device, so "Restore Window Layout" can bring back that exact arrangement \
+later, even after quitting and relaunching the app; both are on the stream's \
+menu too so restoring works even with no SID windows currently open.
 
-Six modes are register-driven — reconstructed from SID register *writes* \
+Thirteen modes are register-driven — reconstructed from SID register *writes* \
 seen on a 6510-capable Debug Trace, since there's no way to read individual \
 voices off the wire (the audio stream is only the final post-mix output), \
 through a small approximate SID emulation core (oscillator shapes, a \
@@ -211,18 +242,36 @@ for specifics worth knowing before treating any of it as reference-accurate):
 - **ADSR Envelope** — the same per-channel grid, plotting the envelope curve instead of the waveform
 - **Mixer Console** — a denser per-channel strip: waveform + VU meter + ADSR-stage badge + note/frequency
 - **Piano Roll** — all channels on one shared pitch axis, showing note-on runs over the last ~10 seconds
-- **Wiring Diagram** — per-chip triangle of channel boxes with a connector that lights up when a channel's sync/ring-mod bits are actually set
+- **Voice Lineup** — every channel as a stacked, time-aligned lane with note-name labels at each onset and dashed guide lines wherever two or more channels change notes at (nearly) the same moment — a chiptune's version of a chord hit, inspired by Sonic Lineup's multi-track alignment view
 - **Filter Curve** — an approximate frequency-response curve per chip from the (newly decoded) filter/resonance/mode registers, plus which channels are routed through it
+- **VU Meter Bank** — large, bold per-channel level meters with a peak-hold notch, laid out like a real mixing console's meter bridge
+- **Register Activity Grid** — a compact heatmap of the SID's own ~25 writable registers per chip, labeled by mnemonic (`V1 FREQ LO`, `V2 CTRL`, `FC HI`, etc.) and lighting up on each write — shows what the player routine is actually doing at the register level, not the resulting audio
+- **ADSR Knobs** — the raw Attack/Decay/Sustain/Release register values (0-15) per channel as bars, each labeled with its real millisecond time — distinct from the ADSR Envelope mode, which shows the resulting curve, not the knob settings
+- **Pulse Width** — a duty-cycle gauge for the 12-bit pulse-width register per channel, with a small preview of the resulting pulse shape — surfaces PWM-sweep effects invisible in every other mode
+- **Control Bits** — an LED-style indicator grid per channel for all 8 control-register bits (Gate/Sync/Ring/Test/Triangle/Sawtooth/Pulse/Noise) at a glance
+- **SID Dashboard** — one compact per-chip summary: active voice count, master volume, filter mode/cutoff/resonance, and which channels are routed through the filter
+- **Colorful Waveform** — all channels' waveforms overlaid on one canvas in vibrant colors with a phosphor-glow bloom, a style/showcase mode over the same data the plain Oscilloscope mode uses
 
-Three modes read the real post-mix Ultimate audio stream instead (so they reflect genuine SID output, including real filter behavior the register-driven modes only approximate):
+Five modes read the real post-mix Ultimate audio stream instead (so they reflect genuine SID output, including real filter behavior the register-driven modes only approximate), scaled with a self-adjusting auto-gain (peak-hold-with-slow-release, like an analog VU meter) rather than a fixed level so they react to how loud the content actually is — with an absolute silence check underneath the auto-gain so the FFT-based ones (Spectrum Analyzer, Spectrogram, 3D Waterfall, 3D Bar Field) go quiet once playback actually stops, instead of auto-gain rescaling the residual noise floor up to full brightness:
 
 - **Spectrum Analyzer** — a classic FFT bar-graph EQ display
 - **Lissajous Scope** — left channel plotted against right channel (stereo-phase visualization)
-- **Spectrogram** — a scrolling time-vs-frequency heatmap built from the same FFT engine
+- **Spectrogram** — a scrolling time-vs-frequency heatmap with a piano-key-labeled axis and a black/purple/red/orange/yellow "fire" color ramp
+- **3D Waterfall** — the same spectrum history as a scrolling 3D-look wireframe waterfall, sndpeek-style
+- **3D Bar Field** — the same history again, as filled 3D-look bars in a blue/purple/pink/orange palette instead of a wireframe line
 
-Needs a 6510-inclusive trace running for the register-driven modes (a \
-one-click button starts one if nothing is); can run alongside the Debug \
-Trace window watching the very same trace.
+All of the audio-tap-driven modes process incoming audio in batches at a \
+steady 30 Hz rather than reacting to every individual network packet \
+(~250 times a second), which cut a real source of lag/overhead — \
+especially noticeable with several such windows open via "Open All in \
+Grid" — without any loss of visual smoothness, since nothing here needs \
+faster than a normal display-refresh-ish update rate anyway.
+
+The register-driven modes need a 6510-inclusive trace running, which the \
+window starts automatically and silently as soon as it opens if one isn't \
+already — no prompt, no button. It can run alongside the Debug Trace \
+window watching the very same trace, and opening several SID Oscilloscope \
+windows at once only starts it the first time, not per window.
 
 ## Building & Running
 
@@ -333,7 +382,7 @@ Sources/Stream64/
     ├── SettingsView.swift       Preferences window (per-device video tab)
     ├── DebugTraceView.swift     Debug bus-trace window (U64/Elite only)
     ├── MemoryMapView.swift      Live 256×256 memory-access heatmap for the trace window
-    ├── TelnetMonitorView.swift  Telnet/VT100 Machine Monitor window (U64/Elite only)
+    ├── TelnetMonitorView.swift  Telnet/VT100 "Ultimate Menu" window (U64/Elite only)
     ├── SIDOscilloscopeView.swift  Live per-voice SID waveform window (U64/Elite only)
     └── HelpView.swift           In-app documentation window
 Tests/Stream64Tests/             AQL/CSDB, persistence/migration, ZIP safety, CRT constants, lock and Metal compile tests

@@ -950,6 +950,125 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(screen.cell(atColumn: 1, row: 1).character, "D")
     }
 
+    func testVT100ScreenPassesPlainASCIIThroughUnchangedIncludingLowercase() {
+        // Confirmed against a real device: the Ultimate's Telnet UI sends
+        // genuine mixed-case ASCII text ("Ultimate", "Free", etc.), not
+        // the C64's internal PETSCII *screen* encoding (where this same
+        // byte range means graphics/uppercase-only). A prior version of
+        // this decoder assumed the latter and turned ordinary lowercase
+        // letters into PETSCII graphics — e.g. 'a' into "♠" — which badly
+        // regressed real-world text. The entire printable range must
+        // therefore pass through completely unchanged.
+        let screen = VT100Screen(columns: 20, rows: 1)
+        screen.feed(Data("Ultimate 64-II \\^_".utf8))
+        let text = String((0..<18).map { screen.cell(atColumn: $0, row: 0).character })
+        XCTAssertEqual(text, "Ultimate 64-II \\^_")
+    }
+
+    func testTelnetIACFilterStripsNegotiationSequencesFromRealDeviceCapture() {
+        // The exact byte-for-byte preamble a real device sends
+        // immediately on connect (captured live): IAC DONT LINEMODE,
+        // IAC WILL ECHO, then genuine VT100 content. Unfiltered, this
+        // leaked 5 stray characters into the very start of the screen.
+        let filter = TelnetIACFilter()
+        let raw = Data([0xFF, 0xFE, 0x22, 0xFF, 0xFB, 0x01]) + Data("*** Ultimate 64-II ***".utf8)
+        let filtered = filter.filter(raw)
+        XCTAssertEqual(filtered, Data("*** Ultimate 64-II ***".utf8))
+    }
+
+    func testTelnetIACFilterHandlesSubnegotiationAndEscapedLiteralFF() {
+        let filter = TelnetIACFilter()
+        // IAC SB <anything, including a stray non-SE byte> IAC SE, then
+        // IAC IAC (a literal 0xFF byte), then plain text.
+        let raw = Data([0xFF, 0xFA, 0x18, 0x01, 0xFF, 0xF0, 0xFF, 0xFF]) + Data("AB".utf8)
+        let filtered = filter.filter(raw)
+        XCTAssertEqual(filtered, Data([0xFF]) + Data("AB".utf8))
+    }
+
+    func testTelnetIACFilterHandlesSequenceSplitAcrossTwoChunks() {
+        // A real TCP read boundary could land anywhere inside a
+        // multi-byte IAC sequence — the filter must carry state across
+        // separate `filter(_:)` calls, not just within a single one.
+        let filter = TelnetIACFilter()
+        let first = filter.filter(Data([0xFF, 0xFB])) // IAC WILL, option byte not here yet
+        let second = filter.filter(Data([0x01]) + Data("X".utf8)) // option byte, then text
+        XCTAssertEqual(first, Data())
+        XCTAssertEqual(second, Data("X".utf8))
+    }
+
+    func testVT100ScreenHandlesDECPrivateModeSequencesWithoutLeakingText() {
+        // ESC[?25l (hide cursor) and ESC[?1049h (alternate screen
+        // buffer) are common, standard sequences some firmware toggles
+        // on every cursor blink. A parser that treats '?' as if it were
+        // the CSI sequence's final byte would end the sequence early and
+        // write the leftover "25l"/"1049h" onto the screen as literal
+        // text — repeated often enough (e.g. every blink), this
+        // compounds into a garbled or fully scrolled-past-blank screen.
+        let screen = VT100Screen(columns: 10, rows: 3)
+        screen.feed(Data("\u{1B}[?25l\u{1B}[?1049hAB".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "A")
+        XCTAssertEqual(screen.cell(atColumn: 1, row: 0).character, "B")
+        XCTAssertEqual(screen.cursorColumn, 2)
+        XCTAssertEqual(screen.cursorRow, 0)
+
+        // A real cursor-position sequence right after a DEC private-mode
+        // one must still work — confirms the parser returned to normal
+        // CSI handling, not some stuck state.
+        screen.feed(Data("\u{1B}[2;3H\u{1B}[?25hC".utf8))
+        XCTAssertEqual(screen.cell(atColumn: 2, row: 1).character, "C")
+    }
+
+    func testVT100ScreenDecodesDECSpecialGraphicsLineDrawing() {
+        // Reproduces exactly what a real device's Telnet menu sends for a
+        // bordered box: ESC ) 0 designates G1 as the line-drawing set,
+        // SO (0x0E) shifts to it so plain lowercase letters ('q', which
+        // is just "q" as normal text) become box-drawing glyphs, and SI
+        // (0x0F) shifts back to G0 (still plain ASCII, never designated
+        // otherwise) for normal text afterwards.
+        let screen = VT100Screen(columns: 20, rows: 3)
+        screen.feed(Data([0x1B, UInt8(ascii: ")"), UInt8(ascii: "0")])) // ESC ) 0
+        screen.feed(Data([0x0E])) // SO
+        screen.feed(Data("lqqqk".utf8))
+        screen.feed(Data([0x0F])) // SI
+        screen.feed(Data("SD".utf8))
+
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "┌")
+        XCTAssertEqual(screen.cell(atColumn: 1, row: 0).character, "─")
+        XCTAssertEqual(screen.cell(atColumn: 2, row: 0).character, "─")
+        XCTAssertEqual(screen.cell(atColumn: 3, row: 0).character, "─")
+        XCTAssertEqual(screen.cell(atColumn: 4, row: 0).character, "┐")
+        // After SI, plain text resumes unaffected — same bytes that were
+        // just remapped as graphics render as ordinary letters again.
+        XCTAssertEqual(screen.cell(atColumn: 5, row: 0).character, "S")
+        XCTAssertEqual(screen.cell(atColumn: 6, row: 0).character, "D")
+    }
+
+    func testVT100ScreenDecodesHighByteGraphicsAndControlCodes() {
+        let screen = VT100Screen(columns: 10, rows: 2)
+
+        // Bytes with no legitimate meaning as plain ASCII (0x80-0xFF) are
+        // still decoded as PETSCII-style decorative graphics/controls,
+        // since the on-device menu's borders/meters do appear to use
+        // that range and doing so can never corrupt real text.
+        screen.feed(Data([0xC9, 0xCA, 0xCB])) // rounded box corners
+        XCTAssertEqual(screen.cell(atColumn: 0, row: 0).character, "╮")
+        XCTAssertEqual(screen.cell(atColumn: 1, row: 0).character, "╰")
+        XCTAssertEqual(screen.cell(atColumn: 2, row: 0).character, "╯")
+
+        // Raw PETSCII color/cursor control codes (not wrapped in a VT100
+        // CSI sequence) move the cursor / change color instead of being
+        // written into a cell as a stray character.
+        screen.feed(Data([0x1C])) // RED
+        screen.feed(Data([0x51])) // 'Q'
+        XCTAssertEqual(screen.cell(atColumn: 3, row: 0).character, "Q")
+        XCTAssertEqual(screen.cell(atColumn: 3, row: 0).foreground, 1)
+
+        screen.feed(Data([0x0D])) // CR, back to column 0
+        screen.feed(Data([0x11])) // CURSOR DOWN (raw PETSCII, not CSI)
+        XCTAssertEqual(screen.cursorRow, 1)
+        XCTAssertEqual(screen.cursorColumn, 0)
+    }
+
     func testSIDVoiceRegistersDecodeFrequencyPulseWidthAndControlBits() {
         var registers = SIDVoiceRegisters()
         registers.write(offset: 0, value: 0x34) // freq lo
@@ -1129,6 +1248,352 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertTrue(history[2].gate)
         XCTAssertFalse(history[3].gate)
         XCTAssertEqual(history[2].frequencyHz, history[3].frequencyHz, accuracy: 0.01)
+    }
+
+    func testSIDVoiceChannelResetToSilenceClearsAllReconstructedState() {
+        var channel = SIDVoiceChannel(
+            id: 0, chipIndex: 0, voiceIndex: 0, bufferSize: 8, noteHistoryLength: 4)
+        channel.registers.write(offset: 0, value: 0x34) // frequency lo
+        channel.registers.write(offset: 1, value: 0x12) // frequency hi
+        channel.registers.write(offset: 4, value: 0x11) // gate on, triangle
+        channel.push(sample: 0.8, envelope: 0.9)
+        channel.pushNoteHistory()
+
+        XCTAssertNotEqual(channel.registers, SIDVoiceRegisters())
+        XCTAssertGreaterThan(channel.peakLevel, 0)
+        XCTAssertTrue(channel.orderedSamples.contains { $0 != 0 })
+
+        channel.resetToSilence()
+
+        XCTAssertEqual(channel.registers, SIDVoiceRegisters())
+        XCTAssertEqual(channel.peakLevel, 0)
+        XCTAssertTrue(channel.orderedSamples.allSatisfy { $0 == 0 })
+        XCTAssertTrue(channel.orderedEnvelopeSamples.allSatisfy { $0 == 0 })
+        XCTAssertTrue(channel.orderedNoteHistory.allSatisfy { !$0.gate })
+        XCTAssertFalse(channel.registers.gate)
+        XCTAssertEqual(channel.frequencyHz, 0)
+    }
+
+    func testSIDVoiceChannelPeakLevelHoldsThenDecays() {
+        var channel = SIDVoiceChannel(
+            id: 0, chipIndex: 0, voiceIndex: 0, bufferSize: 8, noteHistoryLength: 4)
+        XCTAssertEqual(channel.peakLevel, 0)
+
+        channel.push(sample: 0.9, envelope: 1)
+        XCTAssertEqual(channel.peakLevel, 0.9, accuracy: 0.001)
+
+        // A much quieter sample right after should not immediately drop
+        // the peak to that quiet level — peak-hold decays slowly rather
+        // than tracking instantaneously like the RMS-based level does.
+        channel.push(sample: 0.05, envelope: 1)
+        XCTAssertGreaterThan(channel.peakLevel, 0.5)
+
+        // Enough further silence should let it decay meaningfully.
+        for _ in 0..<2000 {
+            channel.push(sample: 0, envelope: 1)
+        }
+        XCTAssertLessThan(channel.peakLevel, 0.5)
+    }
+
+    func testSIDVisualizationModeNeedsSampleSynthesisOnlyForWaveformDrivenModes() {
+        // The audio-rate oscillator/envelope stepping loop in `tick()` is
+        // by far the most expensive part of a window's update cycle — only
+        // the modes that actually read its output (waveform samples, RMS
+        // level, or peak-hold level) should require it.
+        let waveformDriven: Set<SIDVisualizationMode> = [
+            .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform,
+        ]
+        for mode in SIDVisualizationMode.allCases {
+            XCTAssertEqual(
+                mode.needsSampleSynthesis, waveformDriven.contains(mode),
+                "\(mode.rawValue) needsSampleSynthesis mismatch")
+        }
+    }
+
+    func testSIDVisualizationModeNeedsRegisterWritesIsInverseOfAudioTap() {
+        // No mode currently needs both the debug bus-trace (register
+        // writes) and the raw post-mix audio tap — every mode is one or
+        // the other. `needsRegisterWrites` exists as a positively-phrased
+        // name for that same split, so this locks in the assumption that
+        // lets `start()` treat them as mutually exclusive gates.
+        for mode in SIDVisualizationMode.allCases {
+            XCTAssertEqual(mode.needsRegisterWrites, !mode.needsAudioTap, "\(mode.rawValue) mismatch")
+        }
+        // Spot-check both directions explicitly rather than only the
+        // derived relationship above.
+        XCTAssertTrue(SIDVisualizationMode.oscilloscope.needsRegisterWrites)
+        XCTAssertFalse(SIDVisualizationMode.spectrum.needsRegisterWrites)
+    }
+
+    func testSIDEngineNeedsMatchesModeFlagsForAllVisualizationModes() {
+        for mode in SIDVisualizationMode.allCases {
+            let needs = SIDEngineNeeds(mode: mode)
+            XCTAssertEqual(needs.needsRegisterWrites, mode.needsRegisterWrites, "\(mode.rawValue)")
+            XCTAssertEqual(needs.needsSampleSynthesis, mode.needsSampleSynthesis, "\(mode.rawValue)")
+            XCTAssertEqual(needs.needsAudioTap, mode.needsAudioTap, "\(mode.rawValue)")
+            XCTAssertEqual(needs.usesSpectrumBars, mode.usesSpectrumBars, "\(mode.rawValue)")
+            XCTAssertEqual(needs.usesSpectrogramHistory, mode.usesSpectrogramHistory, "\(mode.rawValue)")
+            // Lissajous is the one audio-tap mode that plots raw points
+            // rather than FFT bars, so it's the only mode this should be
+            // true for.
+            XCTAssertEqual(needs.needsLissajousPoints, mode == .lissajous, "\(mode.rawValue)")
+        }
+    }
+
+    func testSIDEngineNeedsUnionIsTrueIfEitherSideNeedsIt() {
+        // Oscilloscope needs register writes + sample synthesis; Spectrum
+        // Analyzer needs the audio tap + spectrum bars instead — two
+        // subscribers with non-overlapping needs should aggregate to the
+        // union of both, not just one or the other.
+        let oscilloscope = SIDEngineNeeds(mode: .oscilloscope)
+        let spectrum = SIDEngineNeeds(mode: .spectrum)
+        let union = oscilloscope.union(spectrum)
+
+        XCTAssertTrue(union.needsRegisterWrites)
+        XCTAssertTrue(union.needsSampleSynthesis)
+        XCTAssertTrue(union.needsAudioTap)
+        XCTAssertTrue(union.usesSpectrumBars)
+        // Neither side needs these, so the union shouldn't either.
+        XCTAssertFalse(union.usesSpectrogramHistory)
+        XCTAssertFalse(union.needsLissajousPoints)
+    }
+
+    @MainActor
+    func testSIDEngineSharedReturnsSameInstanceUntilLastSubscriberLeaves() {
+        let session = DeviceSession(
+            device: UltimateDevice(name: "SIDEngine Test", host: "192.0.2.1"),
+            settings: AppSettings())
+
+        let engineA = SIDEngine.shared(for: session)
+        let tokenA = engineA.subscribe(needs: SIDEngineNeeds(mode: .registerActivity))
+
+        // A second subscribe for the same device must reuse the same
+        // engine instance, not create a competing one.
+        let engineB = SIDEngine.shared(for: session)
+        XCTAssertTrue(engineA === engineB)
+        let tokenB = engineB.subscribe(needs: SIDEngineNeeds(mode: .adsrKnobs))
+
+        engineA.unsubscribe(tokenA)
+        // One of two subscribers left — the engine must still be alive
+        // and still be the one `shared(for:)` returns.
+        let engineC = SIDEngine.shared(for: session)
+        XCTAssertTrue(engineB === engineC)
+
+        engineB.unsubscribe(tokenB)
+        // The *last* subscriber just left — the engine should have torn
+        // itself down and removed itself from the shared registry, so
+        // this call constructs a brand-new instance rather than
+        // resurrecting the stopped one.
+        let engineD = SIDEngine.shared(for: session)
+        XCTAssertFalse(engineC === engineD)
+    }
+
+    @MainActor
+    func testSIDEngineSupportsSubscribersWithDifferentNeedsSimultaneously() {
+        // One subscriber needs only register writes (no synthesis, no
+        // audio tap); another needs only the audio tap. Neither should
+        // interfere with the other being able to subscribe/unsubscribe
+        // independently.
+        let session = DeviceSession(
+            device: UltimateDevice(name: "SIDEngine Mixed Needs Test", host: "192.0.2.1"),
+            settings: AppSettings())
+        let engine = SIDEngine.shared(for: session)
+
+        let registerToken = engine.subscribe(needs: SIDEngineNeeds(mode: .registerActivity))
+        let audioToken = engine.subscribe(needs: SIDEngineNeeds(mode: .spectrum))
+
+        engine.unsubscribe(registerToken)
+        // The audio-tap subscriber is still active, so the engine must
+        // not have torn itself down yet.
+        XCTAssertTrue(SIDEngine.shared(for: session) === engine)
+
+        engine.unsubscribe(audioToken)
+        XCTAssertFalse(SIDEngine.shared(for: session) === engine)
+    }
+
+    func testSIDRegisterActivityRecordsWritesPerChipAndOffset() {
+        var activity = SIDRegisterActivity(chipCount: 2)
+        XCTAssertEqual(activity.lastWrite.count, 2)
+        XCTAssertEqual(activity.lastWrite[0].count, SIDRegisterActivity.registerCount)
+        XCTAssertTrue(activity.lastWrite[0].allSatisfy { $0 == nil })
+
+        let now = Date()
+        activity.record(chipIndex: 0, offset: 4, at: now) // V1 CTRL
+        activity.record(chipIndex: 1, offset: 22, at: now) // RES/FILT
+
+        XCTAssertEqual(activity.lastWrite[0][4], now)
+        XCTAssertNil(activity.lastWrite[0][22])
+        XCTAssertEqual(activity.lastWrite[1][22], now)
+
+        // Out-of-range chip/offset are ignored rather than crashing.
+        activity.record(chipIndex: 5, offset: 0, at: now)
+        activity.record(chipIndex: 0, offset: 99, at: now)
+    }
+
+    func testSIDRegisterActivityMnemonicsCoverAllRegistersInOrder() {
+        XCTAssertEqual(SIDRegisterActivity.mnemonics.count, SIDRegisterActivity.registerCount)
+        XCTAssertEqual(SIDRegisterActivity.mnemonics.first, "V1 FREQ LO")
+        XCTAssertEqual(SIDRegisterActivity.mnemonics[6], "V1 SR")
+        XCTAssertEqual(SIDRegisterActivity.mnemonics[7], "V2 FREQ LO")
+        XCTAssertEqual(SIDRegisterActivity.mnemonics.last, "MODE/VOL")
+    }
+
+    func testSIDVoiceLineupDetectsOnsetsOnGateAndPitchSlide() {
+        var channel = SIDVoiceChannel(
+            id: 0, chipIndex: 0, voiceIndex: 0, bufferSize: 8, noteHistoryLength: 6)
+
+        func push(frequency: UInt16, gate: Bool) {
+            channel.registers.write(offset: 0, value: UInt8(frequency & 0xFF))
+            channel.registers.write(offset: 1, value: UInt8(frequency >> 8))
+            channel.registers.write(offset: 4, value: gate ? 0x01 : 0x00)
+            channel.pushNoteHistory()
+        }
+
+        push(frequency: 0x1000, gate: false) // index 0: silence, no onset
+        push(frequency: 0x1000, gate: true)  // index 1: gate-on onset
+        push(frequency: 0x1000, gate: true)  // index 2: same note held, no onset
+        push(frequency: 0x1400, gate: true)  // index 3: slid to a clearly different pitch, onset
+        push(frequency: 0x1400, gate: false) // index 4: gate off, no onset
+        push(frequency: 0x1400, gate: false) // index 5: still off, no onset
+
+        let onsets = SIDVoiceLineupView.onsets(for: channel)
+        XCTAssertEqual(onsets.map(\.index), [1, 3])
+    }
+
+    func testSIDOscilloscopeGridLayoutPrefersFewerRowsOnWideScreens() {
+        // 11 modes, wide screen: should fit in 2 rows (6 columns) since
+        // 11/2 = 6 columns comfortably clears the minimum cell width.
+        let (rows, columns) = SIDOscilloscopeWindowController.gridLayout(
+            count: 11, screenWidth: 2400, minCellWidth: 300)
+        XCTAssertEqual(rows, 2)
+        XCTAssertEqual(columns, 6)
+        XCTAssertGreaterThanOrEqual(rows * columns, 11)
+    }
+
+    func testSIDOscilloscopeGridLayoutFallsBackToMoreRowsOnNarrowScreens() {
+        // Same 11 modes on a much narrower screen: 2 rows (6 columns)
+        // would make each cell narrower than the minimum, so it should
+        // fall back to more, narrower rows instead.
+        let (rows, columns) = SIDOscilloscopeWindowController.gridLayout(
+            count: 11, screenWidth: 900, minCellWidth: 300)
+        XCTAssertGreaterThan(rows, 2)
+        XCTAssertLessThanOrEqual(columns, 3)
+        XCTAssertGreaterThanOrEqual(rows * columns, 11)
+    }
+
+    func testSIDOscilloscopeGridLayoutHandlesTrivialCounts() {
+        XCTAssertEqual(SIDOscilloscopeWindowController.gridLayout(count: 0, screenWidth: 1920, minCellWidth: 300).rows, 0)
+        let single = SIDOscilloscopeWindowController.gridLayout(count: 1, screenWidth: 1920, minCellWidth: 300)
+        XCTAssertEqual(single.rows, 1)
+        XCTAssertEqual(single.columns, 1)
+    }
+
+    func testSIDWindowLayoutStoreRoundTripsThroughUserDefaults() throws {
+        let id = UUID()
+        defer { SIDWindowLayoutStore.clear(for: id) }
+        XCTAssertNil(SIDWindowLayoutStore.load(for: id))
+        XCTAssertFalse(SIDWindowLayoutStore.hasSavedLayout(for: id))
+
+        let entries = [
+            SIDWindowLayoutEntry(
+                mode: SIDVisualizationMode.oscilloscope.rawValue,
+                frame: CGRect(x: 10, y: 20, width: 300, height: 180)),
+            SIDWindowLayoutEntry(
+                mode: SIDVisualizationMode.spectrum.rawValue,
+                frame: CGRect(x: 320, y: 20, width: 300, height: 180)),
+        ]
+        let saved = SIDWindowLayoutSnapshot(entries: entries, savedAt: Date())
+        SIDWindowLayoutStore.save(saved, for: id)
+
+        XCTAssertTrue(SIDWindowLayoutStore.hasSavedLayout(for: id))
+        let loaded = try XCTUnwrap(SIDWindowLayoutStore.load(for: id))
+        XCTAssertEqual(loaded.entries, entries)
+    }
+
+    func testSIDWindowLayoutStoreTreatsEmptyEntriesAsNoSavedLayout() {
+        let id = UUID()
+        defer { SIDWindowLayoutStore.clear(for: id) }
+        SIDWindowLayoutStore.save(SIDWindowLayoutSnapshot(entries: [], savedAt: Date()), for: id)
+        // An explicitly-saved empty layout (e.g. saved while no SID
+        // windows were open) still decodes fine, but shouldn't be
+        // reported as "something to restore" — `restoreWindowLayout()`
+        // treats it as a no-op.
+        XCTAssertFalse(SIDWindowLayoutStore.hasSavedLayout(for: id))
+        XCTAssertNotNil(SIDWindowLayoutStore.load(for: id))
+    }
+
+    func testSIDWindowLayoutStoreClearRemovesSavedLayout() {
+        let id = UUID()
+        let entries = [SIDWindowLayoutEntry(mode: "Oscilloscope", frame: .zero)]
+        SIDWindowLayoutStore.save(SIDWindowLayoutSnapshot(entries: entries, savedAt: Date()), for: id)
+        XCTAssertTrue(SIDWindowLayoutStore.hasSavedLayout(for: id))
+
+        SIDWindowLayoutStore.clear(for: id)
+        XCTAssertNil(SIDWindowLayoutStore.load(for: id))
+        XCTAssertFalse(SIDWindowLayoutStore.hasSavedLayout(for: id))
+    }
+
+    func testSIDSpectrumAnalyzerAutoGainAvoidsAllBarsPeggedAtMax() throws {
+        let sampleRate = 48000.0
+        let analyzer = SIDSpectrumAnalyzer(sampleRate: sampleRate)
+        let toneHz = 1000.0
+
+        var lastBars: [Float]?
+        var phase = 0.0
+        let totalSamples = SIDSpectrumAnalyzer.fftSize * 8
+        var samples = [Float](repeating: 0, count: totalSamples)
+        for i in 0..<totalSamples {
+            samples[i] = Float(sin(phase))
+            phase += 2 * Double.pi * toneHz / sampleRate
+        }
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + 256, samples.count)
+            if let bars = analyzer.ingest(Array(samples[offset..<end])) {
+                lastBars = bars
+            }
+            offset = end
+        }
+
+        let bars = try XCTUnwrap(lastBars)
+        // A single pure tone should show a clear peak against a mostly-low
+        // background, not a wall of maxed-out bars — an earlier fixed
+        // "-60...0 dB" scale pegged nearly every bar to full-red
+        // regardless of actual signal content, since the raw FFT
+        // magnitude scale doesn't line up with that range.
+        let peggedCount = bars.filter { $0 > 0.95 }.count
+        XCTAssertLessThan(peggedCount, bars.count / 4)
+    }
+
+    func testSIDSpectrumAnalyzerReportsSilenceAsEmptyBarsNotAutoGainedNoise() throws {
+        let analyzer = SIDSpectrumAnalyzer(sampleRate: 48000.0)
+
+        // Genuine digital silence, plus the kind of tiny residual noise a
+        // real audio path has even with nothing playing — the Ultimate
+        // keeps streaming audio packets continuously whenever the stream
+        // is running, whether or not anything is actually playing.
+        // Auto-gain would otherwise rescale this relative to itself and
+        // light up every bar exactly as if real music were loud.
+        let totalSamples = SIDSpectrumAnalyzer.fftSize * 4
+        var silence = [Float](repeating: 0, count: totalSamples)
+        for i in silence.indices {
+            // A tiny, deterministic "dither"-like wobble — well under
+            // the silence threshold, but not literally all zeros.
+            silence[i] = Float(sin(Double(i) * 0.7)) * 0.0002
+        }
+
+        var lastBars: [Float]?
+        var offset = 0
+        while offset < silence.count {
+            let end = min(offset + 256, silence.count)
+            if let bars = analyzer.ingest(Array(silence[offset..<end])) {
+                lastBars = bars
+            }
+            offset = end
+        }
+
+        let bars = try XCTUnwrap(lastBars)
+        XCTAssertTrue(bars.allSatisfy { $0 == 0 })
     }
 
     func testSIDNoteNameConversionMatchesStandardTuning() {

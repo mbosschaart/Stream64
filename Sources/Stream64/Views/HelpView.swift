@@ -50,6 +50,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case assembly64
     case multiDevice
     case machineControl
+    case debugAndSID
     case troubleshooting
 
     var id: String { rawValue }
@@ -67,6 +68,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .assembly64: return "Assembly64 Library"
         case .multiDevice: return "Multiple Devices"
         case .machineControl: return "Machine Control"
+        case .debugAndSID: return "Debug Trace & SID Oscilloscope"
         case .troubleshooting: return "Troubleshooting"
         }
     }
@@ -84,6 +86,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .assembly64: return "books.vertical"
         case .multiDevice: return "square.grid.2x2"
         case .machineControl: return "power"
+        case .debugAndSID: return "waveform.path.ecg"
         case .troubleshooting: return "wrench.and.screwdriver"
         }
     }
@@ -101,6 +104,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .assembly64: return Self.assembly64Text
         case .multiDevice: return Self.multiDeviceText
         case .machineControl: return Self.machineControlText
+        case .debugAndSID: return Self.debugAndSIDText
         case .troubleshooting: return Self.troubleshootingText
         }
     }
@@ -511,6 +515,61 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Settings → Audio** — volume (also on the 1702 bezel's VOLUME knob) and \
     the jitter buffer. A larger buffer smooths playback on busy networks at \
     the cost of latency; 60 ms is a good default.
+    """
+
+    private static let debugAndSIDText = """
+    Three more windows expose debug facilities specific to the **Ultimate 64 \
+    and Ultimate 64 Elite**. All three are hidden automatically on hardware \
+    that doesn't support them (Ultimate-II+, C64 Ultimate).
+
+    **Debug Trace** — stream's right-click menu → **Debug Trace…**
+
+    Streams the Ultimate's cycle-accurate 6510, VIC, or 1541-drive bus trace \
+    and decodes it live into a scrolling table or — the default — a \
+    **Memory Map**: a 256×256 heatmap where every read/write lights up its \
+    address, so notable regions (zero page, screen RAM, VIC-II, SID, both \
+    CIAs, KERNAL ROM, and more) each form a recognizable band. Runs \
+    alongside video/audio streaming without interrupting either. Both the \
+    raw capture and the visible table rows can be exported.
+
+    **Ultimate Menu** — toolbar Menu button, or the right-click menu
+
+    A live, non-interrupting view of the Ultimate's on-screen menu system \
+    (and, if navigated there, the Machine Code Monitor) over the Ultimate's \
+    own Telnet server. Unlike pressing the physical menu button, this \
+    doesn't pause whatever's running on the C64. Arrow and function keys \
+    navigate it normally; **⌘+letter** sends a best-effort stand-in for the \
+    physical **C=** modifier key.
+
+    **SID Oscilloscope** — right-click menu → **SID Visualizations**
+
+    An 18-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+    configured. Pick any mode from **SID Visualizations** to open it in its \
+    own window; any number of modes can be open side by side, or use \
+    **Open All in Grid** to open every mode at once, automatically tiled to \
+    fit the screen. However your windows end up arranged, **Save Window \
+    Layout** remembers it per device, so **Restore Window Layout** can \
+    bring it back later — even after quitting and relaunching the app. Both \
+    are also on the right-click menu, so restoring works even with no SID \
+    windows currently open.
+
+    A window's mode is fixed once it's open — picking a different mode from \
+    either menu always opens a *new* window rather than switching the \
+    current one, so e.g. an Oscilloscope window and a Spectrum Analyzer \
+    window can both stay open and updating live side by side.
+
+    Thirteen modes reconstruct their picture from SID register *writes*, \
+    seen automatically on a 6510 Debug Trace: **Oscilloscope**, **ADSR \
+    Envelope**, **Mixer Console**, **Piano Roll**, **Voice Lineup**, \
+    **Filter Curve**, **VU Meter Bank**, **Register Activity Grid**, **ADSR \
+    Knobs**, **Pulse Width**, **Control Bits**, **SID Dashboard**, and \
+    **Colorful Waveform**. Five instead read the real post-mix Ultimate \
+    audio stream — **Spectrum Analyzer**, **Lissajous Scope**, \
+    **Spectrogram**, **3D Waterfall**, and **3D Bar Field** — so they \
+    reflect genuine SID output, including real filter behavior the \
+    register-driven modes only approximate. A **Phosphor Glow** toggle \
+    (each window's right-click menu) adds a CRT-bloom overlay to whichever \
+    mode that window is showing.
     """
 
     private static let troubleshootingText = """

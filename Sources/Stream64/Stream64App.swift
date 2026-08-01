@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Stream64Version {
-    static let display = "0.98b"
+    static let display = "0.99b"
 }
 
 enum Stream64Assets {

@@ -969,11 +969,11 @@ struct ViewerPane: View {
             .disabled(!session.isConnected)
 
             Button {
-                Task { await session.menuButton() }
+                session.openTelnetMonitor()
             } label: {
-                Label("Menu", systemImage: "filemenu.and.selection")
+                Label("Ultimate Menu", systemImage: "terminal")
             }
-            .help("Press the Ultimate menu button")
+            .help("Open the Ultimate Menu (remote, without interrupting the C64)")
             .disabled(!session.isConnected)
 
             Button {

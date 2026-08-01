@@ -25,9 +25,18 @@ final class UltimateTelnetClient {
 
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "ultimate-telnet-client")
+    /// Strips Telnet protocol-negotiation bytes (IAC/0xFF sequences)
+    /// before `onData` ever sees them — confirmed against a real
+    /// device's raw byte capture that the Ultimate's Telnet server sends
+    /// `IAC DONT LINEMODE` + `IAC WILL ECHO` immediately on connect.
+    /// Without this, those framing bytes leak into `VT100Screen` as if
+    /// they were displayable text/PETSCII graphics, showing up as a
+    /// handful of stray characters at the very start of the screen.
+    private var iacFilter = TelnetIACFilter()
 
     func connect(host: String, port: UInt16 = 23) {
         disconnect()
+        iacFilter = TelnetIACFilter()
         let connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!,
@@ -68,7 +77,10 @@ final class UltimateTelnetClient {
         ) { [weak self, weak connection] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                self.onData?(data)
+                let filtered = self.iacFilter.filter(data)
+                if !filtered.isEmpty {
+                    self.onData?(filtered)
+                }
             }
             if let error {
                 self.onStateChange?(.failed(error.localizedDescription))
@@ -82,5 +94,62 @@ final class UltimateTelnetClient {
                 self.receive(on: connection)
             }
         }
+    }
+}
+
+/// A minimal, stateful Telnet IAC (0xFF) protocol-negotiation filter.
+/// `IAC WILL/WONT/DO/DONT <option>` (3 bytes), `IAC SB ... IAC SE`
+/// (variable-length subnegotiation), and other 2-byte IAC commands
+/// (NOP/DM/BRK/IP/AO/AYT/EC/EL/GA, etc.) are all consumed and dropped —
+/// this client never negotiates any Telnet option, it just needs to not
+/// leak the negotiation bytes themselves into the VT100 byte stream.
+/// `IAC IAC` (the escape sequence for a literal 0xFF byte in the actual
+/// data) is unescaped and passed through. Stateful across calls to
+/// `filter(_:)` so a sequence split across two TCP reads still decodes
+/// correctly, exactly like `VT100Screen`'s own byte-at-a-time parser.
+final class TelnetIACFilter {
+    private enum State {
+        case normal
+        case sawIAC
+        case sawWillWontDoDont
+        case subnegotiation
+        case subnegotiationSawIAC
+    }
+    private var state: State = .normal
+
+    func filter(_ data: Data) -> Data {
+        var output = Data()
+        output.reserveCapacity(data.count)
+        for byte in data {
+            switch state {
+            case .normal:
+                if byte == 0xFF {
+                    state = .sawIAC
+                } else {
+                    output.append(byte)
+                }
+            case .sawIAC:
+                switch byte {
+                case 0xFF: // IAC IAC — literal 0xFF in the data.
+                    output.append(0xFF)
+                    state = .normal
+                case 0xFB, 0xFC, 0xFD, 0xFE: // WILL, WONT, DO, DONT — one option byte follows.
+                    state = .sawWillWontDoDont
+                case 0xFA: // SB — subnegotiation, runs until IAC SE.
+                    state = .subnegotiation
+                default: // NOP/DM/BRK/IP/AO/AYT/EC/EL/GA — no further bytes.
+                    state = .normal
+                }
+            case .sawWillWontDoDont:
+                state = .normal // Consume the option byte; sequence complete.
+            case .subnegotiation:
+                if byte == 0xFF {
+                    state = .subnegotiationSawIAC
+                }
+            case .subnegotiationSawIAC:
+                state = (byte == 0xF0) ? .normal : .subnegotiation // 0xF0 = SE
+            }
+        }
+        return output
     }
 }

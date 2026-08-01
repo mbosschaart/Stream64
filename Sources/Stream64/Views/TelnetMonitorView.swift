@@ -3,8 +3,14 @@ import AppKit
 
 /// Drives a Telnet session to the Ultimate (port 23, VT100) so the on-device
 /// menu system and Machine Code Monitor — native firmware UI with no REST
-/// equivalent — can be viewed and driven remotely. See `UltimateTelnetClient`
-/// and `VT100Screen` for the transport/decode halves.
+/// equivalent — can be viewed and driven remotely, without interrupting
+/// whatever's running on the C64 (unlike the REST-based `RemoteMenuView`,
+/// which pauses the machine while its menu is open). In everyday use this
+/// is mostly a live, non-interrupting view of the on-screen menu — hence
+/// the user-facing name "Ultimate Menu" rather than "Machine Monitor,"
+/// even though the same window can also reach the real Machine Code
+/// Monitor if navigated there. See `UltimateTelnetClient` and
+/// `VT100Screen` for the transport/decode halves.
 @MainActor
 final class TelnetMonitorViewModel: ObservableObject {
     let screen: VT100Screen
@@ -250,7 +256,7 @@ final class TelnetMonitorWindowController: NSWindowController, NSWindowDelegate 
                 .titled, .closable, .miniaturizable, .resizable,
             ],
             backing: .buffered, defer: false)
-        window.title = "\(session.device.name) Machine Monitor"
+        window.title = "\(session.device.name) Ultimate Menu"
         window.minSize = NSSize(width: 560, height: 360)
         window.isReleasedWhenClosed = false
         window.center()

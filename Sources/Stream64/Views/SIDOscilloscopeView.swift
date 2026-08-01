@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import AppKit
 
@@ -9,20 +10,70 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     case envelope = "ADSR Envelope"
     case mixerConsole = "Mixer Console"
     case pianoRoll = "Piano Roll"
-    case wiringDiagram = "Wiring Diagram"
+    case voiceLineup = "Voice Lineup"
     case filterCurve = "Filter Curve"
     case spectrum = "Spectrum Analyzer"
     case lissajous = "Lissajous Scope"
     case spectrogram = "Spectrogram"
+    case waterfall3D = "3D Waterfall"
+    case barField3D = "3D Bar Field"
+    case vuMeterBank = "VU Meter Bank"
+    case registerActivity = "Register Activity"
+    case adsrKnobs = "ADSR Knobs"
+    case pulseWidth = "Pulse Width"
+    case controlBits = "Control Bits"
+    case dashboard = "SID Dashboard"
+    case colorfulWaveform = "Colorful Waveform"
     var id: String { rawValue }
 
-    /// Register-driven modes (the default 8) reconstruct their picture
-    /// from SID register *writes* seen on the debug trace. These three
-    /// instead read the real post-mix Ultimate audio stream, so they need
-    /// `AudioReceiver`'s sample tap active instead (or as well).
+    /// Register-driven modes reconstruct their picture from SID register
+    /// *writes* seen on the debug trace. These five instead read the real
+    /// post-mix Ultimate audio stream, so they need `AudioReceiver`'s
+    /// sample tap active instead (or as well).
     var needsAudioTap: Bool {
         switch self {
-        case .spectrum, .lissajous, .spectrogram: return true
+        case .spectrum, .lissajous, .spectrogram, .waterfall3D, .barField3D: return true
+        default: return false
+        }
+    }
+
+    /// Whether this mode needs the audio-rate oscillator/envelope stepping
+    /// loop in `tick()` — i.e. it reads `orderedSamples`,
+    /// `orderedEnvelopeSamples`, `levelRMS`, or `peakLevel`. Modes that only
+    /// show raw register values (ADSR Knobs, Pulse Width, Control Bits,
+    /// SID Dashboard, Filter Curve, Register Activity) or note-onset timing
+    /// (Piano Roll, Voice Lineup — driven by `pushNoteHistory()`, which
+    /// only needs the *current* register values, not synthesized samples)
+    /// don't need this at all, and paid for it unconditionally before this
+    /// was added.
+    var needsSampleSynthesis: Bool {
+        switch self {
+        case .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform: return true
+        default: return false
+        }
+    }
+
+    /// Whether this mode needs SID register *writes* at all — the inverse
+    /// of `needsAudioTap` today, since no mode currently needs both the
+    /// debug bus-trace and the raw audio tap. Named separately (rather than
+    /// just inlining `!needsAudioTap`) so call sites read as "this mode
+    /// needs register writes" instead of a double negative.
+    var needsRegisterWrites: Bool { !needsAudioTap }
+
+    /// Whether this mode consumes FFT bar spectra from `SIDSpectrumAnalyzer`
+    /// — as opposed to Lissajous, which only needs raw L/R samples.
+    var usesSpectrumBars: Bool {
+        switch self {
+        case .spectrum, .spectrogram, .waterfall3D, .barField3D: return true
+        default: return false
+        }
+    }
+
+    /// Whether this mode needs a scrolling *history* of spectra rather
+    /// than just the latest one.
+    var usesSpectrogramHistory: Bool {
+        switch self {
+        case .spectrogram, .waterfall3D, .barField3D: return true
         default: return false
         }
     }
@@ -33,11 +84,20 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
         case .envelope: return "waveform.path"
         case .mixerConsole: return "slider.vertical.3"
         case .pianoRoll: return "pianokeys"
-        case .wiringDiagram: return "point.3.connected.trianglepath.dotted"
+        case .voiceLineup: return "rectangle.stack.fill"
         case .filterCurve: return "waveform.path.ecg"
         case .spectrum: return "chart.bar.fill"
         case .lissajous: return "circle.hexagongrid"
         case .spectrogram: return "square.stack.3d.up"
+        case .waterfall3D: return "mountain.2.fill"
+        case .barField3D: return "cube.fill"
+        case .vuMeterBank: return "gauge"
+        case .registerActivity: return "memorychip"
+        case .adsrKnobs: return "dial.low"
+        case .pulseWidth: return "rectangle.split.3x1"
+        case .controlBits: return "switch.2"
+        case .dashboard: return "rectangle.3.group"
+        case .colorfulWaveform: return "waveform.circle.fill"
         }
     }
 }
@@ -56,6 +116,16 @@ struct SIDVoiceChannel: Identifiable {
     private var samples: [Float]
     private var envelopeSamples: [Float]
     private var writeIndex = 0
+
+    /// Peak-hold level for the VU Meter Bank mode: jumps instantly to the
+    /// loudest recent sample, then decays slowly — the same idea a real
+    /// analog VU/PPM meter's peak needle uses, distinct from `levelRMS`
+    /// below (which the denser Mixer Console strip uses instead, and
+    /// which averages rather than holding a peak).
+    private(set) var peakLevel: Float = 0
+    /// Tuned so a peak decays to roughly 5% of its value over ~1.5s at
+    /// the 8 kHz simulation sample rate `push` is called at.
+    private static let peakDecayPerSample: Float = 0.9997
 
     /// Lower-rate, much longer history for the Piano Roll — the
     /// audio-rate `samples` buffer above is only ~50 ms, far too short for
@@ -77,6 +147,25 @@ struct SIDVoiceChannel: Identifiable {
         samples[writeIndex] = sample
         envelopeSamples[writeIndex] = envelope
         writeIndex = (writeIndex + 1) % samples.count
+        peakLevel = max(peakLevel * Self.peakDecayPerSample, abs(sample))
+    }
+
+    /// Clears all reconstructed state back to power-on defaults —
+    /// registers, synth, every sample/history buffer, and the peak-hold
+    /// level. Used when the user explicitly resets/reboots/powers off
+    /// the machine: register writes alone can't reliably signal "the
+    /// chip went silent" (a reset may not generate any new writes at
+    /// all), so this is called proactively instead of waiting for writes
+    /// that might never come. Buffers are zeroed directly (not just left
+    /// to `push()` naturally flush them out over the next ~50ms) so the
+    /// visual change is instant.
+    mutating func resetToSilence() {
+        registers = SIDVoiceRegisters()
+        synth = SIDVoiceSynth()
+        samples = Array(repeating: 0, count: samples.count)
+        envelopeSamples = Array(repeating: 0, count: envelopeSamples.count)
+        noteHistory = Array(repeating: (false, 0), count: noteHistory.count)
+        peakLevel = 0
     }
 
     mutating func pushNoteHistory() {
@@ -142,342 +231,167 @@ struct SIDVoiceChannel: Identifiable {
     }
 }
 
+/// Thin per-window state: which visualization mode this window shows and
+/// whether its phosphor-glow overlay is on — both are genuinely specific
+/// to *this* window (two windows on the same device can show different
+/// modes, or the same mode with different glow settings). Everything else
+/// (the actual SID data) now lives in the shared `SIDEngine` for this
+/// window's device — see that type for why. `SIDOscilloscopeView` reads
+/// this for `visualizationMode`/`phosphorGlowEnabled` and reads `engine`
+/// directly for the data, so it's observing two small, focused objects
+/// instead of one that mixed per-window and shared state together.
 @MainActor
 final class SIDOscilloscopeViewModel: ObservableObject {
-    static let simulationSampleRate = 8000.0
-    static let bufferSize = 400 // ~50 ms of trace at the simulation rate
-    static let noteHistoryLength = 300 // ~10 s at the 30 Hz tick rate
-    static let lissajousBufferSize = 900
-    static let spectrogramColumns = 160
-    /// Clamp elapsed time between ticks so a stalled/backgrounded window
-    /// doesn't try to synthesize a huge backlog of samples the instant it
-    /// resumes.
-    private static let maxTickSeconds = 0.1
-
     let session: DeviceSession
-    @Published private(set) var channels: [SIDVoiceChannel] = []
-    @Published private(set) var chipCount = 1
-    @Published private(set) var filterStates: [SIDFilterRegisters] = []
+    let engine: SIDEngine
 
-    @Published var visualizationMode: SIDVisualizationMode = .oscilloscope {
-        didSet { modeDidChange(from: oldValue) }
-    }
+    @Published var visualizationMode: SIDVisualizationMode = .oscilloscope
     @Published var phosphorGlowEnabled = false
 
-    // Real-audio-tap-derived state (Spectrum/Lissajous/Spectrogram only).
-    @Published private(set) var spectrumBars: [Float] = []
-    @Published private(set) var spectrogramHistory: [[Float]] = []
-    @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
-
-    /// The mutable working copies `tick()` steps every sample; the
-    /// `@Published` copies the view reads are only reassigned once per
-    /// tick, not once per sample — publishing per-sample would fire
-    /// hundreds of SwiftUI updates a frame for no visual benefit.
-    private var workingChannels: [SIDVoiceChannel] = []
-    private var workingFilterStates: [SIDFilterRegisters] = []
-    private var chipBaseAddresses: [UInt16] = [0xD400]
-
-    private var pendingVoiceWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
-    private var pendingFilterWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
-    private let pendingLock = NSLock()
-    private var entriesObserverID: UUID?
-    private var audioObserverID: UUID?
-    private let spectrumAnalyzer = SIDSpectrumAnalyzer(sampleRate: 47983.0)
-    private var lissajousBuffer: [(left: Float, right: Float)] = []
-    private var timer: Timer?
-    private var lastTick = Date()
+    private var engineToken: SIDEngine.SubscriberToken?
 
     init(session: DeviceSession) {
         self.session = session
+        self.engine = SIDEngine.shared(for: session)
     }
 
-    /// Discover the SID address configuration, then attach to the
-    /// (persistent, session-owned) receiver and start the synthesis/UI
-    /// timer. Call once when the window opens.
-    func start() async {
-        let config = await UltimateAPIClient(device: session.device).fetchSIDConfiguration()
-        configure(with: config)
-
-        entriesObserverID = session.debugStreamReceiver.addEntriesObserver { [weak self] entries in
-            guard let self else { return }
-            let bases = self.chipBaseAddresses
-            var voiceWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
-            var filterWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
-            for entry in entries where !entry.isRead {
-                for (chipIndex, base) in bases.enumerated() {
-                    let offset = Int(entry.address) - Int(base)
-                    if offset >= 0, offset < 21 {
-                        voiceWrites.append((chipIndex, offset, entry.data))
-                        break
-                    } else if offset >= 21, offset < 25 {
-                        filterWrites.append((chipIndex, offset - 21, entry.data))
-                        break
-                    }
-                }
-            }
-            guard !voiceWrites.isEmpty || !filterWrites.isEmpty else { return }
-            self.pendingLock.lock()
-            self.pendingVoiceWrites.append(contentsOf: voiceWrites)
-            self.pendingFilterWrites.append(contentsOf: filterWrites)
-            self.pendingLock.unlock()
-        }
-
-        lastTick = Date()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tick() }
-        }
-        updateAudioTapSubscription()
+    /// Registers this window with the shared engine for its device. Call
+    /// once when the window opens, after `visualizationMode` has already
+    /// been set to its final value (see `SIDOscilloscopeWindowController.init`
+    /// — a window's mode never changes after creation, so this only ever
+    /// needs to compute `SIDEngineNeeds` once).
+    func start() {
+        engineToken = engine.subscribe(needs: SIDEngineNeeds(mode: visualizationMode))
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        if let entriesObserverID {
-            session.debugStreamReceiver.removeEntriesObserver(entriesObserverID)
+        if let engineToken {
+            engine.unsubscribe(engineToken)
         }
-        if let audioObserverID {
-            session.audioReceiver.removeSampleObserver(audioObserverID)
-        }
-    }
-
-    private func modeDidChange(from oldMode: SIDVisualizationMode) {
-        guard oldMode != visualizationMode else { return }
-        updateAudioTapSubscription()
-        // Fresh start for whichever scrolling buffer the new mode owns,
-        // rather than dumping a stale backlog the instant it's selected.
-        switch visualizationMode {
-        case .lissajous: lissajousBuffer.removeAll(keepingCapacity: true)
-        case .spectrogram: spectrogramHistory.removeAll(keepingCapacity: true)
-        default: break
-        }
-    }
-
-    private func updateAudioTapSubscription() {
-        let needsTap = visualizationMode.needsAudioTap
-        if needsTap, audioObserverID == nil {
-            audioObserverID = session.audioReceiver.addSampleObserver { [weak self] interleaved in
-                Task { @MainActor [weak self] in self?.handleAudioSamples(interleaved) }
-            }
-        } else if !needsTap, let id = audioObserverID {
-            session.audioReceiver.removeSampleObserver(id)
-            audioObserverID = nil
-        }
-    }
-
-    private func handleAudioSamples(_ interleaved: [Float]) {
-        guard visualizationMode.needsAudioTap else { return }
-        let frameCount = interleaved.count / 2
-        guard frameCount > 0 else { return }
-        var mono = [Float](repeating: 0, count: frameCount)
-        for i in 0..<frameCount {
-            let left = interleaved[i * 2]
-            let right = interleaved[i * 2 + 1]
-            mono[i] = (left + right) * 0.5
-            if visualizationMode == .lissajous {
-                lissajousBuffer.append((left, right))
-            }
-        }
-        if lissajousBuffer.count > Self.lissajousBufferSize {
-            lissajousBuffer.removeFirst(lissajousBuffer.count - Self.lissajousBufferSize)
-        }
-        if visualizationMode == .lissajous {
-            lissajousPoints = lissajousBuffer
-        }
-
-        if visualizationMode == .spectrum || visualizationMode == .spectrogram,
-           let bars = spectrumAnalyzer.ingest(mono) {
-            spectrumBars = bars
-            if visualizationMode == .spectrogram {
-                spectrogramHistory.append(bars)
-                if spectrogramHistory.count > Self.spectrogramColumns {
-                    spectrogramHistory.removeFirst(spectrogramHistory.count - Self.spectrogramColumns)
-                }
-            }
-        }
-    }
-
-    private func configure(with config: UltimateAPIClient.SIDConfiguration) {
-        chipBaseAddresses = [config.socket1Address]
-        if let socket2 = config.socket2Address {
-            chipBaseAddresses.append(socket2)
-        }
-        chipCount = chipBaseAddresses.count
-        workingChannels = (0..<chipBaseAddresses.count).flatMap { chip in
-            (0..<3).map { voice in
-                SIDVoiceChannel(
-                    id: chip * 3 + voice, chipIndex: chip, voiceIndex: voice,
-                    bufferSize: Self.bufferSize, noteHistoryLength: Self.noteHistoryLength)
-            }
-        }
-        channels = workingChannels
-        workingFilterStates = Array(repeating: SIDFilterRegisters(), count: chipBaseAddresses.count)
-        filterStates = workingFilterStates
-    }
-
-    private func tick() {
-        let now = Date()
-        let dt = min(now.timeIntervalSince(lastTick), Self.maxTickSeconds)
-        lastTick = now
-        guard dt > 0, !workingChannels.isEmpty else { return }
-
-        pendingLock.lock()
-        let voiceWrites = pendingVoiceWrites
-        let filterWrites = pendingFilterWrites
-        pendingVoiceWrites.removeAll(keepingCapacity: true)
-        pendingFilterWrites.removeAll(keepingCapacity: true)
-        pendingLock.unlock()
-
-        for write in voiceWrites {
-            let index = write.chipIndex * 3 + write.offset / 7
-            guard workingChannels.indices.contains(index) else { continue }
-            workingChannels[index].registers.write(offset: write.offset % 7, value: write.value)
-        }
-        for write in filterWrites {
-            guard workingFilterStates.indices.contains(write.chipIndex) else { continue }
-            workingFilterStates[write.chipIndex].write(offset: write.offset, value: write.value)
-        }
-
-        let stepDt = 1.0 / Self.simulationSampleRate
-        let sampleCount = max(1, Int((dt * Self.simulationSampleRate).rounded()))
-        for _ in 0..<sampleCount {
-            // Snapshot each chip's 3 voice phases *before* stepping any of
-            // them this sample, so ring modulation reads a consistent
-            // (if one-sample-stale) neighbor phase rather than whatever
-            // order the voices happen to be stepped in.
-            var previousPhases: [[Double]] = Array(
-                repeating: [0, 0, 0], count: chipBaseAddresses.count)
-            for i in workingChannels.indices {
-                previousPhases[workingChannels[i].chipIndex][workingChannels[i].voiceIndex] =
-                    workingChannels[i].synth.phase
-            }
-            for i in workingChannels.indices {
-                let chip = workingChannels[i].chipIndex
-                let voice = workingChannels[i].voiceIndex
-                let neighborVoice = (voice + 2) % 3 // circular: 0←2, 1←0, 2←1
-                let neighborPhase = previousPhases[chip][neighborVoice]
-                let sample = workingChannels[i].synth.step(
-                    dt: stepDt, registers: workingChannels[i].registers,
-                    neighborPhase: neighborPhase)
-                workingChannels[i].push(sample: Float(sample), envelope: Float(workingChannels[i].synth.envelope))
-            }
-        }
-
-        for i in workingChannels.indices {
-            workingChannels[i].pushNoteHistory()
-        }
-
-        channels = workingChannels
-        filterStates = workingFilterStates
+        engineToken = nil
     }
 }
 
 struct SIDOscilloscopeView: View {
     @ObservedObject var model: SIDOscilloscopeViewModel
+    /// The shared per-device engine backing `model` — observed directly
+    /// (rather than forwarded through `model`) so this view re-renders
+    /// whenever the engine's data changes, exactly as if it were still
+    /// owned by `model` itself.
+    @ObservedObject var engine: SIDEngine
     @ObservedObject var session: DeviceSession
 
-    var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
-            if !isCapturing6510, !model.visualizationMode.needsAudioTap {
-                banner
-                Divider()
-            }
-            content
-                .contextMenu {
-                    SIDVisualizationMenuContent(model: model)
-                }
-        }
-        .frame(minWidth: 480, minHeight: 220)
+    init(model: SIDOscilloscopeViewModel, session: DeviceSession) {
+        self.model = model
+        self.engine = model.engine
+        self.session = session
     }
 
-    private var toolbar: some View {
-        HStack {
-            Menu {
-                SIDVisualizationMenuContent(model: model)
-            } label: {
-                Label(model.visualizationMode.rawValue, systemImage: model.visualizationMode.systemImage)
+    var body: some View {
+        content
+            .contextMenu {
+                SIDVisualizationMenuContent(model: model, session: session)
             }
-            .frame(width: 220)
-            Spacer()
-        }
-        .padding(8)
+            .frame(minWidth: 480, minHeight: 220)
     }
 
     @ViewBuilder
     private var content: some View {
         switch model.visualizationMode {
         case .oscilloscope:
-            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
                 SIDChannelPanel(channel: channel, glow: model.phosphorGlowEnabled)
             }
         case .envelope:
-            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
                 SIDEnvelopePanel(channel: channel, glow: model.phosphorGlowEnabled)
             }
         case .mixerConsole:
-            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
                 SIDMixerStripPanel(channel: channel)
             }
         case .pianoRoll:
-            SIDPianoRollView(channels: model.channels)
-        case .wiringDiagram:
-            SIDWiringDiagramView(channels: model.channels, chipCount: model.chipCount)
+            SIDPianoRollView(channels: engine.channels)
+        case .voiceLineup:
+            SIDVoiceLineupView(channels: engine.channels)
         case .filterCurve:
-            SIDFilterCurveView(channels: model.channels, filterStates: model.filterStates)
+            SIDFilterCurveView(channels: engine.channels, filterStates: engine.filterStates)
         case .spectrum:
-            SIDSpectrumView(bars: model.spectrumBars, glow: model.phosphorGlowEnabled)
+            SIDSpectrumView(bars: engine.spectrumBars, glow: model.phosphorGlowEnabled)
         case .lissajous:
-            SIDLissajousView(points: model.lissajousPoints, glow: model.phosphorGlowEnabled)
+            SIDLissajousView(points: engine.lissajousPoints, glow: model.phosphorGlowEnabled)
         case .spectrogram:
-            SIDSpectrogramView(history: model.spectrogramHistory)
-        }
-    }
-
-    private var isCapturing6510: Bool {
-        if case .active(let mode) = session.debugTraceState {
-            return mode.sources.contains(.cpu6510)
-        }
-        return false
-    }
-
-    private var banner: some View {
-        HStack {
-            Image(systemName: "waveform.slash").foregroundStyle(.orange)
-            Text("No 6510 debug trace is running — SID register writes can't be seen without one.")
-                .font(.caption)
-            Spacer()
-            Button("Start 6510 Trace") {
-                Task { await session.startDebugTrace(mode: .cpu6510Only) }
+            SIDSpectrogramView(history: engine.spectrogramHistory)
+        case .waterfall3D:
+            SIDWaterfallSpectrumView(history: engine.spectrogramHistory)
+        case .barField3D:
+            SID3DBarSpectrumView(history: engine.spectrogramHistory)
+        case .vuMeterBank:
+            SIDVUMeterBankView(channels: engine.channels)
+        case .registerActivity:
+            SIDRegisterActivityView(activity: engine.registerActivity)
+        case .adsrKnobs:
+            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+                SIDADSRKnobPanel(channel: channel)
             }
-            .font(.caption)
+        case .pulseWidth:
+            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+                SIDPulseWidthPanel(channel: channel)
+            }
+        case .controlBits:
+            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+                SIDControlBitsPanel(channel: channel)
+            }
+        case .dashboard:
+            SIDDashboardView(channels: engine.channels, filterStates: engine.filterStates)
+        case .colorfulWaveform:
+            SIDColorfulWaveformView(channels: engine.channels, glow: model.phosphorGlowEnabled)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.orange.opacity(0.12))
     }
+
 }
 
-/// Shared menu content for both the toolbar "Visualize" dropdown and the
-/// window's right-click context menu — one source of truth for the list
-/// of modes so the two selection surfaces can't drift apart.
+/// The window's right-click context menu — no toolbar/pulldown menu is
+/// shown in the window itself (see `SIDOscilloscopeView.body`), so this is
+/// the only in-window way to reach these actions. Every mode entry below
+/// always spawns a brand-new, fully independent window (own view model,
+/// own timer, own observers) already set to that mode — it never
+/// switches *this* window's mode — so several modes can run side by
+/// side, e.g. an Oscilloscope window next to a Spectrum Analyzer window.
+/// This mirrors the "SID Visualizations" entry on the stream's main
+/// right-click menu (`StreamContextMenu`), which behaves identically.
 struct SIDVisualizationMenuContent: View {
     @ObservedObject var model: SIDOscilloscopeViewModel
+    let session: DeviceSession
 
     var body: some View {
         ForEach(SIDVisualizationMode.allCases) { mode in
             Button {
-                model.visualizationMode = mode
+                SIDOscilloscopeWindowController.showNewWindow(session: session, mode: mode)
             } label: {
-                if model.visualizationMode == mode {
-                    Label(mode.rawValue, systemImage: "checkmark")
-                } else {
-                    Text(mode.rawValue)
-                }
+                Label(mode.rawValue, systemImage: mode.systemImage)
             }
         }
         Divider()
         Toggle("Phosphor Glow", isOn: $model.phosphorGlowEnabled)
+        Divider()
+        Button {
+            SIDOscilloscopeWindowController.showAllInGrid(session: session)
+        } label: {
+            Label("Open All in Grid", systemImage: "square.grid.3x3")
+        }
+        Divider()
+        Button {
+            session.saveWindowLayout()
+        } label: {
+            Label("Save Window Layout", systemImage: "square.and.arrow.down")
+        }
+        Button {
+            session.restoreWindowLayout()
+        } label: {
+            Label("Restore Window Layout", systemImage: "square.and.arrow.up")
+        }
+        .disabled(!session.hasSavedWindowLayout)
     }
 }
 
@@ -666,47 +580,211 @@ struct WaveformTrace: View {
 
 @MainActor
 final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegate {
+    /// Every open window, keyed by its own instance ID — multiple windows
+    /// per device are supported (see `showNewWindow`), so this can no
+    /// longer be keyed by device ID alone the way the single-window
+    /// version was.
     private static var windows: [UUID: SIDOscilloscopeWindowController] = [:]
 
+    private let windowID = UUID()
     private let deviceID: UUID
+    private let deviceName: String
     private let model: SIDOscilloscopeViewModel
 
-    static func show(session: DeviceSession) {
-        if let existing = windows[session.device.id] {
-            existing.window?.makeKeyAndOrderFront(nil)
-            return
-        }
-        let controller = SIDOscilloscopeWindowController(session: session)
-        windows[session.device.id] = controller
-        controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
-        Task { await controller.model.start() }
-        NSApp.activate(ignoringOtherApps: true)
+    /// Always opens a brand-new, independent window already set to
+    /// `mode` — never reuses or replaces any existing window, including
+    /// the primary one, so several modes can run side by side.
+    static func showNewWindow(session: DeviceSession, mode: SIDVisualizationMode) {
+        let controller = SIDOscilloscopeWindowController(session: session, mode: mode)
+        windows[controller.windowID] = controller
+        controller.presentAndStart()
     }
 
-    private init(session: DeviceSession) {
+    /// Opens one independent window per visualization mode, tiled into a
+    /// grid across the main screen so every mode can be compared side by
+    /// side at a glance. Like `showNewWindow`, always spawns fresh
+    /// windows rather than reusing/deduplicating any already open, and
+    /// none of them become the device's "primary" window.
+    static func showAllInGrid(session: DeviceSession) {
+        let modes = SIDVisualizationMode.allCases
+        let count = modes.count
+        guard count > 0, let screen = NSScreen.main else { return }
+        let area = screen.visibleFrame
+
+        // Pack every window at its actual minimum usable size (matching
+        // `window.minSize` below) rather than stretching cells to fill
+        // whatever space dividing the screen evenly would give each
+        // one — with 18 modes, that stretching could make even a simple
+        // bar-graph mode occupy a needlessly huge chunk of the screen.
+        // `gridLayout` still picks a sensible (rows, columns) split
+        // (preferring fewer, wider rows) using this fixed size as the
+        // "don't go narrower than this" threshold; the resulting grid
+        // is then centered in whatever screen space is left over.
+        let minWindowWidth: CGFloat = 300
+        let minWindowHeight: CGFloat = 180
+        let margin: CGFloat = 4
+        // The per-window *cell* must be larger than `window.minSize`
+        // below by at least 2x the margin. Each window's requested frame
+        // is `cellSize - margin*2` (to leave a gap); if that came out
+        // smaller than `window.minSize` (as it did when `cellWidth`/
+        // `cellHeight` were set equal to `minSize` directly), AppKit
+        // silently clamps the window back up to its minimum without
+        // shrinking the gap to match — so windows ended up a full
+        // margin's worth bigger than their allotted slot and overlapped
+        // their neighbors instead of leaving a visible gap.
+        let cellWidth = minWindowWidth + margin * 2
+        let cellHeight = minWindowHeight + margin * 2
+        let (rows, columns) = gridLayout(count: count, screenWidth: area.width, minCellWidth: cellWidth)
+
+        let gridWidth = CGFloat(columns) * cellWidth
+        let gridHeight = CGFloat(rows) * cellHeight
+        let originX = area.minX + max(0, (area.width - gridWidth) / 2)
+        let originY = area.minY + max(0, (area.height - gridHeight) / 2)
+
+        for (index, mode) in modes.enumerated() {
+            let row = index / columns
+            let column = index % columns
+            let frame = NSRect(
+                x: originX + CGFloat(column) * cellWidth + margin,
+                y: originY + CGFloat(rows - row - 1) * cellHeight + margin,
+                width: cellWidth - margin * 2,
+                height: cellHeight - margin * 2)
+
+            let controller = SIDOscilloscopeWindowController(session: session, mode: mode)
+            windows[controller.windowID] = controller
+            // Windows themselves appear immediately (all 11 at once,
+            // for instant visual feedback), but each one's *data*
+            // startup — a SID-config REST fetch, and possibly a
+            // debug-trace start if nothing else has started one yet —
+            // is staggered a little. Firing all 11 of those requests in
+            // the same instant briefly overwhelmed the Ultimate's small
+            // embedded HTTP server enough to fail an unrelated
+            // in-flight debug-capability probe (also REST, also a few
+            // seconds' timeout), which made the Debug Trace/Ultimate
+            // Menu/SID Oscilloscope menu entries disappear for a bit
+            // until the next successful probe — see `HANDOVER.md` §16.
+            controller.presentAndStart(frame: frame, startDelay: Double(index) * 0.25)
+        }
+    }
+
+    /// Whether any SID Oscilloscope window is currently open for
+    /// `deviceID` — used to disable "Save Window Layout" when there's
+    /// nothing to save.
+    static func hasAnyOpenWindows(for deviceID: UUID) -> Bool {
+        windows.values.contains { $0.deviceID == deviceID }
+    }
+
+    /// Captures every open SID Oscilloscope window for `deviceID` — its
+    /// mode and on-screen frame — as a snapshot `restoreLayout` can
+    /// later recreate.
+    static func currentLayout(for deviceID: UUID) -> [SIDWindowLayoutEntry] {
+        windows.values
+            .filter { $0.deviceID == deviceID }
+            .compactMap { controller -> SIDWindowLayoutEntry? in
+                guard let frame = controller.window?.frame else { return nil }
+                return SIDWindowLayoutEntry(mode: controller.model.visualizationMode.rawValue, frame: frame)
+            }
+    }
+
+    /// Closes every currently open SID Oscilloscope window for
+    /// `deviceID`. Snapshots the matching controllers into a plain array
+    /// first — closing a window synchronously fires `windowWillClose`,
+    /// which mutates `windows` (a dictionary) via `removeValue`, and
+    /// mutating a dictionary while iterating its own `.values` view
+    /// directly is unsafe.
+    static func closeAll(for deviceID: UUID) {
+        let matching = windows.values.filter { $0.deviceID == deviceID }
+        for controller in matching {
+            controller.window?.close()
+        }
+    }
+
+    /// Re-opens one window per saved entry at its saved frame and mode,
+    /// after first closing whatever SID Oscilloscope windows are already
+    /// open for this device (so restoring doesn't just pile new windows
+    /// on top of old ones). Mirrors `showAllInGrid`'s staggered
+    /// `model.start()` calls so restoring a large saved layout doesn't
+    /// hit the Ultimate's HTTP server with a burst of simultaneous
+    /// requests.
+    static func restoreLayout(_ entries: [SIDWindowLayoutEntry], session: DeviceSession) {
+        closeAll(for: session.device.id)
+        for (index, entry) in entries.enumerated() {
+            guard let mode = SIDVisualizationMode(rawValue: entry.mode) else { continue }
+            let controller = SIDOscilloscopeWindowController(session: session, mode: mode)
+            windows[controller.windowID] = controller
+            controller.presentAndStart(frame: entry.frame, startDelay: Double(index) * 0.25)
+        }
+    }
+
+    /// Chooses a (rows, columns) grid for `count` windows across a
+    /// screen `screenWidth` points wide, preferring as few rows as fit
+    /// comfortably — a wide grid reads better for side-by-side
+    /// comparison than a tall stack of narrow windows — but falling back
+    /// to more rows rather than squeezing cells narrower than
+    /// `minCellWidth`. Pulled out of `showAllInGrid` as a pure function
+    /// so the layout math itself is unit-testable without needing a
+    /// real `NSScreen`.
+    nonisolated static func gridLayout(count: Int, screenWidth: CGFloat, minCellWidth: CGFloat) -> (rows: Int, columns: Int) {
+        guard count > 0 else { return (0, 0) }
+        for candidateRows in 1...count {
+            let candidateColumns = Int((Double(count) / Double(candidateRows)).rounded(.up))
+            if screenWidth / CGFloat(candidateColumns) >= minCellWidth {
+                return (candidateRows, candidateColumns)
+            }
+        }
+        return (count, 1)
+    }
+
+    private init(session: DeviceSession, mode: SIDVisualizationMode) {
         deviceID = session.device.id
+        deviceName = session.device.name
         model = SIDOscilloscopeViewModel(session: session)
+        model.visualizationMode = mode
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
             styleMask: [
                 .titled, .closable, .miniaturizable, .resizable,
             ],
             backing: .buffered, defer: false)
-        window.title = "\(session.device.name) SID Oscilloscope"
-        window.minSize = NSSize(width: 480, height: 260)
+        window.minSize = NSSize(width: 300, height: 180)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
         window.delegate = self
         window.contentViewController = NSHostingController(
             rootView: SIDOscilloscopeView(model: model, session: session))
+        // The mode is fixed for this window's lifetime (see the type
+        // comment on `SIDVisualizationMenuContent` — picking a different
+        // mode always opens another window rather than changing this
+        // one), so the title only needs to be set once here.
+        updateTitle()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    private func presentAndStart(frame: NSRect? = nil, startDelay: TimeInterval = 0) {
+        if let frame {
+            window?.setFrame(frame, display: false)
+        }
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        Task {
+            if startDelay > 0 {
+                try? await Task.sleep(for: .seconds(startDelay))
+            }
+            model.start()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func updateTitle() {
+        let base = "\(deviceName) SID Oscilloscope"
+        window?.title = model.visualizationMode == .oscilloscope
+            ? base : "\(base) — \(model.visualizationMode.rawValue)"
+    }
+
     func windowWillClose(_ notification: Notification) {
         model.stop()
-        Self.windows.removeValue(forKey: deviceID)
+        Self.windows.removeValue(forKey: windowID)
     }
 }
