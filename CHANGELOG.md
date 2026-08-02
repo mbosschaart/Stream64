@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **Every packaged release (DMG and ZIP, both architectures, back to v0.91b) crashed instantly on launch.** A leftover reference to SwiftPM's `Bundle.module` resource-bundle accessor — meant only as a `swift run` fallback — was evaluated unconditionally during branded startup and trapped with a fatal error, since the packaged `.app` never contains the resource bundle it looks for. Startup asset lookup now only ever uses `Bundle.main` in a packaged app. See `HANDOVER.md` §18.
+- **Release builds could intermittently fail to sign** with `resource fork, Finder information, or similar detritus not allowed`, because this project's working copy lives in iCloud Drive and the iCloud file-provider daemon could tag the app bundle mid-build. `Scripts/build-release.sh` now assembles and signs the app in a local scratch directory outside iCloud Drive before writing the final `.zip`/`.dmg`/checksum into `dist/`. See `HANDOVER.md` §18.
 - **Audio could silently fail to reach a system default output that's a multi-output/aggregate device** (e.g. one combining real speakers with a virtual recording driver), even though normal playback sounded completely correct. `AVAudioEngine`'s automatic device selection could bind directly to one real hardware device inside the multi-output device instead of the multi-output device itself, so anything else relying on that same default output — a separate recording setup, for instance — received nothing. `AudioReceiver` now explicitly pins its output to the current default device and re-pins automatically whenever the audio device configuration changes, instead of trusting the engine to pick correctly on its own. See `HANDOVER.md` §17.
 
 ## 0.99b — 2026-08-01

@@ -4,21 +4,31 @@ enum Stream64Version {
     static let display = "0.100b"
 }
 
+/// A packaged .app has its resources flattened into `Contents/Resources`
+/// (see `Scripts/build-release.sh`), so `Bundle.main` always finds them
+/// there. `swift run` never gets that flattening step and relies on
+/// SwiftPM's generated `Bundle.module` instead — but merely *referencing*
+/// `Bundle.module` traps with a fatal error when its resource bundle isn't
+/// present, so it must never be touched from a packaged app.
+enum ResourceBundle {
+    static let isPackagedApp = Bundle.main.bundleURL.pathExtension == "app"
+}
+
 enum Stream64Assets {
     static let aboutLogo = image(named: "logofactuur")
     static let applicationIcon = image(named: "Stream64logo")
 
     private static func image(named name: String) -> NSImage? {
-        let bundles = [Bundle.main, Bundle.module]
-        for bundle in bundles {
-            if let url = bundle.url(
-                forResource: name,
-                withExtension: "png"
-            ), let image = NSImage(contentsOf: url) {
-                return image
-            }
+        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
         }
-        return nil
+        guard !ResourceBundle.isPackagedApp,
+              let url = Bundle.module.url(forResource: name, withExtension: "png"),
+              let image = NSImage(contentsOf: url) else {
+            return nil
+        }
+        return image
     }
 }
 

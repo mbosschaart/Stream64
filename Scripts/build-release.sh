@@ -15,17 +15,30 @@ esac
 TRIPLE="$ARCH-apple-macosx14.0"
 OUTPUT_DIR="${OUTPUT_DIR:-"$ROOT_DIR/dist/$ARCH"}"
 APP_NAME="Stream64"
-APP_BUNDLE="$OUTPUT_DIR/$APP_NAME.app"
+
+# The app bundle is assembled and ad-hoc signed in a local scratch directory
+# rather than directly under OUTPUT_DIR. When OUTPUT_DIR lives inside iCloud
+# Drive (as it does for this project's dist/ folder), the iCloud file-provider
+# daemon can tag a freshly-created bundle directory with a com.apple.FinderInfo
+# xattr while it's being assembled/signed, which makes `codesign --verify
+# --strict` fail intermittently ("resource fork, Finder information, or
+# similar detritus not allowed"). Building in /tmp avoids that race entirely;
+# only the finished, sealed .zip/.dmg/checksum files are written to OUTPUT_DIR.
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/stream64-build-$ARCH.XXXXXX")"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+APP_BUNDLE="$STAGE_DIR/$APP_NAME.app"
+DMG_ROOT="$STAGE_DIR/.dmg-root"
+
 ZIP_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macos-$ARCH.zip"
 DMG_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macos-$ARCH.dmg"
 CHECKSUM_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macos-$ARCH-SHA256.txt"
-DMG_ROOT="$OUTPUT_DIR/.dmg-root"
 
 echo "Building $APP_NAME $VERSION ($BUILD_NUMBER) for macOS $ARCH..."
 swift build --package-path "$ROOT_DIR" -c release --triple "$TRIPLE"
 BIN_DIR="$(swift build --package-path "$ROOT_DIR" -c release \
     --triple "$TRIPLE" --show-bin-path)"
 
+mkdir -p "$OUTPUT_DIR"
 rm -rf "$APP_BUNDLE" "$DMG_ROOT"
 rm -f "$ZIP_PATH" "$DMG_PATH" "$CHECKSUM_PATH"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
@@ -94,9 +107,16 @@ rm -rf "$DMG_ROOT"
         > "$(basename "$CHECKSUM_PATH")"
 )
 
+# Copy the finished, already-signed app bundle to OUTPUT_DIR purely for local
+# convenience (e.g. quick manual testing). This copy is not a distribution
+# artifact — only the .zip/.dmg above are — so it's fine if iCloud later tags
+# it with xattrs that would fail a strict codesign verify.
+rm -rf "$OUTPUT_DIR/$APP_NAME.app"
+ditto "$APP_BUNDLE" "$OUTPUT_DIR/$APP_NAME.app"
+
 echo
 echo "Release artifacts:"
-echo "  App: $APP_BUNDLE"
+echo "  App: $OUTPUT_DIR/$APP_NAME.app"
 echo "  ZIP: $ZIP_PATH"
 echo "  DMG: $DMG_PATH"
 echo "  SHA: $CHECKSUM_PATH"

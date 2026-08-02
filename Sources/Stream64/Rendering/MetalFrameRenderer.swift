@@ -1051,7 +1051,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         // run` keeps it in SwiftPM's generated resource bundle instead.
         var dirtURL = Bundle.main.url(
             forResource: "dirty-glass-mask", withExtension: "png")
-        if dirtURL == nil {
+        if dirtURL == nil, !ResourceBundle.isPackagedApp {
             dirtURL = Bundle.module.url(
                 forResource: "dirty-glass-mask", withExtension: "png")
         }
