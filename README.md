@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.99b-purple)
+![Version](https://img.shields.io/badge/version-0.100b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -289,10 +289,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.97b BUILD_NUMBER=97 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.100b BUILD_NUMBER=100 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.97b BUILD_NUMBER=97 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.100b BUILD_NUMBER=100 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -406,6 +406,8 @@ The scaling math targets a **4:3 display aspect** (the C64's pixels are not squa
 
 The audio stream is 16-bit stereo at 47983 Hz (the Ultimate's actual PAL-derived rate), 192 sample pairs per packet. `AudioReceiver` uses a **pull model**: an `AVAudioSourceNode` render callback pulls from a lock-guarded ring buffer. A jitter buffer (default 60 ms, configurable) absorbs network variance; backlog beyond the target is trimmed so latency is bounded and can never ratchet upward — network hiccups produce a brief silence, not permanent delay.
 
+The engine's output is explicitly pinned to the current default output device (rather than left to `AVAudioEngine`'s own default selection) and re-pinned whenever CoreAudio's device graph changes — see `HANDOVER.md` §17 for why this matters when the default output is a multi-output/aggregate device.
+
 The **RF audio filter** (active when a stream's input signal is RF and a CRT filter is rendering) runs inside the render callback: mono fold, two-pole ~3.3 kHz low-pass, two-pole ~330 Hz high-pass, tanh soft-clip drive, low-passed hiss bed and 50 Hz hum. All per-sample with no allocations on the audio thread.
 
 ### Rendering & Shaders
@@ -465,6 +467,7 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 - **Occluded windows stop MTKView's display link.** A timer-driven `draw()` fallback keeps background playback smooth (e.g. grid + overlapping window).
 - **One audible device at a time**, enforced centrally by the session manager on selection/mode changes — per-tile mute juggling left orphaned unmuted streams after view teardown.
 - **Closing a viewer means full termination.** SwiftUI root-view disappearance and AppKit termination both close every Assembly64/Help/Settings/extra-viewer window before exit.
+- **`AVAudioEngine`'s automatic output-device selection isn't trustworthy when the system default output is a multi-output/aggregate device** — it can silently bind to one real hardware device inside it instead of the multi-output device itself, so anything else relying on that same default output (e.g. a separate recording device) gets nothing, even though normal playback sounds completely correct. `AudioReceiver` now explicitly pins to the current default device via `kAudioOutputUnitProperty_CurrentDevice` and re-pins on `AVAudioEngineConfigurationChange` instead of trusting the engine's default. See `HANDOVER.md` §17.
 
 ## The Ultimate REST API (as used)
 

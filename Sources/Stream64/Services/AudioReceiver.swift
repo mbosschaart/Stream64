@@ -1,7 +1,11 @@
 import Foundation
 import Network
 import AVFoundation
+import CoreAudio
+import AudioToolbox
 import os
+
+private let logger = Logger(subsystem: "net.bosschaart.Stream64", category: "AudioReceiver")
 
 /// Receives the Ultimate audio stream (16-bit signed stereo, little endian,
 /// 47983 Hz on a PAL Ultimate 64) over UDP and plays it through AVAudioEngine.
@@ -80,6 +84,7 @@ final class AudioReceiver {
     }()
 
     private var started = false
+    private var configChangeObserver: NSObjectProtocol?
 
     /// Multiple visualization windows (Spectrum Analyzer, Lissajous Scope,
     /// Spectrogram) can tap the real decoded audio at once, so — same
@@ -146,6 +151,8 @@ final class AudioReceiver {
         powerOffCrackleImpulse = 0
         powerOffCracklePhase = 0
 
+        pinOutputToCurrentDefaultDevice()
+
         do {
             try engine.start()
         } catch {
@@ -156,6 +163,27 @@ final class AudioReceiver {
             try engine.start()
         }
         started = true
+
+        // AVAudioEngine's automatic output-device selection is unreliable
+        // when the system default output is an aggregate/multi-output
+        // device (e.g. one built with BlackHole for recording): it can
+        // silently bind to a real hardware device instead. Re-pinning here
+        // whenever CoreAudio reconfigures the device graph (an audio
+        // device added/removed, an aggregate device edited, etc.) recovers
+        // from that without requiring the user to restart the app.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.queue.async {
+                guard let self, self.started else { return }
+                self.pinOutputToCurrentDefaultDevice()
+                if !self.engine.isRunning {
+                    try? self.engine.start()
+                }
+            }
+        }
 
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
@@ -172,9 +200,46 @@ final class AudioReceiver {
     func stop() {
         listener?.cancel()
         listener = nil
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+            self.configChangeObserver = nil
+        }
         if started {
             engine.stop()
             started = false
+        }
+    }
+
+    /// Forces the engine's output unit onto whatever CoreAudio currently
+    /// reports as the default output device, rather than trusting
+    /// AVAudioEngine to pick it automatically (see the comment at the
+    /// `configChangeObserver` registration above for why).
+    private func pinOutputToCurrentDefaultDevice() {
+        guard let audioUnit = engine.outputNode.audioUnit else { return }
+
+        var deviceID = AudioDeviceID(0)
+        var deviceIDSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var defaultDeviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let readStatus = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &defaultDeviceAddress, 0, nil,
+            &deviceIDSize, &deviceID)
+        guard readStatus == noErr else {
+            logger.error("Could not read default output device (status \(readStatus))")
+            return
+        }
+
+        let setStatus = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size))
+        if setStatus != noErr {
+            logger.error("Could not pin output unit to device \(deviceID) (status \(setStatus))")
         }
     }
 

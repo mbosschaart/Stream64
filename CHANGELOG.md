@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.100b — 2026-08-02
+
+### Fixed
+
+- **Audio could silently fail to reach a system default output that's a multi-output/aggregate device** (e.g. one combining real speakers with a virtual recording driver), even though normal playback sounded completely correct. `AVAudioEngine`'s automatic device selection could bind directly to one real hardware device inside the multi-output device instead of the multi-output device itself, so anything else relying on that same default output — a separate recording setup, for instance — received nothing. `AudioReceiver` now explicitly pins its output to the current default device and re-pins automatically whenever the audio device configuration changes, instead of trusting the engine to pick correctly on its own. See `HANDOVER.md` §17.
+
 ## 0.99b — 2026-08-01
 
 ### Added
