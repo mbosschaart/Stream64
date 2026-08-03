@@ -526,11 +526,18 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     Streams the Ultimate's cycle-accurate 6510, VIC, or 1541-drive bus trace \
     and decodes it live into a scrolling table or — the default — a \
-    **Memory Map**: a 256×256 heatmap where every read/write lights up its \
-    address, so notable regions (zero page, screen RAM, VIC-II, SID, both \
-    CIAs, KERNAL ROM, and more) each form a recognizable band. Runs \
-    alongside video/audio streaming without interrupting either. Both the \
-    raw capture and the visible table rows can be exported.
+    **Memory Map** with three toolbar-selectable views: **I/O Fade** shows \
+    recent reads/writes fading over an adjustable interval; **Byte Load** \
+    keeps the last observed byte at every address and maps `$00–$FF` to \
+    brightness; **3D Map** renders the same 256×256 address matrix as a \
+    rotatable, zoomable terrain whose bar heights are byte values. Drag to \
+    rotate, scroll or pinch to zoom, hover for address/value/region details, \
+    and double-click to reset the camera. Adaptive detail, hover inspection, \
+    region overlays and recent-access pulses can each be switched on or off \
+    under **3D Options**. Runs alongside video/audio streaming without \
+    interrupting either; the 3D renderer coalesces camera redraws and omits \
+    zero-height geometry to avoid starving the main C64 renderer. Both raw \
+    capture and visible table rows can be exported.
 
     **Ultimate Menu** — toolbar Menu button, or the right-click menu
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Stream64Version {
-    static let display = "0.100b"
+    static let display = "0.101b"
 }
 
 /// A packaged .app has its resources flattened into `Contents/Resources`

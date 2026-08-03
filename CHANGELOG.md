@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.101b — 2026-08-03
+
+### Added
+
+- **Memory Map: Byte Load visualization** — keeps the last byte observed at every address and maps all 256 values (`$00–$FF`) to brightness while retaining green/read and orange/write direction.
+- **Memory Map: rotatable 3D Map** — renders the complete 256×256 address matrix as a Metal-instanced terrain: bar height is byte value, color is last read/write direction, drag rotates, scroll/pinch zooms, hover shows address/value/region, and double-click or the toolbar button resets the isometric camera. Adaptive detail, hover inspection, RAM/ROM/I/O region overlays and recent-access pulses are independently toggleable.
+- **Fine memory-cell grid and expanded landmarks**, including a bracketed banked Character ROM range and source-specific C64/1541 labels.
+
+### Changed
+
+- **Debug Trace opens its stream automatically** whenever the window opens and no trace is already active; an existing trace shared with SID visualizations is left untouched.
+- **Debug Trace window controls moved into the native titlebar toolbar.** The map itself now uses the content area instead of losing a full row to controls; capture/export actions use compact icons, map options live in toolbar menus, and status only occupies a thin strip when needed.
+- **Memory Map rendering moved from SwiftUI image publication to a reusable AppKit bitmap/layer surface**, with bounded 20 Hz updates, safe live resizing, better surrounding spacing and labels clamped inside the visible gutter.
+
+### Fixed
+
+- **Read/write colors could be wrong for closely batched accesses.** Direction is now tracked explicitly in bus order instead of inferred from timestamps, so a read immediately turns a just-written orange byte green and read-modify-write sequences resolve correctly.
+- **Dragging the decay slider could destabilize compositing and corrupt the main stream.** Decay now uses an isolated native AppKit toolbar control that writes directly to renderer settings without continuously rebuilding the Debug Trace SwiftUI hierarchy.
+- **Rotating the 3D map could hang the C64 stream.** Camera events are coalesced to the bounded render cadence, zero-height geometry is omitted, and zoomed-out views aggregate into 2×2/4×4/8×8 blocks to reduce GPU contention.
+- **Decay text and read/write legends could become illegible in Light Mode** despite sitting on a forced-black map background; map labels now use explicit high-contrast colors.
+
 ## 0.100b — 2026-08-02
 
 ### Fixed

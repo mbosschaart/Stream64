@@ -35,6 +35,10 @@ final class DebugTraceViewModel: ObservableObject {
     @Published private(set) var missedPackets: Int = 0
     @Published var selectedMode: DebugStreamMode = .cpu6510Only
     @Published var displayMode: DebugTraceDisplayMode = .memoryMap
+    @Published var memoryMapVisualization: MemoryMapVisualization = .ioFade
+    @Published var memoryMap3DOptions = MemoryMap3DOptions()
+    let memoryMapRenderSettings = MemoryMapRenderSettings()
+    let memoryMap3DInteraction = MemoryMap3DInteraction()
     @Published var isPaused = false
     @Published private(set) var isCapturing = false
     @Published private(set) var exportStatus: String?
@@ -130,6 +134,19 @@ final class DebugTraceViewModel: ObservableObject {
     func startTrace() async {
         clearBuffers()
         await session.startDebugTrace(mode: selectedMode)
+    }
+
+    /// Opening the Debug Trace window is itself an intent to inspect the
+    /// live trace. Start the selected stream automatically when nothing is
+    /// running, but never restart/change a stream that is already active or
+    /// in the process of starting (it may be shared by SID visualizations).
+    func startTraceIfNeeded() async {
+        switch session.debugTraceState {
+        case .inactive, .error:
+            await startTrace()
+        case .starting, .active:
+            break
+        }
     }
 
     func stopTrace() async {
@@ -241,74 +258,210 @@ struct DebugTraceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
-            Divider()
             switch model.displayMode {
             case .table: table
-            case .memoryMap: MemoryMapView(heatmap: model.heatmap, source: model.activeSource)
+            case .memoryMap:
+                MemoryMapView(
+                    heatmap: model.heatmap,
+                    source: model.activeSource,
+                    visualization: model.memoryMapVisualization,
+                    renderSettings: model.memoryMapRenderSettings,
+                    threeDInteraction: model.memoryMap3DInteraction,
+                    threeDOptions: model.memoryMap3DOptions)
+            }
+            if isActive || isErrored || model.exportStatus != nil {
+                Divider()
+                statusBar
             }
         }
         .frame(minWidth: 640, minHeight: 420)
+        .toolbar { toolbarContent }
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 12) {
+    /// A thin status strip under the content instead of living inside the
+    /// toolbar — the toolbar itself only holds controls now, and this only
+    /// occupies space when there's actually something to say.
+    private var statusBar: some View {
+        HStack {
+            statusLabel
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+    }
+
+    /// Moved from an in-content row into the window's native title-bar
+    /// toolbar: that row used to cost a full extra strip of window height
+    /// (padding + control height + a divider) purely for chrome, on top of
+    /// the title bar the window already has. Action buttons are icon-only
+    /// (with tooltips) rather than full-text labels — "Stop Capture &
+    /// Export…"/"Export Visible as CSV…" alone were wider than the mode
+    /// picker and the trace controls put together.
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
             Picker("Mode", selection: $model.selectedMode) {
                 ForEach(DebugStreamMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
-            .frame(width: 190)
+            .frame(width: 160)
             .disabled(isBusy)
+            .help("Which bus to trace")
+        }
 
+        ToolbarItem(placement: .navigation) {
             startStopButton
+        }
 
-            Divider().frame(height: 16)
-
+        ToolbarItem {
             Picker("View", selection: $model.displayMode) {
                 ForEach(DebugTraceDisplayMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 200)
+            .frame(width: 170)
+        }
 
-            Toggle("Pause", isOn: $model.isPaused)
-                .toggleStyle(.button)
+        if model.displayMode == .memoryMap {
+            ToolbarItem {
+                Menu {
+                    ForEach(MemoryMapVisualization.allCases) { mode in
+                        Button {
+                            model.memoryMapVisualization = mode
+                        } label: {
+                            if model.memoryMapVisualization == mode {
+                                Label(mode.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(mode.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(
+                        model.memoryMapVisualization.rawValue,
+                        systemImage: "square.grid.3x3")
+                }
+                .help("Memory Map visualization")
+            }
 
-            Button(model.isCapturing ? "Stop Capture & Export…" : "Start Capture") {
+            if model.memoryMapVisualization == .ioFade {
+                ToolbarItem {
+                    MemoryMapDecayToolbarControl(
+                        settings: model.memoryMapRenderSettings)
+                    .help("How quickly recent memory activity fades")
+                }
+            }
+
+            if model.memoryMapVisualization == .threeD {
+                ToolbarItem {
+                    Menu {
+                        Toggle(
+                            "Adaptive Detail",
+                            isOn: $model.memoryMap3DOptions.adaptiveLOD)
+                        Toggle(
+                            "Hover Inspection",
+                            isOn: $model.memoryMap3DOptions.hoverInspection)
+                        Toggle(
+                            "Region Overlays",
+                            isOn: $model.memoryMap3DOptions.regionOverlays)
+                        Toggle(
+                            "Activity Pulse",
+                            isOn: $model.memoryMap3DOptions.activityPulse)
+                    } label: {
+                        Label(
+                            "3D Options",
+                            systemImage: "slider.horizontal.3")
+                    }
+                    .help("Choose which 3D map enhancements are enabled")
+                }
+
+                ToolbarItem {
+                    Button {
+                        model.memoryMap3DInteraction.resetCamera()
+                    } label: {
+                        Label(
+                            "Reset 3D View",
+                            systemImage: "view.3d")
+                    }
+                    .help("Reset the 3D map rotation and zoom")
+                }
+            }
+
+            ToolbarItem {
+                HStack(spacing: 7) {
+                    memoryMapLegend(color: .green, label: "Read")
+                    memoryMapLegend(color: .orange, label: "Write")
+                }
+            }
+        }
+
+        ToolbarItem {
+            Toggle(isOn: $model.isPaused) {
+                Label("Pause", systemImage: "pause.fill")
+            }
+            .toggleStyle(.button)
+            .help(model.isPaused ? "Resume updating" : "Pause updating")
+        }
+
+        ToolbarItem {
+            Button {
                 model.toggleCapture()
+            } label: {
+                Label(
+                    model.isCapturing ? "Stop Capture & Export…" : "Start Capture",
+                    systemImage: model.isCapturing ? "stop.circle" : "smallcircle.filled.circle")
             }
             .disabled(!isActive)
+            .help(model.isCapturing
+                  ? "Stop capturing and export the raw bytes"
+                  : "Capture raw bytes for the official GtkWave pipeline")
+        }
 
-            Button("Export Visible as CSV…") {
+        ToolbarItem {
+            Button {
                 model.exportVisibleRowsAsCSV()
+            } label: {
+                Label("Export Visible as CSV…", systemImage: "square.and.arrow.up")
             }
             .disabled(model.rows.isEmpty)
-
-            Spacer()
-
-            statusLabel
+            .help("Export the currently visible table rows as CSV")
         }
-        .padding(10)
+    }
+
+    private func memoryMapLegend(color: Color, label: String) -> some View {
+        HStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(color)
+                .frame(width: 9, height: 9)
+            Text(label)
+                .font(.caption2)
+        }
     }
 
     @ViewBuilder
     private var startStopButton: some View {
         switch session.debugTraceState {
         case .inactive, .error:
-            Button("Start Trace", systemImage: "record.circle") {
+            Button {
                 Task { await model.startTrace() }
+            } label: {
+                Label("Start Trace", systemImage: "record.circle")
             }
+            .help("Start Trace")
         case .starting:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text("Starting…")
             }
         case .active:
-            Button("Stop Trace", systemImage: "stop.circle") {
+            Button {
                 Task { await model.stopTrace() }
+            } label: {
+                Label("Stop Trace", systemImage: "stop.circle")
             }
+            .help("Stop Trace")
         }
     }
 
@@ -367,6 +520,97 @@ struct DebugTraceView: View {
         if case .active = session.debugTraceState { return true }
         return false
     }
+
+    private var isErrored: Bool {
+        if case .error = session.debugTraceState { return true }
+        return false
+    }
+}
+
+/// Native AppKit toolbar control for decay. An ordinary SwiftUI `Slider`
+/// bound to an `@Published` view-model property invalidated the complete
+/// Debug Trace hierarchy continuously while dragging; on this graphics-heavy
+/// window that could destabilize compositing and corrupt the adjacent stream
+/// view. This control updates only `MemoryMapRenderSettings.fadeDuration`.
+private struct MemoryMapDecayToolbarControl: NSViewRepresentable {
+    let settings: MemoryMapRenderSettings
+
+    func makeNSView(context: Context) -> MemoryMapDecayNSView {
+        MemoryMapDecayNSView(settings: settings)
+    }
+
+    func updateNSView(_ nsView: MemoryMapDecayNSView, context: Context) {
+        nsView.settings = settings
+    }
+}
+
+private final class MemoryMapDecayNSView: NSView {
+    var settings: MemoryMapRenderSettings {
+        didSet { synchronizeFromSettings() }
+    }
+
+    private let titleLabel = NSTextField(labelWithString: "Decay")
+    private let slider = NSSlider(value: 0.15, minValue: 0.02, maxValue: 1, target: nil, action: nil)
+    private let valueLabel = NSTextField(labelWithString: "150 ms")
+
+    init(settings: MemoryMapRenderSettings) {
+        self.settings = settings
+        super.init(frame: .zero)
+
+        titleLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        titleLabel.textColor = .secondaryLabelColor
+
+        slider.controlSize = .small
+        slider.isContinuous = true
+        slider.target = self
+        slider.action = #selector(sliderChanged)
+
+        valueLabel.font = .monospacedDigitSystemFont(
+            ofSize: NSFont.smallSystemFontSize,
+            weight: .regular)
+        valueLabel.textColor = .secondaryLabelColor
+        valueLabel.alignment = .left
+
+        for view in [titleLabel, slider, valueLabel] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            slider.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
+            slider.centerYAnchor.constraint(equalTo: centerYAnchor),
+            slider.widthAnchor.constraint(equalToConstant: 90),
+            valueLabel.leadingAnchor.constraint(equalTo: slider.trailingAnchor, constant: 6),
+            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            valueLabel.widthAnchor.constraint(equalToConstant: 44),
+            heightAnchor.constraint(equalToConstant: 24),
+        ])
+        synchronizeFromSettings()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 180, height: 24)
+    }
+
+    @objc private func sliderChanged() {
+        settings.fadeDuration = slider.doubleValue
+        valueLabel.stringValue = Self.formattedDuration(slider.doubleValue)
+    }
+
+    private func synchronizeFromSettings() {
+        slider.doubleValue = settings.fadeDuration
+        valueLabel.stringValue = Self.formattedDuration(settings.fadeDuration)
+    }
+
+    private static func formattedDuration(_ seconds: Double) -> String {
+        seconds < 1
+            ? "\(Int(seconds * 1000)) ms"
+            : String(format: "%.2f s", seconds)
+    }
 }
 
 @MainActor
@@ -386,6 +630,9 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         controller.model.start()
+        Task { [model = controller.model] in
+            await model.startTraceIfNeeded()
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 

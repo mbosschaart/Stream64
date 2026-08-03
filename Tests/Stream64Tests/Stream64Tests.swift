@@ -881,8 +881,8 @@ final class Assembly64FeatureTests: XCTestCase {
 
     func testMemoryHeatmapRecordsReadsAndWritesIndependently() {
         let heatmap = MemoryHeatmap()
-        let readWord: UInt32 = (1 << 24) | UInt32(0x1234) // R/W#=1 (read)
-        let writeWord: UInt32 = UInt32(0x5678)            // R/W#=0 (write)
+        let readWord: UInt32 = (1 << 24) | (UInt32(0x3C) << 16) | UInt32(0x1234)
+        let writeWord: UInt32 = (UInt32(0xA5) << 16) | UInt32(0x5678)
         let readEntry = DebugStreamEntry(word: readWord, source: .cpu6510)
         let writeEntry = DebugStreamEntry(word: writeWord, source: .cpu6510)
 
@@ -892,10 +892,47 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(heatmap.lastWrite[0x1234], 0)
         XCTAssertGreaterThan(heatmap.lastWrite[0x5678], 0)
         XCTAssertEqual(heatmap.lastRead[0x5678], 0)
+        XCTAssertTrue(heatmap.lastAccessWasRead[0x1234])
+        XCTAssertFalse(heatmap.lastAccessWasRead[0x5678])
+        XCTAssertEqual(heatmap.lastValue[0x1234], 0x3C)
+        XCTAssertEqual(heatmap.lastValue[0x5678], 0xA5)
 
         heatmap.reset()
         XCTAssertEqual(heatmap.lastRead[0x1234], 0)
         XCTAssertEqual(heatmap.lastWrite[0x5678], 0)
+        XCTAssertEqual(heatmap.lastAccess[0x1234], 0)
+        XCTAssertEqual(heatmap.lastAccess[0x5678], 0)
+        XCTAssertEqual(heatmap.lastValue[0x1234], 0)
+        XCTAssertEqual(heatmap.lastValue[0x5678], 0)
+    }
+
+    /// Regression test for direction being inferred from timestamps.
+    /// Read-modify-write accesses can share one timestamp in a batch, while
+    /// artificial timestamp offsets can overlap a following batch. In both
+    /// cases a later read/write could retain the preceding access's color.
+    /// Explicit direction tracking must follow exact array/bus order.
+    func testMemoryHeatmapPreservesOrderForReadThenWriteToSameAddressInOneBatch() {
+        let heatmap = MemoryHeatmap()
+        let readWord: UInt32 = (1 << 24) | (UInt32(0x10) << 16) | UInt32(0xD020)
+        let writeWord: UInt32 = (UInt32(0xF0) << 16) | UInt32(0xD020)
+        let readEntry = DebugStreamEntry(word: readWord, source: .cpu6510)
+        let writeEntry = DebugStreamEntry(word: writeWord, source: .cpu6510)
+
+        heatmap.record([readEntry, writeEntry])
+
+        XCTAssertFalse(
+            heatmap.lastAccessWasRead[0xD020],
+            "the write happened after the read on the real bus, so it must win")
+        XCTAssertEqual(heatmap.lastValue[0xD020], 0xF0)
+
+        // The reverse order (write then read, as a plain load right after a
+        // store) must resolve the other way.
+        heatmap.reset()
+        heatmap.record([writeEntry, readEntry])
+        XCTAssertTrue(
+            heatmap.lastAccessWasRead[0xD020],
+            "the read happened after the write on the real bus, so it must win")
+        XCTAssertEqual(heatmap.lastValue[0xD020], 0x10)
     }
 
     func testDebugStreamPacketParsingToleratesShortPacket() {
@@ -1660,6 +1697,123 @@ final class Assembly64FeatureTests: XCTestCase {
         }
         let view = MTKView(frame: CGRect(x: 0, y: 0, width: 640, height: 480))
         XCTAssertNotNil(MetalFrameRenderer(mtkView: view))
+    }
+
+    func testMemoryMap3DInstanceEncodingPreservesValueAndDirection() {
+        XCTAssertEqual(
+            MemoryMap3DInstanceEncoding.normalizedHeight(for: 0x00),
+            0,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            MemoryMap3DInstanceEncoding.normalizedHeight(for: 0x80),
+            128.0 / 255.0,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            MemoryMap3DInstanceEncoding.normalizedHeight(for: 0xFF),
+            1,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            MemoryMap3DInstanceEncoding.flags(
+                accessed: false, wasRead: true),
+            0)
+        XCTAssertEqual(
+            MemoryMap3DInstanceEncoding.flags(
+                accessed: true, wasRead: true),
+            0x01)
+        XCTAssertEqual(
+            MemoryMap3DInstanceEncoding.flags(
+                accessed: true, wasRead: false),
+            0x03)
+    }
+
+    func testMemoryMap3DCameraClampsAndResets() {
+        var camera = MemoryMap3DCamera()
+        camera.rotate(deltaX: 100, deltaY: 1000)
+        XCTAssertEqual(
+            camera.pitch,
+            MemoryMap3DCamera.minimumPitch,
+            accuracy: 0.0001)
+        camera.rotate(deltaX: 0, deltaY: -1000)
+        XCTAssertEqual(
+            camera.pitch,
+            MemoryMap3DCamera.maximumPitch,
+            accuracy: 0.0001)
+
+        camera.zoom(scrollDelta: -1000)
+        XCTAssertEqual(
+            camera.distance,
+            MemoryMap3DCamera.minimumDistance,
+            accuracy: 0.0001)
+        camera.zoom(scrollDelta: 1000)
+        XCTAssertEqual(
+            camera.distance,
+            MemoryMap3DCamera.maximumDistance,
+            accuracy: 0.0001)
+
+        camera.reset()
+        XCTAssertEqual(camera.yaw, MemoryMap3DCamera.defaultYaw)
+        XCTAssertEqual(camera.pitch, MemoryMap3DCamera.defaultPitch)
+        XCTAssertEqual(camera.distance, MemoryMap3DCamera.defaultDistance)
+    }
+
+    func testMemoryMap3DLODActivityAndRegions() {
+        let defaults = MemoryMap3DOptions()
+        XCTAssertTrue(defaults.adaptiveLOD)
+        XCTAssertTrue(defaults.hoverInspection)
+        XCTAssertTrue(defaults.regionOverlays)
+        XCTAssertTrue(defaults.activityPulse)
+
+        XCTAssertEqual(
+            MemoryMap3DRenderer.lodBlockSize(for: 1.0), 1)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.lodBlockSize(for: 1.8), 2)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.lodBlockSize(for: 2.8), 4)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.lodBlockSize(for: 3.8), 8)
+
+        XCTAssertEqual(
+            MemoryMap3DRenderer.activityIntensity(
+                accessedAt: 10, now: 10),
+            1,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.activityIntensity(
+                accessedAt: 10, now: 10.35),
+            0,
+            accuracy: 0.0001)
+
+        XCTAssertEqual(
+            MemoryMap3DRenderer.regionName(
+                for: 0xD020, source: .cpu6510),
+            "VIC-II / Character ROM")
+        XCTAssertEqual(
+            MemoryMap3DRenderer.regionName(
+                for: 0x01F0, source: .cpu6510),
+            "Stack")
+        XCTAssertEqual(
+            MemoryMap3DRenderer.regionName(
+                for: 0x1800, source: .drive1541),
+            "1541 VIA1 (IEC)")
+    }
+
+    @MainActor
+    func testMemoryMap3DMetalShaderAndRendererCompile() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal unavailable")
+        }
+        XCTAssertNoThrow(
+            try device.makeLibrary(
+                source: MemoryMap3DRenderer.shaderSource,
+                options: nil))
+
+        let view = MTKView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480),
+            device: device)
+        XCTAssertNotNil(
+            MemoryMap3DRenderer(
+                mtkView: view,
+                heatmap: MemoryHeatmap()))
     }
 
     private func makeArchive(

@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.100b-purple)
+![Version](https://img.shields.io/badge/version-0.101b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -25,7 +25,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
-- **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export, and a Telnet/VT100 window onto the on-device menu system (and, if navigated there, the Machine Code Monitor) that doesn't interrupt whatever's running on the C64; both are hidden automatically on hardware that doesn't implement the U64 debug register
+- **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
 - **SID Oscilloscope** (Ultimate 64/Elite only) — an 18-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 18 at once, auto-tiled into a grid, via "Open All in Grid"), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
@@ -165,17 +165,19 @@ didn't interrupt that either — all three streamed simultaneously for the \
 full test window.
 
 A **Memory Map** view (toggle in the toolbar, the default) shows the same \
-trace as a live 256×256 heatmap instead of a table — row = address page, \
-column = address low byte, so every notable region (zero page, stack, \
-screen RAM, BASIC ROM, VIC-II, SID, color RAM, both CIAs, cartridge I/O, \
-KERNAL ROM) forms its own recognizable horizontal band, labelled in a side \
-gutter that never overlaps the grid. Landmarks switch automatically for a \
-1541 drive trace, which has a completely different, much smaller memory \
-map (RAM, two 6522 VIAs, DOS ROM — no VIC/SID/CIA equivalents). Whichever \
-of read/write happened most recently for an address picks its color \
-(green/orange) and fades out quickly; the decay time is a live slider \
-(20 ms–1 s, default 150 ms) since a busy trace needs a much shorter fade \
-than a quiet one to avoid the whole grid saturating solid green.
+trace as a 256×256 address matrix — row = address page, column = address \
+low byte. Its toolbar offers three sub-visualizations: **I/O Fade** shows \
+recent reads (green) and writes (orange) with adjustable 20 ms–1 s decay; \
+**Byte Load** keeps the last observed byte at each address, with `$00` \
+black through `$FF` fully bright; and **3D Map** turns all 65,536 positions \
+into a rotatable/zoomable Metal terrain whose bar heights are byte values. \
+The 3D view supports hover address/value/region inspection, recent-access \
+pulses, subtle RAM/ROM/I/O region overlays, and adaptive 1×1/2×2/4×4/8×8 \
+detail to protect the main C64 renderer — each enhancement is independently \
+toggleable. Double-click or the toolbar button resets the isometric camera. \
+Flat-map landmarks cover zero page, stack, screen RAM, BASIC/KERNAL ROM, \
+VIC-II, SID, color RAM, both CIAs, cartridge I/O and banked Character ROM; \
+they switch automatically to the 1541 RAM/VIA/DOS-ROM map for drive traces.
 
 ### Ultimate Menu
 
@@ -289,10 +291,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.100b BUILD_NUMBER=100 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.101b BUILD_NUMBER=101 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.100b BUILD_NUMBER=100 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.101b BUILD_NUMBER=101 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -368,7 +370,8 @@ Sources/Stream64/
 │   ├── DebugStreamReceiver.swift  UDP listener for the 6510/VIC/1541 bus-trace stream
 │   └── UltimateTelnetClient.swift  TCP client for the Ultimate's Telnet (VT100) server
 ├── Rendering/
-│   └── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)
+│   ├── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)
+│   └── MemoryMap3DRenderer.swift Instanced 65,536-address 3D memory terrain
 ├── Resources/
 │   └── dirty-glass-mask.png     Photographic RGBA glass-contamination material
 └── Views/
@@ -381,7 +384,8 @@ Sources/Stream64/
     ├── DeviceEditSheet.swift    Add/edit device with connection test
     ├── SettingsView.swift       Preferences window (per-device video tab)
     ├── DebugTraceView.swift     Debug bus-trace window (U64/Elite only)
-    ├── MemoryMapView.swift      Live 256×256 memory-access heatmap for the trace window
+    ├── MemoryMapView.swift      Flat I/O-fade/byte-load maps and landmarks
+    ├── MemoryMap3DView.swift    Rotatable MTKView bridge and hover inspection
     ├── TelnetMonitorView.swift  Telnet/VT100 "Ultimate Menu" window (U64/Elite only)
     ├── SIDOscilloscopeView.swift  Live per-voice SID waveform window (U64/Elite only)
     └── HelpView.swift           In-app documentation window
