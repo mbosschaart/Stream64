@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.102b — 2026-08-03
+
+### Added
+
+- **App-wide AirPlay audio output.** A global macOS route picker in the main toolbar and Audio Settings sends whichever C64 is currently audible to one persistent AirPlay destination without changing the Mac's system output. Stream64 converts live 47983 Hz stereo to 48 kHz AAC, serves a bounded tokenized audio-only HLS window over the LAN, and routes it through one shared `AVPlayer`. Once activated, AirPlay remains the output until the user explicitly stops it; typing, view/C64 switching, resets/reboots and temporary source/transport gaps never re-enable local playback. A silence heartbeat keeps the global timeline alive between sources. AirPlay's expected 1–3 second latency is independent of the local jitter-buffer setting.
+
+### Fixed
+
+- **Ordinary app interaction could drop a selected AirPlay route back to the Mac.** SwiftUI was reconstructing toolbar/settings route-picker wrappers and deallocating the native `AVRoutePickerView` that participates in macOS route ownership. The app-wide controller now retains stable picker instances across every view reconstruction; same-source policy updates are idempotent, source gaps emit timed silence, transient route loss retries without enabling local output, and the local `AVAudioEngine` is physically paused for the duration of the AirPlay lock.
+
 ## 0.101b — 2026-08-03
 
 ### Added

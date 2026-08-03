@@ -38,7 +38,7 @@
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Martijn Bosschaart. GPL-3.0.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Stream64 connects to Commodore 64 Ultimate devices and receives their video and audio streams over your local network.</string>
+    <string>Stream64 connects to Commodore 64 Ultimate devices, receives their video and audio streams, and temporarily serves selected app audio to AirPlay receivers on your local network.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>

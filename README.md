@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.101b-purple)
+![Version](https://img.shields.io/badge/version-0.102b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -20,6 +20,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Monitor cases and bezels** — complete Commodore 1702/1084S cases are drawn in SwiftUI; the bezel is the angled inner plastic lip overlapping the tube glass. The 1702 door reveals **working knobs** (volume, brightness, 4× color overdrive, tint, contrast); when the case is hidden, equivalent controls are available in a movable non-modal window
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
+- **App-wide AirPlay audio** — one global toolbar route picker sends whichever C64 is currently selected to an AirPlay receiver without changing the Mac's system output; local playback remains low-latency and returns automatically if AirPlay disconnects (AirPlay itself adds roughly 1–3 seconds of buffering)
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
@@ -291,10 +292,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.101b BUILD_NUMBER=101 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.102b BUILD_NUMBER=102 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.101b BUILD_NUMBER=101 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.102b BUILD_NUMBER=102 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -367,6 +368,9 @@ Sources/Stream64/
 │   ├── DeviceSession.swift      Connection lifecycle, keyboard queue, file loading
 │   ├── VideoReceiver.swift      UDP listener; assembles 4bpp packets into frames
 │   ├── AudioReceiver.swift      UDP listener; ring buffer → AVAudioSourceNode; RF filter
+│   ├── AirPlayOutputController.swift  Persistent global AVPlayer AirPlay route
+│   ├── LiveAirPlayEncoder.swift 47983 Hz PCM → bounded 48 kHz AAC/fMP4 HLS
+│   ├── LiveHLSServer.swift      Tokenized temporary LAN HLS origin
 │   ├── DebugStreamReceiver.swift  UDP listener for the 6510/VIC/1541 bus-trace stream
 │   └── UltimateTelnetClient.swift  TCP client for the Ultimate's Telnet (VT100) server
 ├── Rendering/
@@ -386,6 +390,7 @@ Sources/Stream64/
     ├── DebugTraceView.swift     Debug bus-trace window (U64/Elite only)
     ├── MemoryMapView.swift      Flat I/O-fade/byte-load maps and landmarks
     ├── MemoryMap3DView.swift    Rotatable MTKView bridge and hover inspection
+    ├── AirPlayRoutePickerView.swift Native macOS app-only AirPlay picker
     ├── TelnetMonitorView.swift  Telnet/VT100 "Ultimate Menu" window (U64/Elite only)
     ├── SIDOscilloscopeView.swift  Live per-voice SID waveform window (U64/Elite only)
     └── HelpView.swift           In-app documentation window
@@ -411,6 +416,8 @@ The scaling math targets a **4:3 display aspect** (the C64's pixels are not squa
 The audio stream is 16-bit stereo at 47983 Hz (the Ultimate's actual PAL-derived rate), 192 sample pairs per packet. `AudioReceiver` uses a **pull model**: an `AVAudioSourceNode` render callback pulls from a lock-guarded ring buffer. A jitter buffer (default 60 ms, configurable) absorbs network variance; backlog beyond the target is trimmed so latency is bounded and can never ratchet upward — network hiccups produce a brief silence, not permanent delay.
 
 The engine's output is explicitly pinned to the current default output device (rather than left to `AVAudioEngine`'s own default selection) and re-pinned whenever CoreAudio's device graph changes — see `HANDOVER.md` §17 for why this matters when the default output is a multi-output/aggregate device.
+
+App-only AirPlay uses a separate global path because macOS's public `AVRoutePickerView` routes an `AVPlayer`, not an arbitrary `AVAudioEngine`. Stream64 converts the currently audible session's live 47983 Hz PCM to 48 kHz AAC, publishes a short bounded audio-only HLS window through an authenticated temporary LAN server, and assigns that one app-wide player to the system picker. Once external playback activates, the app remains locked to that route until the user explicitly chooses **This Mac**/Stop AirPlay: typing, changing views, switching C64s, resets/reboots and temporary source/transport gaps can produce silence or “Connecting…” but never re-enable local output. A real-time silence heartbeat keeps the HLS timeline alive between sources, and switching C64s swaps PCM on that same timeline without changing the AirPlay destination.
 
 The **RF audio filter** (active when a stream's input signal is RF and a CRT filter is rendering) runs inside the render callback: mono fold, two-pole ~3.3 kHz low-pass, two-pole ~330 Hz high-pass, tanh soft-clip drive, low-passed hiss bed and 50 Hz hum. All per-sample with no allocations on the audio thread.
 

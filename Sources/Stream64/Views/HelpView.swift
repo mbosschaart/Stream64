@@ -515,6 +515,15 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Settings → Audio** — volume (also on the 1702 bezel's VOLUME knob) and \
     the jitter buffer. A larger buffer smooths playback on busy networks at \
     the cost of latency; 60 ms is a good default.
+
+    **AirPlay** — use the AirPlay button in the main toolbar or Audio \
+    Settings to send the currently selected C64's audio to a receiver. This \
+    is one app-wide route: selecting another C64 changes the source without \
+    changing the AirPlay destination. Local output remains low-latency; \
+    AirPlay normally adds around 1–3 seconds of buffering. Once activated, \
+    the app stays locked to AirPlay through typing, view changes, C64 \
+    switching and reset/reboot; temporary gaps show **Connecting…** rather \
+    than enabling local playback. Choose **This Mac** to stop AirPlay.
     """
 
     private static let debugAndSIDText = """

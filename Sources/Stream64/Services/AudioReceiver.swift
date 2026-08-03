@@ -28,19 +28,56 @@ final class AudioReceiver {
     private static let sampleRate: Double = 47983.0
 
     var volume: Float {
-        get { muted ? storedVolume : engine.mainMixerNode.outputVolume }
+        get { storedVolume }
         set {
             storedVolume = newValue
-            if !muted { engine.mainMixerNode.outputVolume = newValue }
+            applyOutputGain()
         }
     }
 
     /// Silences playback without stopping the stream — used in the
     /// multi-viewer grid so only one device is audible at a time.
     var muted: Bool = false {
-        didSet { engine.mainMixerNode.outputVolume = muted ? 0 : storedVolume }
+        didSet { applyOutputGain() }
+    }
+    /// Independent global-route gate: when app-wide AirPlay is active, the
+    /// selected receiver still feeds visualizers and the HLS encoder, but its
+    /// local AVAudioEngine must be silent to avoid double playback.
+    var externalOutputSuppressed: Bool = false {
+        didSet { updateExternalOutputState() }
     }
     private var storedVolume: Float = 1.0
+
+    var effectiveLocalVolume: Float {
+        (muted || externalOutputSuppressed) ? 0 : storedVolume
+    }
+
+    private func applyOutputGain() {
+        engine.mainMixerNode.outputVolume = effectiveLocalVolume
+    }
+
+    /// AirPlay lock uses a hard engine pause, not only mixer gain. CoreAudio
+    /// can recreate a mixer at full gain during route changes, defeating a
+    /// stored zero-volume setting. UDP reception and sample observers are
+    /// independent of this engine and continue while it is paused.
+    private func updateExternalOutputState() {
+        applyOutputGain()
+        guard started else { return }
+        if externalOutputSuppressed {
+            if engine.isRunning { engine.pause() }
+        } else if !engine.isRunning {
+            // Discard the stale local jitter backlog accumulated while
+            // AirPlay was active; resume from fresh packets.
+            os_unfair_lock_lock(lock)
+            readIndex = 0
+            writeIndex = 0
+            framesAvailable = 0
+            primed = false
+            os_unfair_lock_unlock(lock)
+            try? engine.start()
+            applyOutputGain()
+        }
+    }
 
     /// Target jitter buffer depth in seconds. Playback starts once this much
     /// audio is buffered; backlog beyond target + slack is dropped.
@@ -163,6 +200,9 @@ final class AudioReceiver {
             try engine.start()
         }
         started = true
+        // Engine creation/restart can reset the mixer's gain to its default.
+        // Reassert selection/AirPlay gates after the graph is live.
+        updateExternalOutputState()
 
         // AVAudioEngine's automatic output-device selection is unreliable
         // when the system default output is an aggregate/multi-output
@@ -179,8 +219,17 @@ final class AudioReceiver {
             self?.queue.async {
                 guard let self, self.started else { return }
                 self.pinOutputToCurrentDefaultDevice()
-                if !self.engine.isRunning {
+                if !self.externalOutputSuppressed,
+                   !self.engine.isRunning {
                     try? self.engine.start()
+                }
+                // CoreAudio may recreate the mixer as part of a route change,
+                // losing its previous zero gain even though our suppression
+                // flags remain true.
+                self.applyOutputGain()
+                if self.externalOutputSuppressed,
+                   self.engine.isRunning {
+                    self.engine.pause()
                 }
             }
         }

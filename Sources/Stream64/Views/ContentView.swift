@@ -8,6 +8,14 @@ import SwiftUI
 @MainActor
 final class SessionManager: ObservableObject {
     private var sessions: [UUID: DeviceSession] = [:]
+    private var audibleID: UUID?
+    let airPlayOutput = AirPlayOutputController()
+
+    init() {
+        airPlayOutput.onExternalPlaybackChanged = { [weak self] active in
+            self?.applyExternalOutputSuppression(active)
+        }
+    }
 
     func session(for device: UltimateDevice, settings: AppSettings) -> DeviceSession {
         if let existing = sessions[device.id], existing.device == device {
@@ -15,14 +23,38 @@ final class SessionManager: ObservableObject {
         }
         let session = DeviceSession(device: device, settings: settings)
         sessions[device.id] = session
+        session.audioReceiver.muted = device.id != audibleID
+        session.audioReceiver.externalOutputSuppressed =
+            airPlayOutput.externalOutputActive && device.id == audibleID
+        if device.id == audibleID {
+            airPlayOutput.setSource(session.audioReceiver)
+        }
         return session
     }
 
     /// Audio policy: exactly one device is audible — the one on screen (or
     /// selected, in the grid). Background sessions keep streaming muted.
     func muteAll(except audibleID: UUID?) {
+        self.audibleID = audibleID
         for (id, session) in sessions {
             session.audioReceiver.muted = id != audibleID
+            session.audioReceiver.externalOutputSuppressed =
+                airPlayOutput.externalOutputActive && id == audibleID
+        }
+        airPlayOutput.setSource(
+            audibleID.flatMap { sessions[$0]?.audioReceiver })
+    }
+
+    private func applyExternalOutputSuppression(_ active: Bool) {
+        for (id, session) in sessions {
+            session.audioReceiver.externalOutputSuppressed =
+                active && id == audibleID
+        }
+    }
+
+    func applyGlobalVolume(_ volume: Float) {
+        for session in sessions.values {
+            session.audioReceiver.volume = volume
         }
     }
 
@@ -78,7 +110,11 @@ struct ContentView: View {
         // via the same calls in the grid/pane task handlers.
         .onChange(of: showAllScreens) { applyAudioPolicy() }
         .onChange(of: deviceStore.selectedDeviceID) { applyAudioPolicy() }
+        .onChange(of: settings.volume) {
+            sessionManager.applyGlobalVolume(Float(settings.volume))
+        }
         .onAppear { applyAudioPolicy() }
+        .toolbar { airPlayToolbar }
         .toolbar(isFullscreen ? .hidden : .automatic, for: .windowToolbar)
         .sheet(isPresented: $showingAddDevice) {
             DeviceEditSheet(mode: .add,
@@ -234,6 +270,39 @@ struct ContentView: View {
             .help("Show all devices side by side")
         }
     }
+
+    private var airPlayToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            AirPlayGlobalControl(
+                controller: sessionManager.airPlayOutput)
+        }
+    }
+}
+
+private struct AirPlayGlobalControl: View {
+    @ObservedObject var controller: AirPlayOutputController
+
+    var body: some View {
+        HStack(spacing: 5) {
+            AirPlayRoutePickerView(
+                controller: controller,
+                identifier: "main-toolbar")
+                .frame(width: 28, height: 24)
+            Text(controller.state.label)
+                .font(.caption)
+                .lineLimit(1)
+            if controller.externalOutputActive {
+                Button {
+                    controller.stopAirPlay()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .help("Stop AirPlay and return audio to this Mac")
+            }
+        }
+        .help("Choose an app-wide AirPlay audio receiver")
+    }
 }
 
 /// Attaches the main-viewer lifecycle directly to its concrete NSWindow.
@@ -322,7 +391,10 @@ struct MultiViewerGrid: View {
                         // Muting is centralized in ContentView.applyAudioPolicy;
                         // apply here too for sessions that connect after the
                         // policy last ran.
-                        .onAppear { session.audioReceiver.muted = !isSelected }
+                        .onAppear {
+                            sessionManager.muteAll(
+                                except: deviceStore.selectedDeviceID)
+                        }
                 }
             }
             .padding(12)

@@ -1,6 +1,7 @@
 import XCTest
 import ZIPFoundation
 import MetalKit
+import AVFoundation
 @testable import Stream64
 
 final class Assembly64FeatureTests: XCTestCase {
@@ -230,6 +231,25 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertTrue(VideoReceiver.isStructurallyValidPacket(video))
         XCTAssertTrue(AudioReceiver.isStructurallyValidPacket(
             Data(repeating: 0, count: 770)))
+    }
+
+    func testAudioReceiverCombinesSelectionAndAirPlayMuteGates() {
+        let receiver = AudioReceiver()
+        receiver.volume = 0.65
+        XCTAssertEqual(receiver.effectiveLocalVolume, 0.65, accuracy: 0.0001)
+
+        receiver.muted = true
+        XCTAssertEqual(receiver.effectiveLocalVolume, 0)
+        receiver.muted = false
+        XCTAssertEqual(receiver.effectiveLocalVolume, 0.65, accuracy: 0.0001)
+
+        receiver.externalOutputSuppressed = true
+        XCTAssertEqual(receiver.effectiveLocalVolume, 0)
+        receiver.muted = true
+        receiver.externalOutputSuppressed = false
+        XCTAssertEqual(receiver.effectiveLocalVolume, 0)
+        receiver.muted = false
+        XCTAssertEqual(receiver.effectiveLocalVolume, 0.65, accuracy: 0.0001)
     }
 
     func testDiscoveryHostsStayBoundedAndExcludeLocalAddress() {
@@ -1814,6 +1834,174 @@ final class Assembly64FeatureTests: XCTestCase {
             MemoryMap3DRenderer(
                 mtkView: view,
                 heatmap: MemoryHeatmap()))
+    }
+
+    func testLiveHLSServerPlaylistRollsAndParsesRanges() {
+        let server = LiveHLSServer(maximumSegments: 3)
+        server.setInitializationSegment(Data([0, 1, 2]))
+        for index in 0..<5 {
+            server.appendMediaSegment(
+                Data(repeating: UInt8(index), count: 16),
+                duration: 0.5,
+                discontinuity: index == 3)
+        }
+
+        let playlist = server.playlist()
+        XCTAssertTrue(playlist.contains("#EXT-X-MAP:URI=\"init.mp4\""))
+        XCTAssertTrue(playlist.contains("#EXT-X-MEDIA-SEQUENCE:2"))
+        XCTAssertFalse(playlist.contains("segment0.m4s"))
+        XCTAssertTrue(playlist.contains("segment2.m4s"))
+        XCTAssertTrue(playlist.contains("segment4.m4s"))
+        XCTAssertTrue(playlist.contains("#EXT-X-DISCONTINUITY"))
+        XCTAssertEqual(server.mediaSegmentCount, 3)
+        XCTAssertTrue(server.hasInitializationSegment)
+
+        XCTAssertEqual(
+            LiveHLSServer.byteRange(
+                from: "Range: bytes=4-9", length: 20),
+            4...9)
+        XCTAssertEqual(
+            LiveHLSServer.byteRange(
+                from: "Range: bytes=15-", length: 20),
+            15...19)
+        XCTAssertNil(
+            LiveHLSServer.byteRange(
+                from: "Range: bytes=30-40", length: 20))
+    }
+
+    func testLiveHLSServerServesAuthenticatedPlaylist() throws {
+        let server = LiveHLSServer(maximumSegments: 3)
+        server.setInitializationSegment(Data([0, 1, 2]))
+        server.appendMediaSegment(
+            Data(repeating: 7, count: 32),
+            duration: 0.5)
+
+        let ready = expectation(description: "HLS server ready")
+        var result: Result<URL, Error>?
+        server.start {
+            result = $0
+            ready.fulfill()
+        }
+        wait(for: [ready], timeout: 3)
+        defer { server.stop() }
+
+        let url = try XCTUnwrap(try result?.get())
+        let playlist = try String(
+            contentsOf: url,
+            encoding: .utf8)
+        XCTAssertTrue(playlist.contains("#EXTM3U"))
+        XCTAssertTrue(playlist.contains("segment0.m4s"))
+
+        let invalidURL = url
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("wrong/stream.m3u8")
+        XCTAssertThrowsError(try Data(contentsOf: invalidURL))
+    }
+
+    func testLiveAirPlayEncoderProducesPlayableSegments() throws {
+        let server = LiveHLSServer(maximumSegments: 8)
+        let encoder = LiveAirPlayEncoder(server: server)
+        var failure: Error?
+        encoder.onFailure = { failure = $0 }
+        try encoder.start()
+
+        var phase = 0.0
+        let phaseStep = 2 * Double.pi * 440 /
+            LiveAirPlayEncoder.sourceSampleRate
+        for _ in 0..<700 {
+            var samples = [Float]()
+            samples.reserveCapacity(192 * 2)
+            for _ in 0..<192 {
+                let value = Float(sin(phase) * 0.25)
+                phase += phaseStep
+                samples.append(value)
+                samples.append(value)
+            }
+            encoder.enqueue(samples: samples)
+        }
+
+        let deadline = Date().addingTimeInterval(6)
+        while Date() < deadline,
+              (!server.hasInitializationSegment ||
+               server.mediaSegmentCount == 0),
+              failure == nil {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        encoder.stop()
+
+        XCTAssertNil(failure)
+        XCTAssertTrue(server.hasInitializationSegment)
+        XCTAssertGreaterThan(server.mediaSegmentCount, 0)
+        guard let fragment = server.firstPlayableFragment() else {
+            return XCTFail("No playable fragmented MP4 was produced")
+        }
+        XCTAssertGreaterThan(fragment.count, 1_000)
+    }
+
+    func testLiveAirPlayEncoderMaintainsTimelineWithSilence() throws {
+        let server = LiveHLSServer(maximumSegments: 4)
+        let encoder = LiveAirPlayEncoder(server: server)
+        try encoder.start()
+        defer { encoder.stop() }
+
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline,
+              server.mediaSegmentCount == 0 {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertTrue(server.hasInitializationSegment)
+        XCTAssertGreaterThan(
+            server.mediaSegmentCount,
+            0,
+            "AirPlay HLS must continue through source-switch/reconnect gaps")
+    }
+
+    func testAVPlayerLoadsGeneratedLiveAirPlayHLS() throws {
+        let server = LiveHLSServer(maximumSegments: 8)
+        let ready = expectation(description: "HLS origin ready")
+        var serverResult: Result<URL, Error>?
+        server.start {
+            serverResult = $0
+            ready.fulfill()
+        }
+        wait(for: [ready], timeout: 3)
+        defer { server.stop() }
+        let url = try XCTUnwrap(try serverResult?.get())
+
+        let encoder = LiveAirPlayEncoder(server: server)
+        try encoder.start()
+        defer { encoder.stop() }
+        for packet in 0..<700 {
+            let value = Float(sin(Double(packet) * 0.03) * 0.2)
+            encoder.enqueue(
+                samples: [Float](repeating: value, count: 192 * 2))
+        }
+        let segmentDeadline = Date().addingTimeInterval(5)
+        while Date() < segmentDeadline,
+              server.mediaSegmentCount == 0 {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertGreaterThan(server.mediaSegmentCount, 0)
+
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 1
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        player.play()
+        defer { player.pause() }
+
+        let playerDeadline = Date().addingTimeInterval(8)
+        while Date() < playerDeadline,
+              item.status == .unknown {
+            RunLoop.current.run(
+                mode: .default,
+                before: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(
+            item.status,
+            .readyToPlay,
+            item.error?.localizedDescription ?? "AVPlayer did not load live HLS")
     }
 
     private func makeArchive(

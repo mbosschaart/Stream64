@@ -406,11 +406,17 @@ private struct DeviceVideoSettings: View {
 
 struct AudioSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var sessionManager: SessionManager
 
     var body: some View {
         Form {
             Section {
                 Toggle("Enable audio streaming", isOn: $settings.audioEnabled)
+            }
+
+            Section("Output") {
+                AirPlaySettingsControl(
+                    controller: sessionManager.airPlayOutput)
             }
 
             Section {
@@ -439,6 +445,52 @@ struct AudioSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct AirPlaySettingsControl: View {
+    @ObservedObject var controller: AirPlayOutputController
+
+    var body: some View {
+        HStack {
+            AirPlayRoutePickerView(
+                controller: controller,
+                identifier: "audio-settings")
+                .frame(width: 30, height: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(controller.state.label)
+                Text(statusDetail)
+                    .font(.caption)
+                    .foregroundStyle(
+                        isFailure ? Color.red : Color.secondary)
+            }
+            Spacer()
+            if controller.externalOutputActive {
+                Button("This Mac") {
+                    controller.stopAirPlay()
+                }
+            }
+        }
+    }
+
+    private var isFailure: Bool {
+        if case .failed = controller.state { return true }
+        return false
+    }
+
+    private var statusDetail: String {
+        switch controller.state {
+        case .local:
+            return "Use the AirPlay button to choose a receiver."
+        case .preparing:
+            return "Starting the temporary live-audio stream."
+        case .connecting:
+            return "AirPlay may take a few seconds to buffer."
+        case .airPlay:
+            return "All Stream64 audio is routed here with about 1–3 seconds of latency."
+        case .failed(let message):
+            return message
+        }
     }
 }
 

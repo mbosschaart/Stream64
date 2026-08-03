@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Stream64Version {
-    static let display = "0.101b"
+    static let display = "0.102b"
 }
 
 /// A packaged .app has its resources flattened into `Contents/Resources`
@@ -294,6 +294,7 @@ struct Stream64App: App {
             SettingsView()
                 .environmentObject(deviceStore)
                 .environmentObject(settings)
+                .environmentObject(sessionManager)
         }
     }
 }
