@@ -7,6 +7,7 @@ final class DeviceStore: ObservableObject {
     @Published var devices: [UltimateDevice] = [] {
         didSet { save() }
     }
+    @Published private(set) var persistenceError: String?
     @Published var selectedDeviceID: UUID? {
         didSet { UserDefaults.standard.set(selectedDeviceID?.uuidString, forKey: "selectedDeviceID") }
     }
@@ -66,9 +67,25 @@ final class DeviceStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: Self.storeURL) else { return }
-        if let decoded = try? JSONDecoder().decode([UltimateDevice].self, from: data) {
+        let url = Self.storeURL
+        guard let data = try? Data(contentsOf: url) else { return }
+        do {
+            let decoded = try JSONDecoder().decode(
+                [UltimateDevice].self, from: data)
             devices = decoded
+        } catch {
+            let backup = url.deletingPathExtension()
+                .appendingPathExtension(
+                    "corrupt-\(Int(Date().timeIntervalSince1970)).json")
+            do {
+                try FileManager.default.moveItem(at: url, to: backup)
+                persistenceError =
+                    "Device configuration was invalid and was preserved at "
+                    + backup.lastPathComponent
+            } catch {
+                persistenceError =
+                    "Device configuration could not be read or preserved."
+            }
         }
     }
 
@@ -76,6 +93,12 @@ final class DeviceStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(devices) else { return }
-        try? data.write(to: Self.storeURL, options: .atomic)
+        do {
+            try data.write(to: Self.storeURL, options: .atomic)
+        } catch {
+            persistenceError =
+                "Device configuration could not be saved: "
+                + error.localizedDescription
+        }
     }
 }

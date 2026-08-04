@@ -34,6 +34,8 @@ final class LiveHLSServer {
     private var segments: [MediaSegment] = []
     private var nextSequence = 0
     private var completionDelivered = false
+    private static let maximumRequestBytes = 32 * 1024
+    private static let requestTimeout: TimeInterval = 5
 
     init(maximumSegments: Int = 10) {
         self.maximumSegments = max(3, maximumSegments)
@@ -172,6 +174,12 @@ final class LiveHLSServer {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: queue)
+        let timeout = DispatchWorkItem { [weak connection] in
+            connection?.cancel()
+        }
+        queue.asyncAfter(
+            deadline: .now() + Self.requestTimeout,
+            execute: timeout)
         receiveRequest(on: connection, accumulated: Data())
     }
 
@@ -185,7 +193,20 @@ final class LiveHLSServer {
         ) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             var request = accumulated
-            if let data { request.append(data) }
+            if let data {
+                guard request.count + data.count
+                        <= Self.maximumRequestBytes else {
+                    self.send(
+                        status: 431,
+                        body: Data("Request headers too large".utf8),
+                        contentType: "text/plain",
+                        headOnly: false,
+                        range: nil,
+                        on: connection)
+                    return
+                }
+                request.append(data)
+            }
             if request.range(of: Data("\r\n\r\n".utf8)) != nil || isComplete {
                 self.respond(to: request, on: connection)
             } else if error == nil {

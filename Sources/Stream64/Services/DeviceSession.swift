@@ -42,6 +42,7 @@ final class DeviceSession: ObservableObject {
     }
 
     @Published private(set) var debugTraceState: DebugTraceState = .inactive
+    private var debugTraceConsumers = Set<UUID>()
     /// Whether this device's firmware implements the U64 debug register —
     /// Ultimate-II+ and C64 Ultimate hardware do not. Populated by a
     /// silent, best-effort probe once connected; gates the Debug Trace /
@@ -119,6 +120,7 @@ final class DeviceSession: ObservableObject {
 
     private var lastStatsAt = Date.distantPast
     private var stalenessMonitor: Task<Void, Never>?
+    private var streamRecoveryTask: Task<Void, Never>?
 
     /// onStats only fires while frames arrive; when the stream dies the
     /// callbacks just stop. This watchdog turns isStreaming off after
@@ -131,6 +133,7 @@ final class DeviceSession: ObservableObject {
                 if self.isStreaming, Date().timeIntervalSince(self.lastStatsAt) > 3 {
                     self.isStreaming = false
                     self.fps = 0
+                    self.recoverStaleStreams()
                 }
             }
         }
@@ -178,6 +181,9 @@ final class DeviceSession: ObservableObject {
         guard isConnected else { return }
         videoReceiver.stop()
         audioReceiver.stop()
+        debugStreamReceiver.stop()
+        debugTraceConsumers.removeAll()
+        debugTraceState = .inactive
         fps = 0
         isStreaming = false
         if settings.reconnectAutomatically {
@@ -229,9 +235,58 @@ final class DeviceSession: ObservableObject {
         return false
     }
 
+    private enum PortConfigurationError: LocalizedError {
+        case invalid(String, Int)
+        case duplicate
+
+        var errorDescription: String? {
+            switch self {
+            case .invalid(let name, let value):
+                return "\(name) port \(value) is outside 1...65535."
+            case .duplicate:
+                return "Video, Audio, and Debug ports must be different."
+            }
+        }
+    }
+
+    private func validatedLocalPort(
+        _ value: Int,
+        name: String
+    ) throws -> UInt16 {
+        guard let port = UInt16(exactly: value), port > 0 else {
+            throw PortConfigurationError.invalid(name, value)
+        }
+        return port
+    }
+
+    private func validateLocalPortSet() throws {
+        let ports = [device.videoPort, device.audioPort, device.debugPort]
+        guard Set(ports).count == ports.count else {
+            throw PortConfigurationError.duplicate
+        }
+        _ = try validatedLocalPort(device.videoPort, name: "Video")
+        _ = try validatedLocalPort(device.audioPort, name: "Audio")
+        _ = try validatedLocalPort(device.debugPort, name: "Debug")
+    }
+
     // MARK: - Connection lifecycle
 
     private var connecting = false
+    /// Every connect/disconnect transition invalidates older async work.
+    /// `connect()` has several network sleeps/awaits; without this token an
+    /// old attempt can resume after Disconnect and recreate receivers or set
+    /// the session back to Connected.
+    private var connectionGeneration: UInt64 = 0
+
+    private func isCurrentConnection(_ generation: UInt64) -> Bool {
+        connectionGeneration == generation
+    }
+
+    private func abandonStaleConnectionAttempt() {
+        videoReceiver.stop()
+        audioReceiver.stop()
+        debugStreamReceiver.stop()
+    }
 
     func connect(cancelReconnectTask: Bool = true) async {
         // Manual connect/retry supersedes an automatic loop. Automatic loop
@@ -251,6 +306,8 @@ final class DeviceSession: ObservableObject {
         // and the receivers.
         guard !connecting else { return }
         connecting = true
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
         defer { connecting = false }
 
         state = .connecting
@@ -264,17 +321,23 @@ final class DeviceSession: ObservableObject {
         // reconnection is up to the user from there. The probe's info reply
         // doubles as the identity fetch.
         guard let info = await probeReachability() else {
-            state = .unreachable
+            if isCurrentConnection(generation) {
+                state = .unreachable
+            }
             return
         }
+        guard isCurrentConnection(generation) else { return }
         let description = [info.product, info.firmwareVersion]
             .compactMap { $0 }
             .joined(separator: " · ")
         await input.prepare()
+        guard isCurrentConnection(generation) else { return }
 
         do {
             // Start local UDP receivers first so no packets are dropped.
-            try videoReceiver.start(port: UInt16(device.videoPort))
+            try validateLocalPortSet()
+            try videoReceiver.start(port: try validatedLocalPort(
+                device.videoPort, name: "Video"))
             let audioOK = startAudioIfEnabled()
             // Receivers expose lifetime packet counters. Snapshot after
             // opening them and only treat packets arriving *after this
@@ -294,6 +357,10 @@ final class DeviceSession: ObservableObject {
             var audioLive = false
             for _ in 0..<6 { // up to 600 ms
                 try await Task.sleep(for: .milliseconds(100))
+                guard isCurrentConnection(generation) else {
+                    abandonStaleConnectionAttempt()
+                    return
+                }
                 videoLive = videoReceiver.packetsReceived > videoPacketBaseline
                 audioLive = audioReceiver.packetsReceived > audioPacketBaseline
                 if videoLive && (audioLive || !settings.audioEnabled) { break }
@@ -303,15 +370,31 @@ final class DeviceSession: ObservableObject {
                 do {
                     try await startStreaming(video: !videoLive,
                                              audio: settings.audioEnabled && !audioLive)
+                    guard isCurrentConnection(generation) else {
+                        abandonStaleConnectionAttempt()
+                        return
+                    }
                 } catch where error.localizedDescription.contains("Network Host Resolve Error") {
                     // Transient wedge: the stack often accepts the same
                     // request moments later. Retry once.
                     try await Task.sleep(for: .seconds(1))
+                    guard isCurrentConnection(generation) else {
+                        abandonStaleConnectionAttempt()
+                        return
+                    }
                     try await startStreaming(video: !videoLive,
                                              audio: settings.audioEnabled && !audioLive)
+                    guard isCurrentConnection(generation) else {
+                        abandonStaleConnectionAttempt()
+                        return
+                    }
                 }
             }
 
+            guard isCurrentConnection(generation) else {
+                abandonStaleConnectionAttempt()
+                return
+            }
             state = .connected(info: description.isEmpty ? device.displayAddress : description)
             if !audioOK {
                 recoverAudioQuietly()
@@ -319,6 +402,10 @@ final class DeviceSession: ObservableObject {
             watchForSilentStream()
             probeDebugCapability()
         } catch {
+            guard isCurrentConnection(generation) else {
+                abandonStaleConnectionAttempt()
+                return
+            }
             videoReceiver.stop()
             audioReceiver.stop()
             // Firmware 3.14's streaming stack can wedge and refuse every
@@ -342,7 +429,8 @@ final class DeviceSession: ObservableObject {
         audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
         audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
         do {
-            try audioReceiver.start(port: UInt16(device.audioPort))
+            try audioReceiver.start(port: try validatedLocalPort(
+                device.audioPort, name: "Audio"))
             return true
         } catch {
             return false
@@ -370,6 +458,32 @@ final class DeviceSession: ObservableObject {
     /// User explicitly stopped the streams; the silent-stream watchdog
     /// must not fight them by re-kicking.
     private var streamsStoppedByUser = false
+
+    private func recoverStaleStreams() {
+        guard isConnected,
+              !streamsStoppedByUser,
+              streamRecoveryTask == nil else { return }
+        streamRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            for attempt in 0..<2 where !Task.isCancelled {
+                do {
+                    try await self.startStreaming()
+                    self.watchForSilentStream(attempt: attempt)
+                    self.streamRecoveryTask = nil
+                    return
+                } catch {
+                    if attempt == 0 {
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                }
+            }
+            self.streamRecoveryTask = nil
+            if self.isConnected, !self.streamsStoppedByUser {
+                self.transferStatus = .failed(
+                    "The stream stopped and could not be re-armed automatically.")
+            }
+        }
+    }
 
     /// After connect, verify frames actually arrive. The device sometimes
     /// acknowledges stream-start without sending packets (notably right
@@ -447,6 +561,8 @@ final class DeviceSession: ObservableObject {
     /// restartStreams; the picture freezes on the last received frame.
     func stopStreams() async {
         streamsStoppedByUser = true
+        streamRecoveryTask?.cancel()
+        streamRecoveryTask = nil
         try? await client.stopVideoStream()
         try? await client.stopAudioStream()
         fps = 0
@@ -454,19 +570,32 @@ final class DeviceSession: ObservableObject {
     }
 
     func disconnect(stopRemoteStreams: Bool = true) async {
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        connectionGeneration &+= 1
+        prepareForEviction()
         await input.cancelAndRelease()
         if stopRemoteStreams {
             try? await client.stopVideoStream()
             try? await client.stopAudioStream()
-            if debugTraceState != .inactive {
-                try? await client.stopDebugStream()
-            }
+            try? await client.stopDebugStream()
         }
+    }
+
+    /// Synchronous half of disconnect used by SessionManager eviction.
+    /// Releases local ports and cancels lifecycle tasks before a replacement
+    /// DeviceSession can be constructed; remote stop requests finish in the
+    /// asynchronous `disconnect()` tail.
+    func prepareForEviction() {
+        connectionGeneration &+= 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        healthMonitor?.cancel()
+        healthMonitor = nil
+        stalenessMonitor?.cancel()
+        stalenessMonitor = nil
         videoReceiver.stop()
         audioReceiver.stop()
         debugStreamReceiver.stop()
+        debugTraceConsumers.removeAll()
         debugTraceState = .inactive
         fps = 0
         isPaused = false
@@ -519,13 +648,36 @@ final class DeviceSession: ObservableObject {
                 item: "Debug Stream Mode",
                 value: mode.rawValue)
             debugStreamReceiver.source = mode.decodeSource
-            try debugStreamReceiver.start(port: UInt16(device.debugPort))
+            try debugStreamReceiver.start(port: try validatedLocalPort(
+                device.debugPort, name: "Debug"))
             try await client.startDebugStream(
                 destinationHost: localIP, port: device.debugPort)
             debugTraceState = .active(mode)
         } catch {
             debugStreamReceiver.stop()
             debugTraceState = .error(error.localizedDescription)
+        }
+    }
+
+    /// Acquire shared ownership of the session's debug stream. Multiple
+    /// Debug Trace/SID windows can hold leases simultaneously; only the first
+    /// starts the device stream.
+    func acquireDebugTrace(mode: DebugStreamMode) async -> UUID? {
+        guard isConnected else { return nil }
+        let token = UUID()
+        debugTraceConsumers.insert(token)
+        if case .inactive = debugTraceState {
+            await startDebugTrace(mode: mode)
+        } else if case .error = debugTraceState {
+            await startDebugTrace(mode: mode)
+        }
+        return token
+    }
+
+    func releaseDebugTrace(_ token: UUID) async {
+        guard debugTraceConsumers.remove(token) != nil else { return }
+        if debugTraceConsumers.isEmpty {
+            await stopDebugTrace()
         }
     }
 
@@ -694,12 +846,16 @@ final class DeviceSession: ObservableObject {
     }
 
     func togglePause() async {
-        if isPaused {
-            await run { try await self.client.resume() }
-            isPaused = false
-        } else {
-            await run { try await self.client.pause() }
-            isPaused = true
+        do {
+            if isPaused {
+                try await client.resume()
+                isPaused = false
+            } else {
+                try await client.pause()
+                isPaused = true
+            }
+        } catch {
+            state = .error(error.localizedDescription)
         }
     }
 

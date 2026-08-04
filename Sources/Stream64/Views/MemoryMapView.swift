@@ -436,9 +436,10 @@ final class MemoryHeatmapNSView: NSView {
         guard let heatmap, bounds.width > 0, bounds.height > 0 else { return }
 
         let now = CFAbsoluteTimeGetCurrent()
-        let lastAccess = heatmap.lastAccess
-        let lastAccessWasRead = heatmap.lastAccessWasRead
-        let lastValue = heatmap.lastValue
+        let snapshot = heatmap.renderSnapshot()
+        let lastAccess = snapshot.lastAccess
+        let lastAccessWasRead = snapshot.lastAccessWasRead
+        let lastValue = snapshot.lastValue
         let fade = renderSettings?.fadeDuration ?? 0.15
         let mode = visualization
         // Zero only alpha-bearing slots would leave stale RGB; the buffer is

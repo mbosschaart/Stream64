@@ -25,6 +25,7 @@ final class UltimateTelnetClient {
 
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "ultimate-telnet-client")
+    private var connectionGeneration: UInt64 = 0
     /// Strips Telnet protocol-negotiation bytes (IAC/0xFF sequences)
     /// before `onData` ever sees them — confirmed against a real
     /// device's raw byte capture that the Ultimate's Telnet server sends
@@ -37,12 +38,15 @@ final class UltimateTelnetClient {
     func connect(host: String, port: UInt16 = 23) {
         disconnect()
         iacFilter = TelnetIACFilter()
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
         let connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!,
             using: .tcp)
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
+            guard self.isCurrent(connection, generation: generation) else { return }
             switch state {
             case .ready:
                 self.onStateChange?(.ready)
@@ -61,6 +65,7 @@ final class UltimateTelnetClient {
     }
 
     func disconnect() {
+        connectionGeneration &+= 1
         connection?.cancel()
         connection = nil
     }
@@ -75,7 +80,8 @@ final class UltimateTelnetClient {
         connection.receive(
             minimumIncompleteLength: 1, maximumLength: 8192
         ) { [weak self, weak connection] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self, let connection,
+                  self.isCurrent(connection) else { return }
             if let data, !data.isEmpty {
                 let filtered = self.iacFilter.filter(data)
                 if !filtered.isEmpty {
@@ -90,10 +96,19 @@ final class UltimateTelnetClient {
                 self.onStateChange?(.cancelled)
                 return
             }
-            if let connection {
-                self.receive(on: connection)
-            }
+            self.receive(on: connection)
         }
+    }
+
+    private func isCurrent(
+        _ connection: NWConnection,
+        generation: UInt64? = nil
+    ) -> Bool {
+        guard self.connection === connection else { return false }
+        if let generation {
+            return connectionGeneration == generation
+        }
+        return true
     }
 }
 

@@ -50,8 +50,8 @@ enum ManagedFileKind: String, Codable {
     case directory, symlink, prg, disk, sid, mod, crt, zip, regular
 
     static func classify(name: String, isDirectory: Bool, isSymbolicLink: Bool = false) -> Self {
-        if isDirectory { return .directory }
         if isSymbolicLink { return .symlink }
+        if isDirectory { return .directory }
         switch (name as NSString).pathExtension.lowercased() {
         case "prg": return .prg
         case "d64", "g64", "d71", "g71", "d81": return .disk

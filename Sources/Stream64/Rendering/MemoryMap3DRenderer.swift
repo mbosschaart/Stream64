@@ -356,8 +356,13 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
     private var instanceBuffers: [MTLBuffer]
     private var currentBufferIndex = 0
     private var currentInstanceCount = 0
+    private var bufferInFlight = [Bool](repeating: false, count: 3)
+    private let bufferLock = NSLock()
     private var timer: Timer?
     private var drawPending = false
+    private let inFlightSemaphore = DispatchSemaphore(value: 3)
+    private var lastDataGeneration: UInt64?
+    private var lastLOD = 0
 
     var heatmap: MemoryHeatmap?
     var source: DebugStreamSource = .cpu6510
@@ -510,25 +515,42 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         let z = min(255, max(0, Int((hit.z + 0.5) * 256)))
         let address = UInt16((z << 8) | x)
         let index = Int(address)
-        guard heatmap.lastAccess[index] > 0 else { return nil }
+        guard let state = heatmap.state(at: index),
+              state.lastAccess > 0 else { return nil }
         return MemoryMap3DInspection(
             address: address,
-            value: heatmap.lastValue[index],
-            wasRead: heatmap.lastAccessWasRead[index],
+            value: state.lastValue,
+            wasRead: state.lastAccessWasRead,
             region: Self.regionName(for: address, source: source))
     }
 
     func refreshSnapshot() {
         guard let heatmap else { return }
-        let values = heatmap.lastValue
-        let accessTimes = heatmap.lastAccess
-        let directions = heatmap.lastAccessWasRead
+        guard view?.window == nil
+                || view?.window?.occlusionState.contains(.visible) == true
+        else { return }
+        let snapshot = heatmap.renderSnapshot()
+        let values = snapshot.lastValue
+        let accessTimes = snapshot.lastAccess
+        let directions = snapshot.lastAccessWasRead
         let now = CFAbsoluteTimeGetCurrent()
         let blockSize = options.adaptiveLOD
             ? Self.lodBlockSize(for: camera.distance)
             : 1
-        let nextBufferIndex =
-            (currentBufferIndex + 1) % instanceBuffers.count
+        if !options.activityPulse,
+           snapshot.generation == lastDataGeneration,
+           blockSize == lastLOD {
+            requestDraw()
+            return
+        }
+        bufferLock.lock()
+        guard let nextBufferIndex = (0..<instanceBuffers.count).first(
+            where: { !bufferInFlight[$0] && $0 != currentBufferIndex })
+        else {
+            bufferLock.unlock()
+            return
+        }
+        bufferLock.unlock()
         let buffer = instanceBuffers[nextBufferIndex]
         let destination = buffer.contents().bindMemory(
             to: InstanceData.self,
@@ -576,6 +598,8 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         }
         currentBufferIndex = nextBufferIndex
         currentInstanceCount = instanceCount
+        lastDataGeneration = snapshot.generation
+        lastLOD = blockSize
         requestDraw()
     }
 
@@ -603,6 +627,9 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         drawPending = false
+        guard inFlightSemaphore.wait(timeout: .now()) == .success else {
+            return
+        }
         guard view.drawableSize.width > 0,
               view.drawableSize.height > 0,
               let descriptor = view.currentRenderPassDescriptor,
@@ -610,7 +637,13 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(
                 descriptor: descriptor)
-        else { return }
+        else {
+            inFlightSemaphore.signal()
+            return
+        }
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            self?.inFlightSemaphore.signal()
+        }
 
         var uniforms = Uniforms(
             viewProjection: camera.viewProjection(
@@ -642,6 +675,9 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
             length: MemoryLayout<Uniforms>.stride,
             index: 0)
         if currentInstanceCount > 0 {
+            bufferLock.lock()
+            bufferInFlight[currentBufferIndex] = true
+            bufferLock.unlock()
             encoder.setVertexBuffer(
                 instanceBuffers[currentBufferIndex],
                 offset: 0,
@@ -653,6 +689,13 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
                 instanceCount: currentInstanceCount)
         }
         encoder.endEncoding()
+        let submittedBufferIndex = currentBufferIndex
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            guard let self else { return }
+            self.bufferLock.lock()
+            self.bufferInFlight[submittedBufferIndex] = false
+            self.bufferLock.unlock()
+        }
 
         commandBuffer.present(drawable)
         commandBuffer.commit()

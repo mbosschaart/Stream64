@@ -8,6 +8,7 @@ import simd
 /// palette lookup on the GPU. Scaling/filtering are applied via vertex transform
 /// and sampler state — fully hardware accelerated.
 final class MetalFrameRenderer: NSObject, MTKViewDelegate {
+    private weak var renderView: MTKView?
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
@@ -35,6 +36,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     private let dirtyGlassTexture: MTLTexture
 
     private let textureLock = NSLock()
+    /// Limits CPU uploads to resources whose previous GPU command buffer has
+    /// completed. Fixed ring rotation alone is not enough when a CRT shader
+    /// stalls for more than three frames.
+    private let inFlightSemaphore = DispatchSemaphore(value: 3)
+    private var palettePendingBytes: [UInt8]?
     private var pendingFrame: Data?
     private var resetHistoryOnNextFrame = false
     private var lastFrameSubmission: DispatchTime?
@@ -43,11 +49,6 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// link — and the occlusion-fallback timer — always call draw() there),
     /// so no locking is needed, unlike `pendingFrame` above.
     private var pendingScreenshotCompletion: ((CGImage?) -> Void)?
-    /// Offscreen render target for screenshot capture, sized to match the
-    /// live drawable. Reused across requests; recreated only if the view
-    /// resizes.
-    private var screenshotTexture: MTLTexture?
-
     // Render settings, updated from the UI.
     var scalingMode: ScalingMode = .aspectFit
     var filterMode: FilterMode = .sharp
@@ -60,6 +61,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// 0 = standalone/fullscreen dark bezel, 1 = 1702, 2 = 1084S.
     var bezelSurfaceMode: Float = 0
     private var powerOffEffectStartedAt: UInt64?
+    private var animationTimer: Timer?
     /// Frame counter driving RF noise animation.
     private var frameIndex: UInt32 = 0
     /// Live picture controls, read every frame (bypasses SwiftUI updates
@@ -947,13 +949,16 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
               let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.commandQueue = queue
+        self.renderView = mtkView
 
         mtkView.device = device
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        // Only redraw when a new frame arrives.
-        mtkView.enableSetNeedsDisplay = false
-        mtkView.isPaused = false
+        // Normal video is demand-driven. RF/power-off effects opt into a
+        // small animation timer below instead of every surface rendering
+        // continuously at 60 FPS while nothing has changed.
+        mtkView.enableSetNeedsDisplay = true
+        mtkView.isPaused = true
         mtkView.preferredFramesPerSecond = 60
 
         // Compile shaders.
@@ -1094,19 +1099,52 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         for color in palette {
             bytes.append(contentsOf: [color.x, color.y, color.z, color.w])
         }
-        paletteTexture.replace(
-            region: MTLRegionMake2D(0, 0, 16, 1),
-            mipmapLevel: 0,
-            withBytes: bytes,
-            bytesPerRow: 64)
+        textureLock.lock()
+        palettePendingBytes = bytes
+        textureLock.unlock()
     }
 
     func beginPowerOffEffect() {
         powerOffEffectStartedAt = DispatchTime.now().uptimeNanoseconds
+        updateAnimationTimer(enabled: true)
     }
 
     func cancelPowerOffEffect() {
         powerOffEffectStartedAt = nil
+        updateAnimationTimer(enabled: signalLevel >= 2)
+    }
+
+    func requestRedraw() {
+        let redraw = { [weak self] in
+            guard let self, let renderView = self.renderView else { return }
+            renderView.setNeedsDisplay(renderView.bounds)
+        }
+        if Thread.isMainThread {
+            redraw()
+        } else {
+            DispatchQueue.main.async(execute: redraw)
+        }
+    }
+
+    func updateAnimationState() {
+        updateAnimationTimer(enabled: signalLevel >= 2)
+        requestRedraw()
+    }
+
+    private func updateAnimationTimer(enabled: Bool) {
+        if enabled {
+            guard animationTimer == nil else { return }
+            let timer = Timer(
+                timeInterval: 1.0 / 30.0,
+                repeats: true) { [weak self] _ in
+                self?.requestRedraw()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            animationTimer = timer
+        } else {
+            animationTimer?.invalidate()
+            animationTimer = nil
+        }
     }
 
     /// Requests a screenshot of exactly what's on screen — the active
@@ -1118,7 +1156,12 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// completion arrives one frame later, off the main thread — hop back
     /// before touching anything else.
     func requestFilteredScreenshot(completion: @escaping (CGImage?) -> Void) {
+        guard pendingScreenshotCompletion == nil else {
+            completion(nil)
+            return
+        }
         pendingScreenshotCompletion = completion
+        requestRedraw()
     }
 
     /// Encodes an extra render pass — same pipeline, uniforms, and source
@@ -1135,14 +1178,14 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                       completion: @escaping (CGImage?) -> Void) {
         let width = max(1, Int(drawableSize.width))
         let height = max(1, Int(drawableSize.height))
-        if screenshotTexture == nil || screenshotTexture!.width != width || screenshotTexture!.height != height {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
-            descriptor.usage = [.renderTarget]
-            descriptor.storageMode = .shared
-            screenshotTexture = device.makeTexture(descriptor: descriptor)
-        }
-        guard let target = screenshotTexture else {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false)
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = .shared
+        guard let target = device.makeTexture(descriptor: descriptor) else {
             DispatchQueue.main.async { completion(nil) }
             return
         }
@@ -1169,8 +1212,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
 
-        commandBuffer.addCompletedHandler { [weak self] _ in
-            let image = self?.readScreenshotTexture(width: width, height: height)
+        commandBuffer.addCompletedHandler { _ in
+            let image = Self.readScreenshotTexture(
+                target: target,
+                width: width,
+                height: height)
             DispatchQueue.main.async { completion(image) }
         }
     }
@@ -1180,12 +1226,18 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// safe because that handler only fires once the GPU has finished
     /// writing, and nothing else touches this texture concurrently for the
     /// brief window between encoding and readback.
-    private func readScreenshotTexture(width: Int, height: Int) -> CGImage? {
-        guard let texture = screenshotTexture else { return nil }
+    private static func readScreenshotTexture(
+        target: MTLTexture,
+        width: Int,
+        height: Int
+    ) -> CGImage? {
         let bytesPerRow = width * 4
         var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
-        texture.getBytes(&pixels, bytesPerRow: bytesPerRow,
-                         from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        target.getBytes(
+            &pixels,
+            bytesPerRow: bytesPerRow,
+            from: MTLRegionMake2D(0, 0, width, height),
+            mipmapLevel: 0)
         guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
         // bgra8Unorm stores B,G,R,A per pixel. premultipliedFirst +
         // byteOrder32Little is the standard CGImage recipe for describing a
@@ -1224,6 +1276,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             }
         }
         textureLock.unlock()
+        requestRedraw()
     }
 
     // MARK: - MTKViewDelegate
@@ -1231,13 +1284,41 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+        guard inFlightSemaphore.wait(timeout: .now()) == .success else {
+            // Let the GPU catch up instead of overwriting in-flight textures.
+            return
+        }
+        guard let drawable = view.currentDrawable,
+              let descriptor = view.currentRenderPassDescriptor,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(
+                descriptor: descriptor) else {
+            inFlightSemaphore.signal()
+            return
+        }
+
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            self?.inFlightSemaphore.signal()
+        }
+
         // Upload the most recent frame, if any.
         textureLock.lock()
         let frame = pendingFrame
         pendingFrame = nil
         let resetHistory = resetHistoryOnNextFrame
         resetHistoryOnNextFrame = false
+        let palette = palettePendingBytes
+        palettePendingBytes = nil
         textureLock.unlock()
+
+        if let palette,
+           let replacement = Self.makePaletteTexture(
+                device: device, bytes: palette) {
+            // Never mutate a palette texture already referenced by an
+            // in-flight command buffer. Replacing the object keeps the old
+            // texture alive through Metal's command-buffer retention.
+            paletteTexture = replacement
+        }
 
         if let frame {
             if Self.debug {
@@ -1273,11 +1354,6 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                     bytesPerImage: VideoReceiver.width * VideoReceiver.height)
             }
         }
-
-        guard let drawable = view.currentDrawable,
-              let descriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
 
         let pipeline: MTLRenderPipelineState
         switch filterMode {
@@ -1346,6 +1422,31 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    deinit {
+        animationTimer?.invalidate()
+    }
+
+    private static func makePaletteTexture(
+        device: MTLDevice,
+        bytes: [UInt8]
+    ) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: 16,
+            height: 1,
+            mipmapped: false)
+        descriptor.usage = .shaderRead
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            return nil
+        }
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, 16, 1),
+            mipmapLevel: 0,
+            withBytes: bytes,
+            bytesPerRow: 64)
+        return texture
     }
 
     private func computeScale(drawableSize: CGSize) -> SIMD2<Float> {

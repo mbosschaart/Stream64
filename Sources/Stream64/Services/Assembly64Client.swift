@@ -9,6 +9,7 @@ struct Assembly64Client {
     static let baseURL = URL(string: "https://hackerswithstyle.se/leet")!
     static let clientID = "assembly64"
     static let maximumArchiveBytes: Int64 = 100 * 1024 * 1024
+    static let maximumIndividualDownloadBytes: Int64 = 100 * 1024 * 1024
 
     struct SearchResult: Codable, Identifiable, Hashable {
         let itemID: String
@@ -159,9 +160,8 @@ struct Assembly64Client {
         let siteImage: String?
 
         var sourceURL: URL? {
-            guard let url, let candidate = URL(string: url),
-                  candidate.scheme != nil else { return nil }
-            return candidate
+            guard let url else { return nil }
+            return Assembly64Client.validWebURL(url)
         }
 
         var imageURLs: [URL] {
@@ -180,10 +180,10 @@ struct Assembly64Client {
 
         private static func resolve(_ path: String?, relativeTo target: String?) -> URL? {
             guard let path, !path.isEmpty else { return nil }
-            if let direct = URL(string: path), direct.scheme != nil {
+            if let direct = Assembly64Client.validWebURL(path) {
                 return direct
             }
-            if let target, let base = URL(string: target), base.scheme != nil {
+            if let target, let base = Assembly64Client.validWebURL(target) {
                 return base.appendingPathComponent(path)
             }
             if path.hasPrefix("/") {
@@ -191,6 +191,15 @@ struct Assembly64Client {
             }
             return Assembly64Client.baseURL.appendingPathComponent(path)
         }
+    }
+
+    static func validWebURL(_ string: String) -> URL? {
+        guard let url = URL(string: string),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty
+        else { return nil }
+        return url
     }
 
     struct TargetAndPath: Codable, Hashable {
@@ -257,7 +266,22 @@ struct Assembly64Client {
     /// Download one file's raw bytes.
     func download(itemID: String, categoryID: Int, fileID: Int) async throws -> Data {
         let url = Self.baseURL.appendingPathComponent("search/bin/\(itemID)/\(categoryID)/\(fileID)")
-        return try await getData(url)
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.setValue(Self.clientID, forHTTPHeaderField: "client-id")
+        let (temporaryURL, response) = try await URLSession.shared.download(
+            for: request)
+        try validate(
+            response,
+            maximumBytes: Self.maximumIndividualDownloadBytes)
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: temporaryURL.path)
+        let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard byteCount <= Self.maximumIndividualDownloadBytes else {
+            throw ClientError.responseTooLarge(byteCount)
+        }
+        return try Data(
+            contentsOf: temporaryURL,
+            options: .mappedIfSafe)
     }
 
     /// Download every file belonging to an entry as one ZIP archive.
@@ -294,15 +318,21 @@ struct Assembly64Client {
 
     // MARK: - Plumbing
 
-    private func getData(_ url: URL) async throws -> Data {
+    private func getData(
+        _ url: URL,
+        maximumBytes: Int64? = nil
+    ) async throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: 60)
         request.setValue(Self.clientID, forHTTPHeaderField: "client-id")
         let (data, response) = try await URLSession.shared.data(for: request)
-        try validate(response)
+        try validate(response, maximumBytes: maximumBytes)
         // The API reports errors as 200s with {"errorCode": N} bodies.
         if data.count < 200,
            let error = try? JSONDecoder().decode(APIErrorBody.self, from: data) {
             throw ClientError.apiError(error.errorCode)
+        }
+        if let maximumBytes, Int64(data.count) > maximumBytes {
+            throw ClientError.responseTooLarge(Int64(data.count))
         }
         return data
     }

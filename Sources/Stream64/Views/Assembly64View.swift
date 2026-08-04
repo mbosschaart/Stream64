@@ -1003,7 +1003,9 @@ struct Assembly64View: View {
             do {
                 let data = try await Task.detached {
                     try Assembly64ArchiveInspector.extract(
-                        item, from: preview.data)
+                        item,
+                        from: preview.data,
+                        inspected: preview.items)
                 }.value
                 archivePreview = nil
                 loadStatus = "Sending to \(targets.count) target"

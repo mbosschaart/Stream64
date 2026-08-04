@@ -129,6 +129,7 @@ final class SIDEngine: ObservableObject {
     private let pendingLock = NSLock()
     private var entriesObserverID: UUID?
     private var audioObserverID: UUID?
+    private var debugTraceLease: UUID?
     /// Guards against attaching a second `entriesObserver`/kicking off a
     /// second SID-config fetch if multiple subscribers needing register
     /// writes join while the first fetch is still in flight — see
@@ -203,6 +204,10 @@ final class SIDEngine: ObservableObject {
             session.debugStreamReceiver.removeEntriesObserver(entriesObserverID)
             self.entriesObserverID = nil
         }
+        if let debugTraceLease {
+            self.debugTraceLease = nil
+            Task { await session.releaseDebugTrace(debugTraceLease) }
+        }
         if let audioObserverID {
             session.audioReceiver.removeSampleObserver(audioObserverID)
             self.audioObserverID = nil
@@ -252,27 +257,17 @@ final class SIDEngine: ObservableObject {
         let config = await UltimateAPIClient(device: session.device).fetchSIDConfiguration()
         configure(with: config)
 
-        // Register-driven modes can't show anything without a
-        // 6510-inclusive debug trace running, since that's the only way
-        // to see SID register *writes* — start one automatically and
-        // silently rather than asking the user to, unless one covering
-        // 6510 is already running (from this device's Debug Trace window,
-        // or a SID Oscilloscope window that started it earlier) in which
-        // case starting again would just interrupt it for no reason.
-        let already6510 = if case .active(let mode) = session.debugTraceState {
-            mode.sources.contains(.cpu6510)
-        } else {
-            false
-        }
-        if !already6510 {
-            await session.startDebugTrace(mode: .cpu6510Only)
-        }
+        debugTraceLease = await session.acquireDebugTrace(mode: .cpu6510Only)
 
         // A subscriber may have dropped its need for register writes
         // again while the two awaits above were in flight (its window
         // closed almost immediately, or the engine was torn down
         // entirely) — don't attach an observer nobody needs anymore.
         guard aggregateNeeds.needsRegisterWrites else {
+            if let debugTraceLease {
+                self.debugTraceLease = nil
+                await session.releaseDebugTrace(debugTraceLease)
+            }
             registerWritesEnabled = false
             return
         }
@@ -304,6 +299,10 @@ final class SIDEngine: ObservableObject {
 
     private func disableRegisterWrites() {
         registerWritesEnabled = false
+        if let debugTraceLease {
+            self.debugTraceLease = nil
+            Task { await session.releaseDebugTrace(debugTraceLease) }
+        }
         if let entriesObserverID {
             session.debugStreamReceiver.removeEntriesObserver(entriesObserverID)
             self.entriesObserverID = nil
@@ -447,6 +446,18 @@ final class SIDEngine: ObservableObject {
             // the entries observer above) — add it back to land in the
             // same absolute 0..<25 numbering `SIDRegisterActivity` uses.
             workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset + 21, at: now)
+        }
+
+        // Register-only visualizations do not need a published-state update
+        // on every timer tick. When there are no writes to apply, publishing
+        // the same large channel/filter arrays still invalidates every open
+        // SwiftUI SID window and can starve the main thread when several
+        // visualizations are open together. Audio-driven modes publish from
+        // `handleAudioSamples`; synthesized modes continue through the loop.
+        if voiceWrites.isEmpty,
+           filterWrites.isEmpty,
+           !aggregateNeeds.needsSampleSynthesis {
+            return
         }
 
         // The audio-rate oscillator/envelope stepping loop below is the

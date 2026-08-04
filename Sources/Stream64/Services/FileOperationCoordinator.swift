@@ -17,7 +17,7 @@ actor FileOperationCoordinator {
         switch job.operation {
         case .copy(let source, let destination):
             try validateWritableDestination(destination)
-            try await copy(
+            _ = try await copy(
                 source, destination, policy: job.conflictPolicy,
                 progress: progress)
         case .move(let source, let destination):
@@ -29,11 +29,18 @@ actor FileOperationCoordinator {
                 try await provider(for: source.endpoint).rename(
                     source.path, to: destination.path)
             } else {
-                try await copy(
+                let copiedEverything = try await copy(
                     source, destination, policy: job.conflictPolicy,
                     progress: progress)
-                try await provider(for: source.endpoint).delete(
-                    source.path, recursive: true)
+                // A skipped destination is a successful no-op for Copy, but
+                // it must never authorize Move to delete the source. For a
+                // directory, preserve the complete source tree if any child
+                // was skipped; this may leave already-copied duplicates, but
+                // never destroys uncopied data.
+                if copiedEverything {
+                    try await provider(for: source.endpoint).delete(
+                        source.path, recursive: true)
+                }
             }
         case .rename(let source, let destination):
             try validateMutableSource(source)
@@ -58,14 +65,20 @@ actor FileOperationCoordinator {
         _ requestedDestination: TransferReference,
         policy: FileConflictPolicy,
         progress: @escaping FileProgressHandler
-    ) async throws {
+    ) async throws -> Bool {
         try Task.checkCancellation()
         let sourceProvider = try await provider(for: source.endpoint)
         let destinationProvider = try await provider(
             for: requestedDestination.endpoint)
+        if source.endpoint == .local,
+           let sourceItem = try await sourceProvider.item(source.path),
+           sourceItem.kind == .symlink {
+            throw FileSystemError.unsupported(
+                "Symbolic links cannot be transferred.")
+        }
         guard let destinationPath = try await resolvedDestination(
             requestedDestination.path, provider: destinationProvider,
-            policy: policy) else { return }
+            policy: policy) else { return false }
         guard !destinationPath.rawValue.hasPrefix(
             source.path.rawValue + "/"
         ) || source.endpoint != requestedDestination.endpoint else {
@@ -76,6 +89,7 @@ actor FileOperationCoordinator {
             if try await destinationProvider.item(destinationPath) == nil {
                 try await destinationProvider.makeDirectory(destinationPath)
             }
+            var copiedEverything = true
             for child in try await sourceProvider.list(source.path) {
                 let childSource = TransferReference(
                     endpoint: source.endpoint, path: child.path,
@@ -84,11 +98,12 @@ actor FileOperationCoordinator {
                     endpoint: requestedDestination.endpoint,
                     path: destinationPath.appending(child.name),
                     isDirectory: child.isDirectory, size: child.size)
-                try await copy(
+                let copied = try await copy(
                     childSource, childDestination, policy: policy,
                     progress: progress)
+                copiedEverything = copiedEverything && copied
             }
-            return
+            return copiedEverything
         }
 
         let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -108,14 +123,48 @@ actor FileOperationCoordinator {
             try await destinationProvider.delete(
                 destinationPart, recursive: true)
         }
-        try await destinationProvider.upload(
-            localPart, to: destinationPart, progress: progress)
-        if try await destinationProvider.item(destinationPath) != nil {
-            try await destinationProvider.delete(
-                destinationPath, recursive: true)
+        do {
+            try await destinationProvider.upload(
+                localPart, to: destinationPart, progress: progress)
+        } catch {
+            // A failed network upload can leave a partial remote object.
+            // Remove it before propagating the error so retries do not
+            // accumulate orphaned transfer files.
+            try? await destinationProvider.delete(
+                destinationPart, recursive: true)
+            throw error
         }
-        try await destinationProvider.rename(
-            destinationPart, to: destinationPath)
+        let backupPath = destinationPath.parent.appending(
+            ".stream64-backup-\(UUID().uuidString)")
+        var backupCreated = false
+        do {
+            if try await destinationProvider.item(destinationPath) != nil {
+                // Preserve the original until promotion succeeds. Deleting
+                // first made a network/rename failure destructive.
+                try await destinationProvider.rename(
+                    destinationPath, to: backupPath)
+                backupCreated = true
+            }
+            try await destinationProvider.rename(
+                destinationPart, to: destinationPath)
+            if backupCreated {
+                try? await destinationProvider.delete(
+                    backupPath, recursive: true)
+            }
+        } catch {
+            // Promotion may fail after the upload has completed. The part
+            // must still be removed, while the original is restored below.
+            try? await destinationProvider.delete(
+                destinationPart, recursive: true)
+            if backupCreated {
+                try? await destinationProvider.delete(
+                    destinationPath, recursive: true)
+                try? await destinationProvider.rename(
+                    backupPath, to: destinationPath)
+            }
+            throw error
+        }
+        return true
     }
 
     private func resolvedDestination(

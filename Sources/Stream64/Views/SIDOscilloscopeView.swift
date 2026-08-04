@@ -590,6 +590,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     private let deviceID: UUID
     private let deviceName: String
     private let model: SIDOscilloscopeViewModel
+    private var startupTask: Task<Void, Never>?
 
     /// Always opens a brand-new, independent window already set to
     /// `mode` — never reuses or replaces any existing window, including
@@ -768,11 +769,13 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        Task {
+        startupTask?.cancel()
+        startupTask = Task { [weak self] in
             if startDelay > 0 {
                 try? await Task.sleep(for: .seconds(startDelay))
             }
-            model.start()
+            guard !Task.isCancelled, let self, self.window != nil else { return }
+            self.model.start()
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -784,6 +787,8 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     }
 
     func windowWillClose(_ notification: Notification) {
+        startupTask?.cancel()
+        startupTask = nil
         model.stop()
         Self.windows.removeValue(forKey: windowID)
     }

@@ -50,6 +50,39 @@ struct UltimateDevice: Identifiable, Codable, Hashable {
         apiPort == 80 ? host : "\(host):\(apiPort)"
     }
 
+    /// User-facing validation for remote service ports plus the three local
+    /// UDP listeners. Local stream ports must also be unique across devices;
+    /// otherwise SO_REUSEPORT lets the kernel split incompatible packets
+    /// between receivers instead of reporting a bind failure.
+    func portValidationIssue(
+        among devices: [UltimateDevice]
+    ) -> String? {
+        let validRange = 1...65_535
+        guard validRange.contains(apiPort) else {
+            return "API Port must be between 1 and 65535."
+        }
+        guard validRange.contains(effectiveFTPPort) else {
+            return "FTP Port must be between 1 and 65535."
+        }
+
+        let localPorts = [videoPort, audioPort, debugPort]
+        guard localPorts.allSatisfy(validRange.contains) else {
+            return "Video, Audio, and Debug ports must be between 1 and 65535."
+        }
+        guard Set(localPorts).count == localPorts.count else {
+            return "Video, Audio, and Debug ports must be different."
+        }
+
+        let otherPorts = Set(
+            devices
+                .filter { $0.id != id }
+                .flatMap { [$0.videoPort, $0.audioPort, $0.debugPort] })
+        if let collision = localPorts.first(where: otherPorts.contains) {
+            return "Local stream port \(collision) is already used by another device."
+        }
+        return nil
+    }
+
     static func makeDefault() -> UltimateDevice {
         UltimateDevice(name: "My Ultimate 64", host: "")
     }

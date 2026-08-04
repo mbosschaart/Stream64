@@ -1,7 +1,15 @@
 import SwiftUI
 
 enum Stream64Version {
-    static let display = "0.102b"
+    /// Release packaging writes CFBundleShortVersionString into the app
+    /// bundle. Reading it here prevents VERSION= overrides from disagreeing
+    /// with About/splash/help; swift run has no bundle metadata, so retain a
+    /// development fallback.
+    static var display: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "0.102b"
+    }
 }
 
 /// A packaged .app has its resources flattened into `Contents/Resources`
@@ -35,9 +43,11 @@ enum Stream64Assets {
 /// Quits the app when the main viewer window closes — otherwise an open
 /// Settings window keeps the process alive, looking like the app refused
 /// to exit.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let instanceLock = SingleInstanceLock()
     private var isTerminatingCompletely = false
+    weak var sessionManager: SessionManager?
     private var splashWindow: NSWindow?
     private var hiddenLaunchWindows: [NSWindow] = []
     private var windowOrderObserver: NSObjectProtocol?
@@ -81,14 +91,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
         // Also cover Command-Q / Dock Quit, not only red-close on the viewer.
-        if !isTerminatingCompletely {
-            isTerminatingCompletely = true
-            for window in sender.windows {
-                window.orderOut(nil)
-                window.close()
-            }
+        // Remote streams use duration 0 by default, so terminate only after
+        // every cached session has sent its stop requests and released local
+        // receivers.
+        guard !isTerminatingCompletely else { return .terminateLater }
+        isTerminatingCompletely = true
+        for window in sender.windows {
+            window.orderOut(nil)
+            window.close()
         }
-        return .terminateNow
+        Task { @MainActor [weak self] in
+            await self?.sessionManager?.disconnectAll()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     private func prepareForSplash() {
@@ -98,16 +114,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: NSApp,
             queue: .main
         ) { [weak self] _ in
-            guard let self, self.isShowingSplash else { return }
-            for window in NSApp.windows
-            where window !== self.splashWindow && window.isVisible {
-                if !self.hiddenLaunchWindows.contains(
-                    where: { $0 === window }
-                ) {
-                    self.hiddenLaunchWindows.append(window)
+            Task { @MainActor [weak self] in
+                guard let self, self.isShowingSplash else { return }
+                for window in NSApp.windows
+                where window !== self.splashWindow && window.isVisible {
+                    if !self.hiddenLaunchWindows.contains(
+                        where: { $0 === window }
+                    ) {
+                        self.hiddenLaunchWindows.append(window)
+                    }
+                    window.alphaValue = 0
+                    window.ignoresMouseEvents = true
                 }
-                window.alphaValue = 0
-                window.ignoresMouseEvents = true
             }
         }
     }
@@ -211,6 +229,9 @@ struct Stream64App: App {
                 .environmentObject(deviceStore)
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
+                .onAppear {
+                    appDelegate.sessionManager = sessionManager
+                }
                 .frame(minWidth: 900, minHeight: 620)
         }
         .commands {

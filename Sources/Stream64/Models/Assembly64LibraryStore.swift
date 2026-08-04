@@ -67,6 +67,7 @@ final class Assembly64LibraryStore: ObservableObject {
     @Published private(set) var rememberedActions: [String: String] = [:] {
         didSet { save() }
     }
+    @Published private(set) var persistenceError: String?
     private var loaded = false
     private let storeURL: URL
 
@@ -158,8 +159,20 @@ final class Assembly64LibraryStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL),
-              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else {
+        guard let data = try? Data(contentsOf: storeURL) else { return }
+        guard let snapshot = try? JSONDecoder().decode(
+            Snapshot.self, from: data) else {
+            let backup = storeURL.deletingPathExtension()
+                .appendingPathExtension(
+                    "corrupt-\(Int(Date().timeIntervalSince1970)).json")
+            if (try? FileManager.default.moveItem(
+                at: storeURL, to: backup)) != nil {
+                persistenceError =
+                    "Assembly64 library was invalid and preserved at "
+                    + backup.lastPathComponent
+            } else {
+                persistenceError = "Assembly64 library could not be read."
+            }
             return
         }
         favorites = snapshot.favorites
@@ -175,7 +188,19 @@ final class Assembly64LibraryStore: ObservableObject {
             recents: recents,
             savedSearches: savedSearches,
             rememberedActions: rememberedActions)
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: storeURL, options: .atomic)
+        guard let data = try? JSONEncoder().encode(snapshot) else {
+            persistenceError = "Assembly64 library could not be encoded."
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: storeURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try data.write(to: storeURL, options: .atomic)
+        } catch {
+            persistenceError =
+                "Assembly64 library could not be saved: "
+                + error.localizedDescription
+        }
     }
 }

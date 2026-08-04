@@ -20,15 +20,24 @@ final class VideoReceiver {
     /// snapshots a baseline and looks for increases; the value deliberately
     /// survives listener restarts. Written on the receive queue; racy reads
     /// from other threads are fine for polling.
-    private(set) var packetsReceived: Int = 0
+    private var packetCount = 0
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "video-receiver")
+    private let connectionsLock = NSLock()
+    private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
 
     // Frame assembly state (accessed only on `queue`).
     private var frameBuffer = [UInt8](repeating: 0, count: width * height)
+    private var receivedLines = [Bool](repeating: false, count: height)
+    private var assemblingFrameID: UInt16?
+    private var assemblingSequence: UInt16?
     private var frameCount = 0
     private var lastStatsTime = DispatchTime.now()
+
+    var packetsReceived: Int {
+        queue.sync { packetCount }
+    }
 
     func start(port: UInt16) throws {
         stop()
@@ -37,6 +46,7 @@ final class VideoReceiver {
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
+            self.register(connection)
             connection.start(queue: self.queue)
             self.receive(on: connection)
         }
@@ -47,18 +57,46 @@ final class VideoReceiver {
     func stop() {
         listener?.cancel()
         listener = nil
+        connectionsLock.lock()
+        let connections = Array(activeConnections.values)
+        activeConnections.removeAll()
+        connectionsLock.unlock()
+        for connection in connections {
+            connection.cancel()
+        }
     }
 
     private func receive(on connection: NWConnection) {
         connection.receiveMessage { [weak self, weak connection] data, _, _, error in
-            guard let self else { return }
+            guard let self, let connection,
+                  self.isActive(connection) else { return }
             if let data {
-                self.handlePacket(data)
+                self.ingest(data)
             }
-            if error == nil, let connection {
+            if error == nil {
                 self.receive(on: connection)
+            } else {
+                self.unregister(connection)
             }
         }
+    }
+
+    private func register(_ connection: NWConnection) {
+        connectionsLock.lock()
+        activeConnections[ObjectIdentifier(connection)] = connection
+        connectionsLock.unlock()
+    }
+
+    private func unregister(_ connection: NWConnection) {
+        connectionsLock.lock()
+        activeConnections.removeValue(forKey: ObjectIdentifier(connection))
+        connectionsLock.unlock()
+    }
+
+    private func isActive(_ connection: NWConnection) -> Bool {
+        connectionsLock.lock()
+        defer { connectionsLock.unlock() }
+        return activeConnections[ObjectIdentifier(connection)] === connection
     }
 
     // Debug instrumentation (enabled with UV_DEBUG=1).
@@ -76,28 +114,46 @@ final class VideoReceiver {
                 UInt16(raw[6]) | (UInt16(raw[7]) << 8))
             let linesPerPacket = Int(raw[8])
             let bitsPerPixel = Int(raw[9])
+            let encoding = UInt16(raw[10]) | (UInt16(raw[11]) << 8)
             return bitsPerPixel == 4
                 && pixelsPerLine == Self.width
+                && linesPerPacket > 0
+                && encoding == 0
                 && data.count >= 12
                     + pixelsPerLine * linesPerPacket / 2
                 && startLine + linesPerPacket <= Self.height
         }
     }
 
-    private func handlePacket(_ data: Data) {
+    /// Internal for deterministic packet-assembly tests. Production callers
+    /// invoke it only from the receiver's serial queue.
+    func ingest(_ data: Data) {
         guard Self.isStructurallyValidPacket(data) else {
             if Self.debug { dbgRejected += 1 }
             return
         }
 
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let sequence = UInt16(raw[0]) | (UInt16(raw[1]) << 8)
+            let frameID = UInt16(raw[2]) | (UInt16(raw[3]) << 8)
             let lineField = UInt16(raw[4]) | (UInt16(raw[5]) << 8)
             let lastPacket = (lineField & 0x8000) != 0
             let startLine = Int(lineField & 0x7FFF)
             let pixelsPerLine = Int(UInt16(raw[6]) | (UInt16(raw[7]) << 8))
             let linesPerPacket = Int(raw[8])
 
-            packetsReceived += 1
+            if assemblingFrameID != frameID {
+                beginFrame(id: frameID, sequence: sequence)
+            } else if let previousSequence = assemblingSequence,
+                      !isForwardOrSame(sequence, after: previousSequence) {
+                // A late/out-of-order packet from this frame is safe to
+                // ignore: newer rows already won, and it must not roll the
+                // assembler back to stale content.
+                return
+            }
+            assemblingSequence = sequence
+
+            packetCount += 1
             if Self.debug {
                 dbgPackets += 1
                 if dbgPackets % 500 == 1 {
@@ -118,12 +174,44 @@ final class VideoReceiver {
                 dst += 2
                 src += 1
             }
+            for line in startLine..<(startLine + linesPerPacket) {
+                receivedLines[line] = true
+            }
 
             if lastPacket {
-                if Self.debug { dbgFrames += 1 }
-                publishFrame()
+                // The last flag identifies the end of a source frame, not
+                // proof every datagram arrived. Publishing a partial buffer
+                // would combine stale rows from a previous frame with fresh
+                // rows from this one, so discard and wait for the next ID.
+                if receivedLines.allSatisfy({ $0 }) {
+                    if Self.debug { dbgFrames += 1 }
+                    publishFrame()
+                } else if Self.debug {
+                    dbgRejected += 1
+                }
+                assemblingFrameID = nil
+                assemblingSequence = nil
             }
         }
+    }
+
+    private func beginFrame(id: UInt16, sequence: UInt16) {
+        assemblingFrameID = id
+        assemblingSequence = sequence
+        receivedLines.withUnsafeMutableBufferPointer {
+            $0.update(repeating: false)
+        }
+    }
+
+    /// Wrap-aware sequence ordering. The sender's next datagram is normally
+    /// `previous + 1`; accept forward gaps (the missing rows will prevent
+    /// publish) but discard packets more than half the UInt16 range behind.
+    private func isForwardOrSame(
+        _ sequence: UInt16,
+        after previous: UInt16
+    ) -> Bool {
+        let delta = sequence &- previous
+        return delta == 0 || delta < 0x8000
     }
 
     private func publishFrame() {

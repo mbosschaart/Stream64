@@ -8,19 +8,34 @@ import Foundation
 /// current byte value instead of by recency).
 ///
 /// Written directly from `DebugStreamReceiver`'s private queue (very high
-/// frequency — up to roughly a million entries/second) and read racily
-/// from the main actor at render time. This is the same "simple per-slot
-/// writes can tear harmlessly" convention `VideoReceiver.packetsReceived`
-/// already uses elsewhere in this codebase — a torn timestamp read just
-/// means one pixel's fade is off by a fraction of a frame, invisible at
-/// the render throttle `MemoryMapView` uses.
+/// frequency — up to roughly a million entries/second). Renderers consume
+/// lock-protected immutable snapshots; Swift Array storage cannot safely be
+/// mutated while another thread reads or replaces it.
 final class MemoryHeatmap {
     static let addressSpace = 65536
 
+    struct RenderSnapshot {
+        let generation: UInt64
+        let lastAccess: [Double]
+        let lastAccessWasRead: [Bool]
+        let lastValue: [UInt8]
+    }
+
+    struct AddressState {
+        let lastRead: Double
+        let lastWrite: Double
+        let lastAccess: Double
+        let lastAccessWasRead: Bool
+        let lastValue: UInt8
+    }
+
+    private let lock = NSLock()
+    private var generationValue: UInt64 = 0
+
     /// `CFAbsoluteTimeGetCurrent()` of the most recent read/write to this
     /// address; 0 means never accessed since the last `reset()`.
-    private(set) var lastRead = [Double](repeating: 0, count: addressSpace)
-    private(set) var lastWrite = [Double](repeating: 0, count: addressSpace)
+    private var lastRead = [Double](repeating: 0, count: addressSpace)
+    private var lastWrite = [Double](repeating: 0, count: addressSpace)
 
     /// Timestamp and direction of the most recent access of either kind.
     /// These are deliberately stored explicitly rather than inferred by
@@ -29,8 +44,8 @@ final class MemoryHeatmap {
     /// can extend slightly into the next packet's time window. Either case
     /// can leave a just-read byte orange after a preceding write. Updating
     /// this direction bit for every entry preserves the exact bus order.
-    private(set) var lastAccess = [Double](repeating: 0, count: addressSpace)
-    private(set) var lastAccessWasRead = [Bool](repeating: true, count: addressSpace)
+    private var lastAccess = [Double](repeating: 0, count: addressSpace)
+    private var lastAccessWasRead = [Bool](repeating: true, count: addressSpace)
 
     /// The byte value seen in the most recent read or write to this
     /// address — feeds `MemoryMapView`'s "Byte Load" visualization
@@ -38,7 +53,7 @@ final class MemoryHeatmap {
     /// address that's never been touched (still 0, same as never-accessed);
     /// callers distinguish that case with `lastRead`/`lastWrite`, same as
     /// the recency-based visualization already has to.
-    private(set) var lastValue = [UInt8](repeating: 0, count: addressSpace)
+    private var lastValue = [UInt8](repeating: 0, count: addressSpace)
 
     /// Reads/writes to the *same* address within one call are common —
     /// read-modify-write instructions (`INC`/`ASL`/`ROL`/etc.) always read
@@ -47,6 +62,9 @@ final class MemoryHeatmap {
     /// relying on timestamp comparison or floating-point tie breaking.
     func record(_ entries: [DebugStreamEntry]) {
         let now = CFAbsoluteTimeGetCurrent()
+        lock.lock()
+        defer { lock.unlock() }
+        generationValue &+= 1
         for entry in entries {
             let address = Int(entry.address)
             if entry.isRead {
@@ -60,11 +78,50 @@ final class MemoryHeatmap {
         }
     }
 
+    /// Copies only the arrays needed by the renderers. Constructing from
+    /// unsafe buffers forces independent storage before unlocking, avoiding
+    /// copy-on-write sharing with the receiver's live mutable arrays.
+    func renderSnapshot() -> RenderSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return RenderSnapshot(
+            generation: generationValue,
+            lastAccess: lastAccess.withUnsafeBufferPointer { Array($0) },
+            lastAccessWasRead:
+                lastAccessWasRead.withUnsafeBufferPointer { Array($0) },
+            lastValue: lastValue.withUnsafeBufferPointer { Array($0) })
+    }
+
+    func state(at address: Int) -> AddressState? {
+        guard (0..<Self.addressSpace).contains(address) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return AddressState(
+            lastRead: lastRead[address],
+            lastWrite: lastWrite[address],
+            lastAccess: lastAccess[address],
+            lastAccessWasRead: lastAccessWasRead[address],
+            lastValue: lastValue[address])
+    }
+
     func reset() {
-        lastRead = [Double](repeating: 0, count: Self.addressSpace)
-        lastWrite = [Double](repeating: 0, count: Self.addressSpace)
-        lastAccess = [Double](repeating: 0, count: Self.addressSpace)
-        lastAccessWasRead = [Bool](repeating: true, count: Self.addressSpace)
-        lastValue = [UInt8](repeating: 0, count: Self.addressSpace)
+        lock.lock()
+        generationValue &+= 1
+        lastRead.withUnsafeMutableBufferPointer {
+            $0.update(repeating: 0)
+        }
+        lastWrite.withUnsafeMutableBufferPointer {
+            $0.update(repeating: 0)
+        }
+        lastAccess.withUnsafeMutableBufferPointer {
+            $0.update(repeating: 0)
+        }
+        lastAccessWasRead.withUnsafeMutableBufferPointer {
+            $0.update(repeating: true)
+        }
+        lastValue.withUnsafeMutableBufferPointer {
+            $0.update(repeating: 0)
+        }
+        lock.unlock()
     }
 }

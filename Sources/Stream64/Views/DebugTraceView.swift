@@ -42,6 +42,7 @@ final class DebugTraceViewModel: ObservableObject {
     @Published var isPaused = false
     @Published private(set) var isCapturing = false
     @Published private(set) var exportStatus: String?
+    private var debugTraceLease: UUID?
 
     private var pendingEntries: [DebugStreamEntry] = []
     private let pendingLock = NSLock()
@@ -98,6 +99,10 @@ final class DebugTraceViewModel: ObservableObject {
         if let statsObserverID {
             session.debugStreamReceiver.removeStatsObserver(statsObserverID)
         }
+        if let debugTraceLease {
+            self.debugTraceLease = nil
+            Task { await session.releaseDebugTrace(debugTraceLease) }
+        }
     }
 
     private func flush() {
@@ -133,7 +138,9 @@ final class DebugTraceViewModel: ObservableObject {
 
     func startTrace() async {
         clearBuffers()
-        await session.startDebugTrace(mode: selectedMode)
+        if debugTraceLease == nil {
+            debugTraceLease = await session.acquireDebugTrace(mode: selectedMode)
+        }
     }
 
     /// Opening the Debug Trace window is itself an intent to inspect the
@@ -150,7 +157,10 @@ final class DebugTraceViewModel: ObservableObject {
     }
 
     func stopTrace() async {
-        await session.stopDebugTrace()
+        if let debugTraceLease {
+            self.debugTraceLease = nil
+            await session.releaseDebugTrace(debugTraceLease)
+        }
     }
 
     /// Toggle raw-bytes capture on the receiver. Stopping presents a save

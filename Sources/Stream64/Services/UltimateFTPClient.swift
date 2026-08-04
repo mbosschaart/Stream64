@@ -294,8 +294,11 @@ private final class FTPControlSession: @unchecked Sendable {
                     ?? commandText,
                 preliminary)
         }
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: url)
+        let temporaryURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".stream64-download-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: temporaryURL)
         defer { try? handle.close() }
         var completed: Int64 = 0
         while true {
@@ -315,6 +318,16 @@ private final class FTPControlSession: @unchecked Sendable {
         let final = try await readReply()
         guard (200...299).contains(final.code) else {
             throw UltimateFTPClient.FTPError.reply(final)
+        }
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: url.path) {
+            _ = try fileManager.replaceItemAt(
+                url,
+                withItemAt: temporaryURL,
+                backupItemName: nil,
+                options: .usingNewMetadataOnly)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: url)
         }
     }
 
@@ -467,34 +480,54 @@ private final class FTPControlSession: @unchecked Sendable {
     }
 
     private func send(_ data: Data, on connection: NWConnection) async throws {
+        let gate = ContinuationGate()
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
+                guard gate.claim() else { return }
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
             })
+            queue.asyncAfter(deadline: .now() + timeout) {
+                guard gate.claim() else { return }
+                connection.cancel()
+                continuation.resume(throwing: UltimateFTPClient.FTPError.connection(
+                    "Timed out sending data"))
+            }
         }
     }
 
     private func finishSending(on connection: NWConnection) async throws {
+        let gate = ContinuationGate()
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
             connection.send(
                 content: nil, contentContext: .finalMessage, isComplete: true,
                 completion: .contentProcessed { error in
+                    guard gate.claim() else { return }
                     if let error { continuation.resume(throwing: error) }
                     else { continuation.resume() }
                 })
+            queue.asyncAfter(deadline: .now() + timeout) {
+                guard gate.claim() else { return }
+                connection.cancel()
+                continuation.resume(throwing: UltimateFTPClient.FTPError.connection(
+                    "Timed out finishing data"))
+            }
         }
     }
 
     private func receiveChunk(
         from connection: NWConnection
     ) async throws -> (data: Data?, complete: Bool) {
-        try await withCheckedThrowingContinuation { continuation in
+        let gate = ContinuationGate()
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<
+                (data: Data?, complete: Bool), Error>) in
             connection.receive(
                 minimumIncompleteLength: 1, maximumLength: 64 * 1024
             ) { data, _, complete, error in
+                guard gate.claim() else { return }
                 if let data, !data.isEmpty {
                     continuation.resume(returning: (data, complete))
                 } else if complete {
@@ -504,6 +537,12 @@ private final class FTPControlSession: @unchecked Sendable {
                 } else {
                     continuation.resume(returning: (nil, false))
                 }
+            }
+            queue.asyncAfter(deadline: .now() + timeout) {
+                guard gate.claim() else { return }
+                connection.cancel()
+                continuation.resume(throwing: UltimateFTPClient.FTPError.connection(
+                    "Timed out receiving data"))
             }
         }
     }

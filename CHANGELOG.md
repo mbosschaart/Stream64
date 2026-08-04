@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.103b — 2026-08-04
+
+### Added
+
+- **Reliability and recovery hardening across streaming and file operations.** Video, audio, debug-trace, input, session, FTP, Assembly64, persistence, and AirPlay paths now use bounded queues, generation checks, safer teardown, atomic transfer promotion, partial-file cleanup, validated download limits, and corruption recovery.
+- **Demand-driven video rendering.** Normal video redraws now occur when frames or settings change; animated RF and power-off effects retain a bounded refresh timer to reduce CPU/GPU use with multiple viewers.
+
+### Fixed
+
+- **SID visualizations could overload the main thread.** Shared SID state now avoids publishing unchanged register data on every timer tick.
+- **Opening SID visualizations could crash the app.** Debug-stream source access now detects receiver-queue reentrancy instead of synchronously dispatching onto the same queue.
+- **Failed FTP transfers could leave orphaned partial files.** Upload and promotion failure paths now remove temporary remote objects while preserving the original destination.
+- **Video frames could stop updating after demand-driven redraw optimization.** Metal view invalidation is now dispatched safely to the main UI thread.
+
 ## 0.102b — 2026-08-03
 
 ### Added

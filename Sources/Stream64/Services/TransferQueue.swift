@@ -55,11 +55,13 @@ final class TransferQueue: ObservableObject {
 
     @Published private(set) var jobs: [TransferJob] = []
     @Published private(set) var isPaused = false
+    @Published private(set) var persistenceError: String?
 
     private let storeURL: URL
     private var processor: Processor?
     private var worker: Task<Void, Never>?
     private var activeJobID: UUID?
+    private var lastProgressPersist: [UUID: Date] = [:]
 
     init(storeURL: URL? = nil) {
         self.storeURL = storeURL ?? Self.defaultStoreURL
@@ -169,7 +171,14 @@ final class TransferQueue: ObservableObject {
         do {
             try await processor(job) { [weak self] completed, total in
                 await MainActor.run {
-                    self?.update(id) {
+                    guard let self else { return }
+                    let now = Date()
+                    let persist = self.lastProgressPersist[id]
+                        .map { now.timeIntervalSince($0) >= 0.5 } ?? true
+                    if persist {
+                        self.lastProgressPersist[id] = now
+                    }
+                    self.update(id, persist: persist) {
                         $0.completedBytes = completed
                         $0.totalBytes = total
                     }
@@ -209,20 +218,39 @@ final class TransferQueue: ObservableObject {
         startWorkerIfNeeded()
     }
 
-    private func update(_ id: UUID, _ change: (inout TransferJob) -> Void) {
+    private func update(
+        _ id: UUID,
+        persist: Bool = true,
+        _ change: (inout TransferJob) -> Void
+    ) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         change(&jobs[index])
-        save()
+        if persist { save() }
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL),
-              var decoded = try? JSONDecoder().decode(
-                [TransferJob].self, from: data) else { return }
+        guard let data = try? Data(contentsOf: storeURL) else { return }
+        guard var decoded = try? JSONDecoder().decode(
+            [TransferJob].self, from: data) else {
+            let backup = storeURL.deletingPathExtension()
+                .appendingPathExtension(
+                    "corrupt-\(Int(Date().timeIntervalSince1970)).json")
+            if (try? FileManager.default.moveItem(
+                at: storeURL, to: backup)) != nil {
+                persistenceError =
+                    "Transfer queue was invalid and preserved at "
+                    + backup.lastPathComponent
+            } else {
+                persistenceError = "Transfer queue could not be read."
+            }
+            return
+        }
         for index in decoded.indices
         where [.preparing, .running].contains(decoded[index].state) {
             decoded[index].state = .queued
             decoded[index].errorMessage = "Interrupted; ready to retry."
+            decoded[index].completedBytes = 0
+            decoded[index].totalBytes = nil
         }
         jobs = decoded
     }
@@ -232,7 +260,13 @@ final class TransferQueue: ObservableObject {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(jobs) else { return }
-        try? data.write(to: storeURL, options: .atomic)
+        do {
+            try data.write(to: storeURL, options: .atomic)
+        } catch {
+            persistenceError =
+                "Transfer queue could not be saved: "
+                + error.localizedDescription
+        }
     }
 
     private static var defaultStoreURL: URL {

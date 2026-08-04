@@ -89,6 +89,7 @@ final class LiveAirPlayEncoder: NSObject, AVAssetWriterDelegate {
     private var writerInput: AVAssetWriterInput?
     private var outputFormatDescription: CMAudioFormatDescription?
     private var pendingBlocks: [[Float]] = []
+    private var pendingBlockHead = 0
     private var pendingFrames = 0
     private var pendingSilenceFrames = 0
     private var drainRetryScheduled = false
@@ -169,6 +170,7 @@ final class LiveAirPlayEncoder: NSObject, AVAssetWriterDelegate {
             self.writerInput = input
             self.outputFormatDescription = formatDescription
             self.pendingBlocks.removeAll()
+            self.pendingBlockHead = 0
             self.pendingFrames = 0
             self.pendingSilenceFrames = 0
             self.outputFramePosition = 0
@@ -189,6 +191,7 @@ final class LiveAirPlayEncoder: NSObject, AVAssetWriterDelegate {
             // in-progress tail is intentionally discarded on route teardown.
             self.writer?.cancelWriting()
             self.pendingBlocks.removeAll()
+            self.pendingBlockHead = 0
             self.pendingFrames = 0
             self.pendingSilenceFrames = 0
             self.converter = nil
@@ -219,11 +222,20 @@ final class LiveAirPlayEncoder: NSObject, AVAssetWriterDelegate {
             self.pendingBlocks.append(block)
             self.pendingFrames += block.count / 2
             while self.pendingFrames > self.maximumPendingFrames,
-                  !self.pendingBlocks.isEmpty {
-                let removed = self.pendingBlocks.removeFirst()
+                  self.pendingBlockHead < self.pendingBlocks.count {
+                let removed = self.pendingBlocks[self.pendingBlockHead]
+                self.pendingBlockHead += 1
                 let frames = removed.count / 2
                 self.pendingFrames -= frames
-                self.pendingSilenceFrames += frames
+                // Do not enqueue the entire dropped duration as future
+                // silence: under sustained writer backpressure that backlog
+                // could grow without bound and keep AirPlay permanently
+                // behind live input. Skip to the live edge and mark the
+                // next emitted segment as a discontinuity instead.
+                self.pendingSilenceFrames = 0
+                self.segmentLock.lock()
+                self.markNextSegmentDiscontinuous = true
+                self.segmentLock.unlock()
             }
             self.drain()
         }
@@ -246,8 +258,9 @@ final class LiveAirPlayEncoder: NSObject, AVAssetWriterDelegate {
                 let frames = min(1_024, pendingSilenceFrames)
                 pendingSilenceFrames -= frames
                 samples = [Float](repeating: 0, count: frames * 2)
-            } else if !pendingBlocks.isEmpty {
-                samples = pendingBlocks.removeFirst()
+            } else if pendingBlockHead < pendingBlocks.count {
+                samples = pendingBlocks[pendingBlockHead]
+                pendingBlockHead += 1
                 pendingFrames -= samples.count / 2
             } else {
                 return
@@ -267,7 +280,14 @@ final class LiveAirPlayEncoder: NSObject, AVAssetWriterDelegate {
             }
         }
 
-        guard (!pendingBlocks.isEmpty || pendingSilenceFrames > 0),
+        if pendingBlockHead > 128,
+           pendingBlockHead * 2 >= pendingBlocks.count {
+            pendingBlocks.removeFirst(pendingBlockHead)
+            pendingBlockHead = 0
+        }
+
+        guard (pendingBlockHead < pendingBlocks.count
+               || pendingSilenceFrames > 0),
               !drainRetryScheduled else { return }
         drainRetryScheduled = true
         queue.asyncAfter(deadline: .now() + 0.01) { [weak self] in

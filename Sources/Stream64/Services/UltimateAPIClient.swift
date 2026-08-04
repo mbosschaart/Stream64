@@ -310,6 +310,9 @@ struct UltimateAPIClient {
     /// Upload a disk image and mount it. `type` (d64/g64/d71/g71/d81) is
     /// otherwise inferred by the device from the filename.
     func mountDisk(data: Data, filename: String, drive: String = "a", type: String? = nil) async throws {
+        guard Self.isSafeMultipartFilename(filename) else {
+            throw APIError.invalidURL
+        }
         var items: [URLQueryItem] = []
         if let type {
             items.append(URLQueryItem(name: "type", value: type))
@@ -326,6 +329,19 @@ struct UltimateAPIClient {
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         request.httpBody = body
         try await perform(request)
+    }
+
+    static func isSafeMultipartFilename(_ filename: String) -> Bool {
+        guard !filename.isEmpty,
+              filename == (filename as NSString).lastPathComponent,
+              filename.count <= 255,
+              !filename.contains(where: {
+                  $0 == "\r" || $0 == "\n" || $0 == "\"" || $0 == "\\"
+              })
+        else { return false }
+        return filename.unicodeScalars.allSatisfy {
+            $0.value >= 0x20 && $0.value != 0x7F
+        }
     }
 
     func mountDisk(

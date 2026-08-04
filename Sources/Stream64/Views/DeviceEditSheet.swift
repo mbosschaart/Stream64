@@ -66,8 +66,14 @@ struct DeviceEditSheet: View {
                 } header: {
                     Text("Streaming")
                 } footer: {
-                    Text("Each device needs its own local ports — two devices cannot stream to the same port at once.")
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Each device needs its own local ports — two devices cannot stream to the same port at once.")
+                            .foregroundStyle(.secondary)
+                        if let portValidationIssue {
+                            Text(portValidationIssue)
+                                .foregroundStyle(.red)
+                        }
+                    }
                 }
 
                 Section {
@@ -85,6 +91,9 @@ struct DeviceEditSheet: View {
                         prompt: Text(device.password.isEmpty ? "anonymous" : "admin"))
                     HStack {
                         Button("Test FTP") { testFTPConnection() }
+                            .disabled(
+                                portValidationIssue != nil
+                                || ftpTestState == .testing)
                         switch ftpTestState {
                         case .idle: EmptyView()
                         case .testing: ProgressView().controlSize(.small)
@@ -118,7 +127,10 @@ struct DeviceEditSheet: View {
                         Button("Test Connection") {
                             testConnection()
                         }
-                        .disabled(device.host.isEmpty || testState == .testing)
+                        .disabled(
+                            device.host.isEmpty
+                            || portValidationIssue != nil
+                            || testState == .testing)
 
                         switch testState {
                         case .idle:
@@ -152,7 +164,10 @@ struct DeviceEditSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(device.name.isEmpty || device.host.isEmpty)
+                .disabled(
+                    device.name.isEmpty
+                    || device.host.isEmpty
+                    || portValidationIssue != nil)
             }
             .padding()
         }
@@ -170,6 +185,10 @@ struct DeviceEditSheet: View {
             discovery.cancel()
             connectionTestTask?.cancel()
         }
+    }
+
+    private var portValidationIssue: String? {
+        device.portValidationIssue(among: deviceStore.devices)
     }
 
     @ViewBuilder

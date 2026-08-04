@@ -11,8 +11,11 @@ final class C64InputController: ObservableObject {
 
     let settings: InputSettings
     private let client: UltimateAPIClient
+    private let maximumQueueDepth: Int
     private var queue: [Command] = []
+    private var queueHead = 0
     private var worker: Task<Void, Never>?
+    private var workerGeneration = 0
     private var matrixUnavailable = false
     private var heldKeys: [UInt16: (inputs: [String], fallback: UInt8?)] = [:]
     private var joystickSources: [String: Set<JoystickDirection>] = [:]
@@ -20,10 +23,12 @@ final class C64InputController: ObservableObject {
 
     init(
         device: UltimateDevice,
-        transport: any HTTPTransport = URLSessionHTTPTransport()
+        transport: any HTTPTransport = URLSessionHTTPTransport(),
+        maximumQueueDepth: Int = 1024
     ) {
         settings = InputSettings.shared(for: device.id)
         client = UltimateAPIClient(device: device, transport: transport)
+        self.maximumQueueDepth = maximumQueueDepth
     }
 
     func prepare() async {
@@ -74,7 +79,7 @@ final class C64InputController: ObservableObject {
 
     func typeAndWait(_ codes: [UInt8]) async {
         tapPETSCII(codes)
-        while worker != nil || !queue.isEmpty {
+        while worker != nil || queueHead < queue.count {
             if Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -148,9 +153,11 @@ final class C64InputController: ObservableObject {
         joystickSources.removeAll()
         emittedJoystick.removeAll()
         queue.removeAll()
+        queueHead = 0
         worker?.cancel()
+        workerGeneration += 1
         worker = nil
-        try? await client.releaseAllInput()
+        await sendReleaseAllWithRetry()
         try? await client.flushKeyboardBuffer()
     }
 
@@ -183,8 +190,12 @@ final class C64InputController: ObservableObject {
     }
 
     private func enqueue(_ command: Command) {
-        guard queue.count < 1024 else {
+        guard queue.count < maximumQueueDepth else {
             settings.capability = .failed("Input queue is full")
+            // Never silently drop a release or leave presses that are
+            // already remote-active. Throw away stale work and make the
+            // next operation a release-all recovery.
+            scheduleEmergencyRelease()
             return
         }
         queue.append(command)
@@ -192,44 +203,51 @@ final class C64InputController: ObservableObject {
     }
 
     private func startWorker() {
-        guard worker == nil, !queue.isEmpty else { return }
+        guard worker == nil, queueHead < queue.count else { return }
+        let generation = workerGeneration
         worker = Task { [weak self] in
             await self?.drain()
             guard let self else { return }
+            guard self.workerGeneration == generation else { return }
             self.worker = nil
             self.startWorker()
         }
     }
 
     private func drain() async {
-        while !queue.isEmpty, !Task.isCancelled {
-            switch queue[0] {
+        while queueHead < queue.count, !Task.isCancelled {
+            switch queue[queueHead] {
             case .legacy(let bytes):
-                queue.removeFirst()
+                queueHead += 1
                 do {
                     try await client.typeKeys(bytes)
                 } catch {
                     settings.capability = .failed(error.localizedDescription)
                 }
             case .releaseAll:
-                queue.removeFirst()
-                if !matrixUnavailable {
-                    try? await client.releaseAllInput()
-                }
+                queueHead += 1
+                await sendReleaseAllWithRetry()
                 try? await client.flushKeyboardBuffer()
             case .matrix:
                 var events: [C64MachineInputEvent] = []
                 var fallback: [UInt8] = []
-                while events.count < 64, !queue.isEmpty {
-                    guard case .matrix(let event, let bytes) = queue[0] else {
+                while events.count < 64, queueHead < queue.count {
+                    guard case .matrix(let event, let bytes) = queue[queueHead] else {
                         break
                     }
-                    queue.removeFirst()
+                    queueHead += 1
                     events.append(event)
                     fallback.append(contentsOf: bytes)
                 }
                 await sendMatrixBatch(events, fallback: fallback)
             }
+        }
+        if queueHead > 256 {
+            queue.removeFirst(queueHead)
+            queueHead = 0
+        } else if queueHead == queue.count {
+            queue.removeAll(keepingCapacity: true)
+            queueHead = 0
         }
     }
 
@@ -251,6 +269,40 @@ final class C64InputController: ObservableObject {
                 if !fallback.isEmpty { try? await client.typeKeys(fallback) }
             } else {
                 settings.capability = .failed(error.localizedDescription)
+                // The batch has already left the local queue. Its remote
+                // outcome is unknown, so individual releases are no longer
+                // reliable — force a global release before accepting more
+                // presses.
+                scheduleEmergencyRelease()
+            }
+        }
+    }
+
+    private func scheduleEmergencyRelease() {
+        heldKeys.removeAll()
+        joystickSources.removeAll()
+        emittedJoystick.removeAll()
+        queue.removeAll()
+        queueHead = 0
+        queue.append(.releaseAll)
+        startWorker()
+    }
+
+    private func sendReleaseAllWithRetry() async {
+        guard !matrixUnavailable else { return }
+        for attempt in 0..<3 {
+            do {
+                try await client.releaseAllInput()
+                return
+            } catch {
+                if attempt == 2 {
+                    settings.capability = .failed(
+                        "Could not release C64 input: "
+                        + error.localizedDescription)
+                } else {
+                    try? await Task.sleep(for: .milliseconds(
+                        100 * (attempt + 1)))
+                }
             }
         }
     }

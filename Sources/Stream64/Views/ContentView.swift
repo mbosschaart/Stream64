@@ -21,6 +21,16 @@ final class SessionManager: ObservableObject {
         if let existing = sessions[device.id], existing.device == device {
             return existing
         }
+        if let existing = sessions.removeValue(forKey: device.id) {
+            // Defensive fallback for an update that bypassed the normal
+            // async edit flow: release local ports immediately, but do not
+            // issue delayed remote stop commands that could kill the new
+            // session's streams.
+            existing.prepareForEviction()
+            Task {
+                await existing.disconnect(stopRemoteStreams: false)
+            }
+        }
         let session = DeviceSession(device: device, settings: settings)
         sessions[device.id] = session
         session.audioReceiver.muted = device.id != audibleID
@@ -31,6 +41,28 @@ final class SessionManager: ObservableObject {
         }
         return session
     }
+
+    /// Complete remote shutdown before removing the cache entry. The device
+    /// remains visible while this awaits, preventing remove/re-add or edit
+    /// from creating a replacement whose newly-started streams are then
+    /// stopped by the old session's delayed cleanup.
+    func removeSession(
+        id: UUID,
+        clearAudibleSelection: Bool = true
+    ) async {
+        guard let session = sessions[id] else { return }
+        session.prepareForEviction()
+        await session.disconnect()
+        guard sessions[id] === session else { return }
+        sessions.removeValue(forKey: id)
+        if clearAudibleSelection, audibleID == id {
+            audibleID = nil
+            airPlayOutput.setSource(nil)
+        }
+    }
+
+    var cachedSessionCount: Int { sessions.count }
+    func hasCachedSession(id: UUID) -> Bool { sessions[id] != nil }
 
     /// Audio policy: exactly one device is audible — the one on screen (or
     /// selected, in the grid). Background sessions keep streaming muted.
@@ -58,6 +90,16 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    func disconnectAll() async {
+        let currentSessions = Array(sessions.values)
+        for session in currentSessions {
+            await session.disconnect()
+        }
+        sessions.removeAll()
+        audibleID = nil
+        airPlayOutput.stopAirPlay()
+    }
+
     /// Multi Drop: load a file on every connected session at once.
     func loadFileOnAllConnected(_ url: URL) {
         for session in sessions.values where session.isConnected {
@@ -80,6 +122,7 @@ struct ContentView: View {
     @State private var cursorHidden = false
     @State private var fullscreenWindow: NSWindow?
     @State private var previousAcceptsMouseMovedEvents = false
+    @State private var mainViewerWindow: NSWindow?
     @AppStorage("showAllScreens") private var showAllScreens = false
 
     var body: some View {
@@ -104,7 +147,7 @@ struct ContentView: View {
                 EmptyStateView(showingAddDevice: $showingAddDevice)
             }
         }
-        .background(MainViewerWindowObserver())
+        .background(MainViewerWindowObserver(window: $mainViewerWindow))
         // One audible device at a time, in every view mode. Reapply whenever
         // the mode or selection changes; sessions created later respect it
         // via the same calls in the grid/pane task handlers.
@@ -126,18 +169,16 @@ struct ContentView: View {
             showingAddDevice = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { note in
+            guard let window = note.object as? NSWindow,
+                  window === mainViewerWindow else { return }
             isFullscreen = true
             columnVisibility = .detailOnly
             installArrowKeyMonitor()
-            if let window = note.object as? NSWindow {
-                installCursorAutoHide(in: window)
-            }
+            installCursorAutoHide(in: window)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { note in
-            guard fullscreenWindow == nil
-                    || note.object as? NSWindow === fullscreenWindow else {
-                return
-            }
+            guard let window = note.object as? NSWindow,
+                  window === mainViewerWindow else { return }
             isFullscreen = false
             columnVisibility = .all
             removeArrowKeyMonitor()
@@ -310,8 +351,12 @@ private struct AirPlayGlobalControl: View {
 /// occur during scene reconstruction; this receives willClose only for the
 /// actual viewer window hosting the representable.
 private struct MainViewerWindowObserver: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
     func makeNSView(context: Context) -> MainViewerWindowObservationView {
-        MainViewerWindowObservationView()
+        let view = MainViewerWindowObservationView()
+        view.onWindowChanged = { window = $0 }
+        return view
     }
 
     func updateNSView(_ nsView: MainViewerWindowObservationView,
@@ -319,6 +364,7 @@ private struct MainViewerWindowObserver: NSViewRepresentable {
 }
 
 private final class MainViewerWindowObservationView: NSView {
+    var onWindowChanged: ((NSWindow?) -> Void)?
     private weak var observedWindow: NSWindow?
     private var closeObserver: NSObjectProtocol?
 
@@ -327,6 +373,7 @@ private final class MainViewerWindowObservationView: NSView {
         guard window !== observedWindow else { return }
         removeObservation()
         observedWindow = window
+        onWindowChanged?(window)
         guard let window else { return }
 
         closeObserver = NotificationCenter.default.addObserver(
@@ -351,6 +398,7 @@ private final class MainViewerWindowObservationView: NSView {
             self.closeObserver = nil
         }
         observedWindow = nil
+        onWindowChanged?(nil)
     }
 }
 
@@ -662,7 +710,11 @@ struct DeviceSidebar: View {
                         Button("Edit…") { deviceToEdit = device }
                         Divider()
                         Button("Remove", role: .destructive) {
-                            deviceStore.remove(device)
+                            Task {
+                                await sessionManager.removeSession(
+                                    id: device.id)
+                                deviceStore.remove(device)
+                            }
                         }
                     }
                 }
@@ -685,7 +737,12 @@ struct DeviceSidebar: View {
         }
         .sheet(item: $deviceToEdit) { device in
             DeviceEditSheet(mode: .edit(device)) { updated in
-                deviceStore.update(updated)
+                Task {
+                    await sessionManager.removeSession(
+                        id: updated.id,
+                        clearAudibleSelection: false)
+                    deviceStore.update(updated)
+                }
             }
         }
     }

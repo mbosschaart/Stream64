@@ -81,6 +81,7 @@ struct VideoView: NSViewRepresentable {
             : 0
         context.coordinator.renderer?.picture = display.picture
         context.coordinator.renderer?.setPalette(C64Palette.palette(for: display.palette))
+        context.coordinator.renderer?.updateAnimationState()
         nsView.captureEnabled = settings.captureKeyboardWhenFocused
     }
 

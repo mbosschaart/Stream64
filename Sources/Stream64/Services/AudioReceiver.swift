@@ -19,8 +19,11 @@ private let logger = Logger(subsystem: "net.bosschaart.Stream64", category: "Aud
 final class AudioReceiver {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "audio-receiver")
+    private let connectionsLock = NSLock()
+    private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
 
     private let engine = AVAudioEngine()
+    private let engineLifecycleLock = NSLock()
     private var sourceNode: AVAudioSourceNode?
     private let renderFormat: AVAudioFormat
 
@@ -61,6 +64,8 @@ final class AudioReceiver {
     /// stored zero-volume setting. UDP reception and sample observers are
     /// independent of this engine and continue while it is paused.
     private func updateExternalOutputState() {
+        engineLifecycleLock.lock()
+        defer { engineLifecycleLock.unlock() }
         applyOutputGain()
         guard started else { return }
         if externalOutputSuppressed {
@@ -81,17 +86,46 @@ final class AudioReceiver {
 
     /// Target jitter buffer depth in seconds. Playback starts once this much
     /// audio is buffered; backlog beyond target + slack is dropped.
-    var bufferSeconds: Double = 0.06
+    private let configurationLock = NSLock()
+    private var storedBufferSeconds: Double = 0.06
+    var bufferSeconds: Double {
+        get {
+            configurationLock.lock()
+            defer { configurationLock.unlock() }
+            return storedBufferSeconds
+        }
+        set {
+            configurationLock.lock()
+            storedBufferSeconds = max(0.01, newValue)
+            configurationLock.unlock()
+        }
+    }
 
     /// Lifetime packet count for this receiver instance. Stream pickup uses
     /// a per-connect baseline rather than comparing this value with zero.
     /// Written on the receive queue; racy polling reads are fine.
-    private(set) var packetsReceived: Int = 0
+    private var packetCount = 0
+
+    var packetsReceived: Int {
+        queue.sync { packetCount }
+    }
 
     /// RF mode: filter playback like a TV speaker fed from the antenna —
     /// mono, band-limited, with a bed of static. Written from the main
     /// thread, read on the audio thread (a torn read is harmless here).
-    var rfAudioEnabled: Bool = false
+    private var storedRFAudioEnabled = false
+    var rfAudioEnabled: Bool {
+        get {
+            configurationLock.lock()
+            defer { configurationLock.unlock() }
+            return storedRFAudioEnabled
+        }
+        set {
+            configurationLock.lock()
+            storedRFAudioEnabled = newValue
+            configurationLock.unlock()
+        }
+    }
 
     // RF filter state (audio thread only). The .r half of rfLowState is
     // reused as the noise low-pass state.
@@ -164,6 +198,7 @@ final class AudioReceiver {
     }
 
     deinit {
+        stop()
         lock.deallocate()
     }
 
@@ -191,13 +226,23 @@ final class AudioReceiver {
         pinOutputToCurrentDefaultDevice()
 
         do {
+            engineLifecycleLock.lock()
             try engine.start()
+            engineLifecycleLock.unlock()
         } catch {
+            engineLifecycleLock.unlock()
             // CoreAudio can refuse (error 35) when the engine is restarted
             // in quick succession — e.g. stop/start during a reconnect.
             // A brief pause and one retry clears it.
             Thread.sleep(forTimeInterval: 0.25)
-            try engine.start()
+            engineLifecycleLock.lock()
+            do {
+                try engine.start()
+                engineLifecycleLock.unlock()
+            } catch {
+                engineLifecycleLock.unlock()
+                throw error
+            }
         }
         started = true
         // Engine creation/restart can reset the mixer's gain to its default.
@@ -239,6 +284,7 @@ final class AudioReceiver {
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
+            self.register(connection)
             connection.start(queue: self.queue)
             self.receive(on: connection)
         }
@@ -249,13 +295,22 @@ final class AudioReceiver {
     func stop() {
         listener?.cancel()
         listener = nil
+        connectionsLock.lock()
+        let connections = Array(activeConnections.values)
+        activeConnections.removeAll()
+        connectionsLock.unlock()
+        for connection in connections {
+            connection.cancel()
+        }
         if let configChangeObserver {
             NotificationCenter.default.removeObserver(configChangeObserver)
             self.configChangeObserver = nil
         }
         if started {
+            engineLifecycleLock.lock()
             engine.stop()
             started = false
+            engineLifecycleLock.unlock()
         }
     }
 
@@ -313,14 +368,35 @@ final class AudioReceiver {
 
     private func receive(on connection: NWConnection) {
         connection.receiveMessage { [weak self, weak connection] data, _, _, error in
-            guard let self else { return }
+            guard let self, let connection,
+                  self.isActive(connection) else { return }
             if let data {
                 self.handlePacket(data)
             }
-            if error == nil, let connection {
+            if error == nil {
                 self.receive(on: connection)
+            } else {
+                self.unregister(connection)
             }
         }
+    }
+
+    private func register(_ connection: NWConnection) {
+        connectionsLock.lock()
+        activeConnections[ObjectIdentifier(connection)] = connection
+        connectionsLock.unlock()
+    }
+
+    private func unregister(_ connection: NWConnection) {
+        connectionsLock.lock()
+        activeConnections.removeValue(forKey: ObjectIdentifier(connection))
+        connectionsLock.unlock()
+    }
+
+    private func isActive(_ connection: NWConnection) -> Bool {
+        connectionsLock.lock()
+        defer { connectionsLock.unlock() }
+        return activeConnections[ObjectIdentifier(connection)] === connection
     }
 
     private func handlePacket(_ data: Data) {
@@ -328,7 +404,7 @@ final class AudioReceiver {
         // 192 stereo Int16 frames (768 bytes). Do not let unrelated or
         // truncated UDP traffic satisfy DeviceSession's live-stream probe.
         guard started, Self.isStructurallyValidPacket(data) else { return }
-        packetsReceived += 1
+        packetCount += 1
         let payload = data.dropFirst(2)
         let frameCount = payload.count / 4 // 2 channels × 2 bytes
         guard frameCount > 0 else { return }
@@ -375,7 +451,11 @@ final class AudioReceiver {
         os_unfair_lock_lock(lock)
         defer { os_unfair_lock_unlock(lock) }
 
-        let targetFrames = max(1, Int(bufferSeconds * Self.sampleRate))
+        configurationLock.lock()
+        let configuredBufferSeconds = storedBufferSeconds
+        let configuredRFAudioEnabled = storedRFAudioEnabled
+        configurationLock.unlock()
+        let targetFrames = max(1, Int(configuredBufferSeconds * Self.sampleRate))
         // Allow bursts up to target + slack before trimming.
         let slackFrames = max(targetFrames, Int(0.1 * Self.sampleRate))
 
@@ -415,7 +495,7 @@ final class AudioReceiver {
             primed = false
         }
 
-        if rfAudioEnabled {
+        if configuredRFAudioEnabled {
             applyRFFilter(left: left, right: right, frames: frames)
         }
         applyPowerOffCrackle(left: left, right: right, frames: frames)

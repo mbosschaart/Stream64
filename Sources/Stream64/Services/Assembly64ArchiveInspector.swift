@@ -147,6 +147,20 @@ struct Assembly64ArchiveInspector {
     static func extract(_ item: Item, from data: Data,
                         limits: Limits = .default) throws -> Data {
         let inspected = try inspect(data, limits: limits)
+        return try extract(
+            item, from: data, inspected: inspected, limits: limits)
+    }
+
+    /// Extract using an inspection already performed for the same immutable
+    /// archive bytes. ArchivePreview stores this index, so selecting several
+    /// members does not repeatedly scan and validate the entire central
+    /// directory.
+    static func extract(
+        _ item: Item,
+        from data: Data,
+        inspected: [Item],
+        limits: Limits = .default
+    ) throws -> Data {
         let archive: Archive
         do {
             archive = try Archive(

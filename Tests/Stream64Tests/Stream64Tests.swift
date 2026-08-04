@@ -233,6 +233,64 @@ final class Assembly64FeatureTests: XCTestCase {
             Data(repeating: 0, count: 770)))
     }
 
+    func testVideoReceiverPublishesOnlyCompleteMatchingFrames() {
+        func packet(
+            sequence: UInt16,
+            frame: UInt16,
+            startLine: Int,
+            lines: Int,
+            value: UInt8,
+            last: Bool
+        ) -> Data {
+            var data = Data(repeating: 0, count: 12 + 384 * lines / 2)
+            data[0] = UInt8(sequence & 0xFF)
+            data[1] = UInt8(sequence >> 8)
+            data[2] = UInt8(frame & 0xFF)
+            data[3] = UInt8(frame >> 8)
+            let lineField = UInt16(startLine) | (last ? 0x8000 : 0)
+            data[4] = UInt8(lineField & 0xFF)
+            data[5] = UInt8(lineField >> 8)
+            data[6] = 0x80 // 384 little endian
+            data[7] = 0x01
+            data[8] = UInt8(lines)
+            data[9] = 4
+            // encoding is little-endian zero in bytes 10/11.
+            for index in 12..<data.count {
+                data[index] = value | (value << 4)
+            }
+            return data
+        }
+
+        let receiver = VideoReceiver()
+        var frames: [Data] = []
+        receiver.onFrame = { frames.append($0) }
+
+        // Missing the first half, so the final packet must not publish a
+        // mixed frame.
+        receiver.ingest(packet(
+            sequence: 1, frame: 10, startLine: 136, lines: 136,
+            value: 0x1, last: true))
+        XCTAssertTrue(frames.isEmpty)
+
+        // A complete next frame is published, with no stale rows from frame
+        // 10 despite its partial data having been received first.
+        receiver.ingest(packet(
+            sequence: 2, frame: 11, startLine: 0, lines: 136,
+            value: 0x2, last: false))
+        receiver.ingest(packet(
+            sequence: 3, frame: 11, startLine: 136, lines: 136,
+            value: 0x2, last: true))
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(Set(frames[0]), Set([0x2]))
+
+        // A late packet from the old frame must not create another frame or
+        // overwrite the published newer image.
+        receiver.ingest(packet(
+            sequence: 0, frame: 10, startLine: 0, lines: 136,
+            value: 0xF, last: false))
+        XCTAssertEqual(frames.count, 1)
+    }
+
     func testAudioReceiverCombinesSelectionAndAirPlayMuteGates() {
         let receiver = AudioReceiver()
         receiver.volume = 0.65
@@ -349,6 +407,128 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(device.videoPort, 11006)
         XCTAssertEqual(device.audioPort, 11007)
         XCTAssertEqual(device.debugPort, 11008)
+    }
+
+    func testDevicePortValidationRejectsRangesAndCollisions() {
+        var device = UltimateDevice.makeDefault()
+        device.host = "192.0.2.10"
+        XCTAssertNil(device.portValidationIssue(among: []))
+
+        device.videoPort = -1
+        XCTAssertNotNil(device.portValidationIssue(among: []))
+        device.videoPort = 65_536
+        XCTAssertNotNil(device.portValidationIssue(among: []))
+
+        device.videoPort = 11_000
+        device.audioPort = 11_000
+        XCTAssertNotNil(device.portValidationIssue(among: []))
+
+        device.audioPort = 11_001
+        device.debugPort = 11_002
+        let other = UltimateDevice(
+            name: "Other",
+            host: "192.0.2.11",
+            videoPort: 11_002,
+            audioPort: 12_001,
+            debugPort: 12_002)
+        XCTAssertEqual(
+            device.portValidationIssue(among: [other]),
+            "Local stream port 11002 is already used by another device.")
+
+        device.debugPort = 11_003
+        device.apiPort = 0
+        XCTAssertNotNil(device.portValidationIssue(among: [other]))
+        device.apiPort = 80
+        device.ftpPort = 70_000
+        XCTAssertNotNil(device.portValidationIssue(among: [other]))
+    }
+
+    @MainActor
+    func testTogglePauseOnlyChangesStateAfterSuccessfulCommand() async {
+        let device = UltimateDevice(
+            name: "Pause", host: "192.0.2.1")
+        let session = DeviceSession(
+            device: device,
+            settings: AppSettings())
+
+        XCTAssertFalse(session.isPaused)
+        await session.togglePause()
+        XCTAssertFalse(
+            session.isPaused,
+            "failed REST pause must not optimistically change local state")
+    }
+
+    @MainActor
+    func testSessionManagerEvictsRemovedAndReplacedSessions() async {
+        let manager = SessionManager()
+        let settings = AppSettings()
+        var device = UltimateDevice.makeDefault()
+        device.host = "127.0.0.1"
+
+        let original = manager.session(for: device, settings: settings)
+        XCTAssertEqual(manager.cachedSessionCount, 1)
+        XCTAssertTrue(manager.hasCachedSession(id: device.id))
+
+        var edited = device
+        edited.name = "Edited device"
+        let replacement = manager.session(for: edited, settings: settings)
+        XCTAssertFalse(original === replacement)
+        XCTAssertEqual(manager.cachedSessionCount, 1)
+        XCTAssertTrue(manager.hasCachedSession(id: device.id))
+
+        await manager.removeSession(id: device.id)
+        XCTAssertEqual(manager.cachedSessionCount, 0)
+        XCTAssertFalse(manager.hasCachedSession(id: device.id))
+    }
+
+    @MainActor
+    func testLiveSessionRemoveAndReaddWhenConfigured() async throws {
+        guard let host = ProcessInfo.processInfo.environment[
+            "UV_LIVE_SESSION_HOST"],
+            !host.isEmpty else {
+            throw XCTSkip(
+                "Set UV_LIVE_SESSION_HOST for live session lifecycle validation")
+        }
+
+        let manager = SessionManager()
+        let settings = AppSettings()
+        var device = UltimateDevice.makeDefault()
+        device.host = host
+        device.videoPort = 12_100
+        device.audioPort = 12_101
+        device.debugPort = 12_102
+
+        let first = manager.session(for: device, settings: settings)
+        await first.connect()
+        XCTAssertTrue(first.isConnected)
+        let firstBaseline = first.videoReceiver.packetsReceived
+        for _ in 0..<100
+        where first.videoReceiver.packetsReceived == firstBaseline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertGreaterThan(
+            first.videoReceiver.packetsReceived,
+            firstBaseline,
+            "first session received no live video packets")
+
+        await manager.removeSession(id: device.id)
+        XCTAssertFalse(manager.hasCachedSession(id: device.id))
+
+        let second = manager.session(for: device, settings: settings)
+        XCTAssertFalse(first === second)
+        await second.connect()
+        XCTAssertTrue(second.isConnected)
+        let secondBaseline = second.videoReceiver.packetsReceived
+        for _ in 0..<100
+        where second.videoReceiver.packetsReceived == secondBaseline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertGreaterThan(
+            second.videoReceiver.packetsReceived,
+            secondBaseline,
+            "re-added session received no live video packets")
+
+        await manager.removeSession(id: device.id)
     }
 
     func testFTPMLSDAndLISTParsing() throws {
@@ -490,6 +670,84 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
     }
 
+    func testMoveWithSkipPreservesSource() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = root.appendingPathComponent("source.prg")
+        let destination = root.appendingPathComponent("destination.prg")
+        try Data("new source".utf8).write(to: source)
+        try Data("existing destination".utf8).write(to: destination)
+        let coordinator = FileOperationCoordinator { _ in nil }
+
+        try await coordinator.process(
+            TransferJob(
+                operation: .move(
+                    source: TransferReference(
+                        endpoint: .local,
+                        path: ManagedPath(source.path),
+                        isDirectory: false,
+                        size: 10),
+                    destination: TransferReference(
+                        endpoint: .local,
+                        path: ManagedPath(destination.path),
+                        isDirectory: false,
+                        size: 20)),
+                conflictPolicy: .skip)
+        ) { _, _ in }
+
+        XCTAssertEqual(
+            try Data(contentsOf: source),
+            Data("new source".utf8),
+            "a skipped move must not delete its source")
+        XCTAssertEqual(
+            try Data(contentsOf: destination),
+            Data("existing destination".utf8),
+            "Skip must not replace the existing destination")
+    }
+
+    func testLocalSymlinkTransfersAreRejected() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target.txt")
+        let link = root.appendingPathComponent("link.txt")
+        try Data("secret target".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            at: link, withDestinationURL: target)
+
+        let provider = LocalFileSystemProvider()
+        let item = try await provider.item(ManagedPath(link.path))
+        XCTAssertEqual(item?.kind, .symlink)
+
+        let coordinator = FileOperationCoordinator { _ in nil }
+        do {
+            try await coordinator.process(
+                TransferJob(
+                    operation: .copy(
+                        source: TransferReference(
+                            endpoint: .local,
+                            path: ManagedPath(link.path),
+                            isDirectory: false,
+                            size: nil),
+                        destination: TransferReference(
+                            endpoint: .local,
+                            path: ManagedPath(
+                                root.appendingPathComponent("copy.txt").path),
+                            isDirectory: false,
+                            size: nil)))
+            ) { _, _ in }
+            XCTFail("symbolic link transfer should be rejected")
+        } catch {
+            XCTAssertTrue(error is FileSystemError)
+        }
+    }
+
     @MainActor
     func testTransferQueuePersistsAndCompletesJobs() async throws {
         let store = FileManager.default.temporaryDirectory
@@ -574,6 +832,50 @@ final class Assembly64FeatureTests: XCTestCase {
             "/Flash/My Game.prg")
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "X-Password"), "secret")
+    }
+
+    func testMultipartFilenamesRejectHeaderInjectionAndPaths() {
+        XCTAssertTrue(
+            UltimateAPIClient.isSafeMultipartFilename("game.d64"))
+        XCTAssertFalse(
+            UltimateAPIClient.isSafeMultipartFilename("bad\"\r\nX-Evil: 1"))
+        XCTAssertFalse(
+            UltimateAPIClient.isSafeMultipartFilename("../game.d64"))
+        XCTAssertFalse(
+            UltimateAPIClient.isSafeMultipartFilename("folder/game.d64"))
+        XCTAssertFalse(
+            UltimateAPIClient.isSafeMultipartFilename("bad\\name.d64"))
+    }
+
+    func testAssemblyMetadataRejectsNonWebURLSchemes() {
+        XCTAssertNotNil(
+            Assembly64Client.validWebURL("https://example.com/image.png"))
+        XCTAssertNotNil(
+            Assembly64Client.validWebURL("http://example.com/image.png"))
+        XCTAssertNil(Assembly64Client.validWebURL("file:///etc/passwd"))
+        XCTAssertNil(Assembly64Client.validWebURL("data:text/plain,secret"))
+        XCTAssertNil(Assembly64Client.validWebURL("javascript:alert(1)"))
+        XCTAssertNil(Assembly64Client.validWebURL("custom://receiver/path"))
+    }
+
+    @MainActor
+    func testAssemblyLibraryCorruptPersistenceIsQuarantined() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeURL = directory.appendingPathComponent("library.json")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        try Data("{invalid".utf8).write(to: storeURL)
+
+        let store = Assembly64LibraryStore(storeURL: storeURL)
+        XCTAssertTrue(store.favorites.isEmpty)
+        XCTAssertNotNil(store.persistenceError)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil)
+        XCTAssertTrue(files.contains {
+            $0.lastPathComponent.contains("corrupt-")
+        })
     }
 
     @MainActor
@@ -739,6 +1041,74 @@ final class Assembly64FeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testInputFailureTriggersReleaseAllRecovery() async throws {
+        let transport = FailingPressInputTransport()
+        let device = UltimateDevice(
+            name: "Input",
+            host: "192.0.2.1")
+        let controller = C64InputController(
+            device: device,
+            transport: transport)
+
+        controller.keyDown(
+            hostKeyCode: 4,
+            inputs: ["a"],
+            fallback: 0x41,
+            holdable: true)
+
+        for _ in 0..<100 {
+            if await transport.sawReleaseAll { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let recovered = await transport.hasReleaseAll()
+        XCTAssertTrue(
+            recovered,
+            "ambiguous failed press must be followed by release_all")
+        XCTAssertFalse(controller.isHostKeyHeld(4))
+    }
+
+    @MainActor
+    func testInputQueueOverflowTriggersReleaseAllRecovery() async throws {
+        let transport = DelayedInputTransport()
+        let device = UltimateDevice(
+            name: "Input",
+            host: "192.0.2.1")
+        let controller = C64InputController(
+            device: device,
+            transport: transport,
+            maximumQueueDepth: 1)
+
+        controller.keyDown(
+            hostKeyCode: 4,
+            inputs: ["a"],
+            fallback: 0x41,
+            holdable: true)
+        controller.keyDown(
+            hostKeyCode: 5,
+            inputs: ["b"],
+            fallback: 0x42,
+            holdable: true)
+        controller.keyDown(
+            hostKeyCode: 6,
+            inputs: ["c"],
+            fallback: 0x43,
+            holdable: true)
+
+        await transport.releaseDelayedRequest()
+        for _ in 0..<100 {
+            if await transport.sawReleaseAll { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let recovered = await transport.hasReleaseAll()
+        XCTAssertTrue(
+            recovered,
+            "overflow must be collapsed into release_all")
+        XCTAssertFalse(controller.isHostKeyHeld(4))
+        XCTAssertFalse(controller.isHostKeyHeld(5))
+        XCTAssertFalse(controller.isHostKeyHeld(6))
+    }
+
+    @MainActor
     func testLegacyInputClearsStopFlagAndWritesOrderedBuffer() async throws {
         let device = UltimateDevice(
             id: UUID(), name: "Legacy", host: "192.168.1.64")
@@ -899,7 +1269,32 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertFalse(entries[1].isRead)
     }
 
-    func testMemoryHeatmapRecordsReadsAndWritesIndependently() {
+    func testDebugStreamMissedPacketCountHandlesGapsDuplicatesReorderingAndWrap() {
+        func packet(_ sequence: UInt16) -> Data {
+            Data([
+                UInt8(sequence & 0xFF),
+                UInt8(sequence >> 8),
+                0, 0,
+            ])
+        }
+
+        let receiver = DebugStreamReceiver()
+        receiver.ingest(packet(100))
+        receiver.ingest(packet(103))
+        XCTAssertEqual(receiver.missedPackets, 2)
+
+        receiver.ingest(packet(103)) // duplicate
+        receiver.ingest(packet(102)) // late/reordered
+        XCTAssertEqual(receiver.missedPackets, 2)
+
+        let wrapping = DebugStreamReceiver()
+        wrapping.ingest(packet(65_535))
+        wrapping.ingest(packet(0))
+        wrapping.ingest(packet(2))
+        XCTAssertEqual(wrapping.missedPackets, 1)
+    }
+
+    func testMemoryHeatmapRecordsReadsAndWritesIndependently() throws {
         let heatmap = MemoryHeatmap()
         let readWord: UInt32 = (1 << 24) | (UInt32(0x3C) << 16) | UInt32(0x1234)
         let writeWord: UInt32 = (UInt32(0xA5) << 16) | UInt32(0x5678)
@@ -908,22 +1303,26 @@ final class Assembly64FeatureTests: XCTestCase {
 
         heatmap.record([readEntry, writeEntry])
 
-        XCTAssertGreaterThan(heatmap.lastRead[0x1234], 0)
-        XCTAssertEqual(heatmap.lastWrite[0x1234], 0)
-        XCTAssertGreaterThan(heatmap.lastWrite[0x5678], 0)
-        XCTAssertEqual(heatmap.lastRead[0x5678], 0)
-        XCTAssertTrue(heatmap.lastAccessWasRead[0x1234])
-        XCTAssertFalse(heatmap.lastAccessWasRead[0x5678])
-        XCTAssertEqual(heatmap.lastValue[0x1234], 0x3C)
-        XCTAssertEqual(heatmap.lastValue[0x5678], 0xA5)
+        let readState = try XCTUnwrap(heatmap.state(at: 0x1234))
+        let writeState = try XCTUnwrap(heatmap.state(at: 0x5678))
+        XCTAssertGreaterThan(readState.lastRead, 0)
+        XCTAssertEqual(readState.lastWrite, 0)
+        XCTAssertGreaterThan(writeState.lastWrite, 0)
+        XCTAssertEqual(writeState.lastRead, 0)
+        XCTAssertTrue(readState.lastAccessWasRead)
+        XCTAssertFalse(writeState.lastAccessWasRead)
+        XCTAssertEqual(readState.lastValue, 0x3C)
+        XCTAssertEqual(writeState.lastValue, 0xA5)
 
         heatmap.reset()
-        XCTAssertEqual(heatmap.lastRead[0x1234], 0)
-        XCTAssertEqual(heatmap.lastWrite[0x5678], 0)
-        XCTAssertEqual(heatmap.lastAccess[0x1234], 0)
-        XCTAssertEqual(heatmap.lastAccess[0x5678], 0)
-        XCTAssertEqual(heatmap.lastValue[0x1234], 0)
-        XCTAssertEqual(heatmap.lastValue[0x5678], 0)
+        let resetRead = try XCTUnwrap(heatmap.state(at: 0x1234))
+        let resetWrite = try XCTUnwrap(heatmap.state(at: 0x5678))
+        XCTAssertEqual(resetRead.lastRead, 0)
+        XCTAssertEqual(resetWrite.lastWrite, 0)
+        XCTAssertEqual(resetRead.lastAccess, 0)
+        XCTAssertEqual(resetWrite.lastAccess, 0)
+        XCTAssertEqual(resetRead.lastValue, 0)
+        XCTAssertEqual(resetWrite.lastValue, 0)
     }
 
     /// Regression test for direction being inferred from timestamps.
@@ -931,7 +1330,7 @@ final class Assembly64FeatureTests: XCTestCase {
     /// artificial timestamp offsets can overlap a following batch. In both
     /// cases a later read/write could retain the preceding access's color.
     /// Explicit direction tracking must follow exact array/bus order.
-    func testMemoryHeatmapPreservesOrderForReadThenWriteToSameAddressInOneBatch() {
+    func testMemoryHeatmapPreservesOrderForReadThenWriteToSameAddressInOneBatch() throws {
         let heatmap = MemoryHeatmap()
         let readWord: UInt32 = (1 << 24) | (UInt32(0x10) << 16) | UInt32(0xD020)
         let writeWord: UInt32 = (UInt32(0xF0) << 16) | UInt32(0xD020)
@@ -940,19 +1339,65 @@ final class Assembly64FeatureTests: XCTestCase {
 
         heatmap.record([readEntry, writeEntry])
 
+        var state = try XCTUnwrap(heatmap.state(at: 0xD020))
         XCTAssertFalse(
-            heatmap.lastAccessWasRead[0xD020],
+            state.lastAccessWasRead,
             "the write happened after the read on the real bus, so it must win")
-        XCTAssertEqual(heatmap.lastValue[0xD020], 0xF0)
+        XCTAssertEqual(state.lastValue, 0xF0)
 
         // The reverse order (write then read, as a plain load right after a
         // store) must resolve the other way.
         heatmap.reset()
         heatmap.record([writeEntry, readEntry])
+        state = try XCTUnwrap(heatmap.state(at: 0xD020))
         XCTAssertTrue(
-            heatmap.lastAccessWasRead[0xD020],
+            state.lastAccessWasRead,
             "the read happened after the write on the real bus, so it must win")
-        XCTAssertEqual(heatmap.lastValue[0xD020], 0x10)
+        XCTAssertEqual(state.lastValue, 0x10)
+    }
+
+    func testMemoryHeatmapSupportsConcurrentRecordResetAndSnapshot() {
+        let heatmap = MemoryHeatmap()
+        let read = DebugStreamEntry(
+            word: (1 << 24) | (UInt32(0x55) << 16) | 0x2000,
+            source: .cpu6510)
+        let write = DebugStreamEntry(
+            word: (UInt32(0xAA) << 16) | 0xD020,
+            source: .cpu6510)
+        let failureLock = NSLock()
+        var invalidSnapshot = false
+
+        DispatchQueue.concurrentPerform(iterations: 6) { worker in
+            switch worker {
+            case 0...3:
+                for _ in 0..<500 {
+                    heatmap.record([read, write])
+                }
+            case 4:
+                for _ in 0..<150 {
+                    let snapshot = heatmap.renderSnapshot()
+                    if snapshot.lastAccess.count != MemoryHeatmap.addressSpace
+                        || snapshot.lastAccessWasRead.count
+                            != MemoryHeatmap.addressSpace
+                        || snapshot.lastValue.count
+                            != MemoryHeatmap.addressSpace {
+                        failureLock.lock()
+                        invalidSnapshot = true
+                        failureLock.unlock()
+                    }
+                }
+            default:
+                for _ in 0..<100 {
+                    heatmap.reset()
+                    _ = heatmap.renderSnapshot()
+                }
+            }
+        }
+
+        XCTAssertFalse(invalidSnapshot)
+        XCTAssertEqual(
+            heatmap.renderSnapshot().lastValue.count,
+            MemoryHeatmap.addressSpace)
     }
 
     func testDebugStreamPacketParsingToleratesShortPacket() {
@@ -2092,6 +2537,72 @@ private actor ScriptedInputTransport: HTTPTransport {
             url: request.url!, statusCode: 200,
             httpVersion: "HTTP/1.1", headerFields: nil)!
         return (data, response)
+    }
+}
+
+private actor FailingPressInputTransport: HTTPTransport {
+    private(set) var sawReleaseAll = false
+
+    func hasReleaseAll() -> Bool { sawReleaseAll }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        let body = request.httpBody ?? Data()
+        let events = (try? JSONDecoder().decode(
+            C64MachineInputEnvelope.self,
+            from: body).events) ?? []
+        if events.contains(where: {
+            $0.kind == .keyboard && $0.transition == .press
+        }) {
+            throw UltimateAPIClient.APIError.httpError(503, "temporary failure")
+        }
+        if events.contains(where: { $0.kind == .releaseAll }) {
+            sawReleaseAll = true
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil)!
+        return (Data(#"{"errors":[]}"#.utf8), response)
+    }
+}
+
+private actor DelayedInputTransport: HTTPTransport {
+    private var delayedRequest: CheckedContinuation<Void, Never>?
+    private(set) var sawReleaseAll = false
+
+    func hasReleaseAll() -> Bool { sawReleaseAll }
+
+    func releaseDelayedRequest() {
+        delayedRequest?.resume()
+        delayedRequest = nil
+    }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        let body = request.httpBody ?? Data()
+        let events = (try? JSONDecoder().decode(
+            C64MachineInputEnvelope.self,
+            from: body).events) ?? []
+        if events.contains(where: {
+            $0.kind == .keyboard && $0.transition == .press
+        }) {
+            await withCheckedContinuation { continuation in
+                delayedRequest = continuation
+            }
+        }
+        if events.contains(where: { $0.kind == .releaseAll }) {
+            sawReleaseAll = true
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil)!
+        return (Data(#"{"errors":[]}"#.utf8), response)
     }
 }
 

@@ -235,6 +235,7 @@ struct GeneralSettingsTab: View {
 
 struct DevicesSettingsTab: View {
     @EnvironmentObject var deviceStore: DeviceStore
+    @EnvironmentObject var sessionManager: SessionManager
     @State private var selection: UUID?
     @State private var showingAdd = false
     @State private var deviceToEdit: UltimateDevice?
@@ -257,7 +258,9 @@ struct DevicesSettingsTab: View {
             .contextMenu(forSelectionType: UUID.self) { ids in
                 if let id = ids.first, let device = deviceStore.devices.first(where: { $0.id == id }) {
                     Button("Edit…") { deviceToEdit = device }
-                    Button("Remove", role: .destructive) { deviceStore.remove(device) }
+                    Button("Remove", role: .destructive) {
+                        Task { await remove(device) }
+                    }
                 }
             } primaryAction: { ids in
                 if let id = ids.first, let device = deviceStore.devices.first(where: { $0.id == id }) {
@@ -277,8 +280,10 @@ struct DevicesSettingsTab: View {
 
                 Button {
                     if let id = selection, let device = deviceStore.devices.first(where: { $0.id == id }) {
-                        deviceStore.remove(device)
-                        selection = nil
+                        Task {
+                            await remove(device)
+                            selection = nil
+                        }
                     }
                 } label: {
                     Image(systemName: "minus")
@@ -305,8 +310,20 @@ struct DevicesSettingsTab: View {
             ) { deviceStore.add($0) }
         }
         .sheet(item: $deviceToEdit) { device in
-            DeviceEditSheet(mode: .edit(device)) { deviceStore.update($0) }
+            DeviceEditSheet(mode: .edit(device)) { updated in
+                Task {
+                    await sessionManager.removeSession(
+                        id: updated.id,
+                        clearAudibleSelection: false)
+                    deviceStore.update(updated)
+                }
+            }
         }
+    }
+
+    private func remove(_ device: UltimateDevice) async {
+        await sessionManager.removeSession(id: device.id)
+        deviceStore.remove(device)
     }
 }
 
