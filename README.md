@@ -179,7 +179,7 @@ Flat-map landmarks cover zero page, stack, screen RAM, BASIC/KERNAL ROM, \
 VIC-II, SID, color RAM, both CIAs, cartridge I/O and banked Character ROM; \
 they switch automatically to the 1541 RAM/VIA/DOS-ROM map for drive traces.
 
-[![3D Memory Map demonstration](https://img.youtube.com/vi/1IorunGODNw/hqdefault.jpg)](https://www.youtube.com/watch?v=1IorunGODNw)
+[![3D Memory Map demonstration](Screenshots/3D%20Memory%20Map%20demonstration.jpg)](https://www.youtube.com/watch?v=1IorunGODNw)
 
 ### Ultimate Menu
 
