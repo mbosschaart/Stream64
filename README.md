@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.104b-purple)
+![Version](https://img.shields.io/badge/version-0.105b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 

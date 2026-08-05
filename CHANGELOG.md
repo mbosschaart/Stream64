@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.105b — 2026-08-06
+
+### Fixed
+
+- Removed stale built-in Help documentation describing the temporarily unavailable 1702/1084S monitor-case presentation and monitor controls.
+
 ## 0.104b — 2026-08-06
 
 ### Added

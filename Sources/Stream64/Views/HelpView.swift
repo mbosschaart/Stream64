@@ -43,7 +43,6 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case devices
     case viewing
     case rendering
-    case monitorBezel
     case keyboard
     case files
     case fileManager
@@ -61,7 +60,6 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .devices: return "Devices & Connection"
         case .viewing: return "Viewing & Full Screen"
         case .rendering: return "Rendering & CRT Simulation"
-        case .monitorBezel: return "Monitor Case & Bezel"
         case .keyboard: return "Keyboard Input"
         case .files: return "Loading Files"
         case .fileManager: return "Commander File Manager"
@@ -79,7 +77,6 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .devices: return "desktopcomputer"
         case .viewing: return "arrow.up.left.and.arrow.down.right"
         case .rendering: return "camera.filters"
-        case .monitorBezel: return "tv"
         case .keyboard: return "keyboard"
         case .files: return "arrow.down.doc"
         case .fileManager: return "rectangle.split.2x1"
@@ -97,7 +94,6 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .devices: return Self.devicesText
         case .viewing: return Self.viewingText
         case .rendering: return Self.renderingText
-        case .monitorBezel: return Self.monitorBezelText
         case .keyboard: return Self.keyboardText
         case .files: return Self.filesText
         case .fileManager: return Self.fileManagerText
@@ -139,7 +135,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **The toolbar** holds everything for the current stream: connect/disconnect, \
     machine controls (reset, reboot, pause, menu, power), display settings \
-    (scaling, filter, input signal, bezel), keyboard capture, and full screen. \
+    (scaling, filter, input signal), keyboard capture, and full screen. \
     Right-clicking the picture provides stream, machine and display controls; \
     the toolbar additionally provides the on-screen keyboard, Assembly64, \
     screenshots and fullscreen.
@@ -260,16 +256,6 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     black-and-white picture, tint rotates hues, contrast crushes or flattens. \
     BRIGHT has extended highlight headroom; COLOR rises to extreme 4× chroma \
     at its end stop for intentionally overdriven CRT color.
-    """
-
-    private static let monitorBezelText = """
-    The 1702 and 1084S monitor-case presentation is temporarily unavailable. \
-    CRT picture controls remain available from the toolbar and right-click menu.
-
-    The physical tube face always retains a visible dark cool-grey glass \
-    color beneath the video. It is independent of C64 palette black, Brightness, \
-    Color, Tint, and Contrast, and remains visible after CRT Tube power-off.
-
     """
 
     private static let keyboardText = """
@@ -451,13 +437,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **Right-click** a tile for that device's full control menu
     • **Drop files** on a tile to load on that machine (⌃ = all machines)
 
-    **Per-device rendering** — filter, input signal, palette, bezel, and the \
-    monitor knobs are stored per device. One machine can look like RF on a \
-    1702 while another is pixel-sharp.
+    **Per-device rendering** — filter, input signal, and palette are stored per \
+    device. One machine can look like RF while another is pixel-sharp.
 
-    **Ports** — each device should stream to its own pair of local UDP ports. \
-    The Add Device sheet picks free defaults automatically, but manual edits \
-    can create collisions and should be checked.
+    **Ports** — each device uses its own local UDP stream ports. The Add Device \
+    sheet picks free defaults automatically, and manual edits are validated for \
+    valid ranges and collisions.
 
     In **full screen**, ← and → cycle through your devices.
     """
@@ -485,8 +470,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     Closing any main viewer window fully quits Stream64 and closes every \
     Assembly64, Help, Settings and additional viewer window.
 
-    **Settings → Audio** — volume (also on the 1702 bezel's VOLUME knob) and \
-    the jitter buffer. A larger buffer smooths playback on busy networks at \
+    **Settings → Audio** — volume and the jitter buffer. A larger buffer \
+    smooths playback on busy networks at \
     the cost of latency; 60 ms is a good default.
 
     **AirPlay** — use the AirPlay button in the main toolbar or Audio \
