@@ -396,17 +396,6 @@ private struct DeviceVideoSettings: View {
                     .disabled(!isCRTFilter)
             }
 
-            Section("Monitor Case") {
-                Toggle("Show monitor case", isOn: $display.showBezel)
-                Picker("Style", selection: $display.bezelStyle) {
-                    ForEach(BezelChoice.allCases) { style in
-                        Text(style.rawValue).tag(style)
-                    }
-                }
-                .disabled(!display.showBezel)
-                Toggle("Reflect the picture on the tube mask", isOn: $display.bezelReflection)
-            }
-
             Section("Overlay") {
                 Toggle("Show frame rate", isOn: $display.showFPS)
             }

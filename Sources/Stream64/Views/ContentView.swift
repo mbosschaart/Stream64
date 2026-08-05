@@ -802,14 +802,7 @@ struct ViewerPane: View {
         VStack(spacing: 0) {
             ZStack {
                 Color.black
-                if display.showBezel && !isFullscreen {
-                    MonitorBezelView(style: display.bezelStyle, display: display, session: session) {
-                        VideoView(session: session, monitorCaseVisible: true)
-                    }
-                    .padding(12)
-                } else {
-                    VideoView(session: session)
-                }
+                VideoView(session: session)
                 overlay
                 if isDropTargeted {
                     dropHighlight
@@ -828,7 +821,7 @@ struct ViewerPane: View {
         .contextMenu {
             StreamContextMenu(
                 session: session,
-                monitorCaseVisible: display.showBezel && !isFullscreen,
+                monitorCaseVisible: false,
                 requestPictureControls: {
                     PictureControlsPanelController.show(display: display)
                 }
@@ -1192,7 +1185,7 @@ struct ViewerPane: View {
                   : "Dirty glass — only applies to the CRT filters")
             .disabled(!isCRTFilter)
 
-            if isCRTFilter && (!display.showBezel || isFullscreen) {
+            if isCRTFilter {
                 Button {
                     PictureControlsPanelController.show(display: display)
                 } label: {
@@ -1203,11 +1196,6 @@ struct ViewerPane: View {
                 }
                 .help("Adjust brightness, color, tint, and contrast")
             }
-
-            Toggle(isOn: displayBinding(\.showBezel)) {
-                Label("Monitor Case", systemImage: "tv")
-            }
-            .help("Show the complete Commodore monitor case around the picture")
 
             Button {
                 session.saveScreenshot()

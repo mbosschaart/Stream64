@@ -201,20 +201,6 @@ struct StreamContextMenu: View {
             .labelsHidden()
         }
 
-        Menu("Monitor Case", systemImage: "tv") {
-            Toggle("Show Monitor Case", isOn: bind(\.showBezel))
-            Picker("Style", selection: bind(\.bezelStyle)) {
-                ForEach(BezelChoice.allCases) { style in
-                    Text(style.rawValue).tag(style)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-            .disabled(!display.showBezel)
-            Divider()
-            Toggle("Tube Reflection", isOn: bind(\.bezelReflection))
-        }
-
         Toggle("Show Frame Rate", isOn: bind(\.showFPS))
 
         if isCRTFilter && !monitorCaseVisible {

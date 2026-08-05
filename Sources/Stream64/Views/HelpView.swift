@@ -251,11 +251,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **Palette** — Pepto (default), Colodore, or VICE color tables.
 
-    **Picture controls** — with the Commodore 1702 monitor case visible, click its \
-    front panel to open the door: real VOLUME, BRIGHT, COLOR, TINT, and \
-    CONTRAST knobs drive the picture live (drag up/down; double-click to \
-    center). When a CRT filter is active without the monitor case, use the \
-    toolbar sliders button or right-click → **Picture Controls…** to open the \
+    **Picture controls** — when a CRT filter is active, use the toolbar sliders \
+    button or right-click → **Picture Controls…** to open the \
     same brightness, color, tint, and contrast controls in a movable floating \
     window. The viewer stays bright and interactive while it is open. This is \
     also available from the right-click menu in fullscreen and grid views. \
@@ -266,37 +263,13 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let monitorBezelText = """
-    Show a complete period-correct monitor around the picture: right-click → \
-    Monitor Case → Show Monitor Case, then pick a style.
-
-    **Terminology:** Monitor Case means the complete enclosure, front panel, \
-    logo, controls, chin, and outer shell. Bezel means only the angled inner \
-    plastic lip that overlaps and protects the CRT glass.
-
-    • **Commodore 1702** — the classic cream monitor with its dark control \
-    strip. Click the strip to flip down the door and reveal **working \
-    front-panel knobs** (volume, brightness, color, tint, contrast) that \
-    adjust this stream in real time. CRT filters use its coarser **0.64 mm \
-    shadow-mask dot pitch**.
-    • **Commodore 1084S** — the grey-beige Amiga-era monitor with front \
-    buttons, a green power LED, and a finer **0.42 mm dot pitch**. The selected \
-    monitor style controls shader dot pitch even when the drawn bezel is hidden.
-
-    **Tube Reflection** (with the CRT Tube filter) renders the picture's own \
-    light onto the angled plastic wall around the tube face. The bezel slightly \
-    overlaps the glass and reflects the first few millimetres of the screen; \
-    light diffuses outward but follows one normal path, so single lines never \
-    branch. Toggle it via right-click → \
-    Monitor Case → Tube Reflection.
-
-    Fullscreen hides the complete monitor case but retains a dark angled bezel \
-    around the CRT Tube, including its diffuse reflection.
+    The 1702 and 1084S monitor-case presentation is temporarily unavailable. \
+    CRT picture controls remain available from the toolbar and right-click menu.
 
     The physical tube face always retains a visible dark cool-grey glass \
     color beneath the video. It is independent of C64 palette black, Brightness, \
     Color, Tint, and Contrast, and remains visible after CRT Tube power-off.
 
-    The bezel scales with the window and keeps the tube opening at exactly 4:3.
     """
 
     private static let keyboardText = """
