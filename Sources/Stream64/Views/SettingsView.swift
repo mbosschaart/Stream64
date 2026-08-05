@@ -212,6 +212,7 @@ private struct DeviceInputSettings: View {
 
 struct GeneralSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var updateService: UpdateService
 
     var body: some View {
         Form {
@@ -219,11 +220,20 @@ struct GeneralSettingsTab: View {
                 Toggle("Reconnect automatically after connection loss", isOn: $settings.reconnectAutomatically)
                 Toggle("Send keyboard input to the C64 when the viewer is focused", isOn: $settings.captureKeyboardWhenFocused)
                 Toggle("Ask for confirmation before destructive actions", isOn: $settings.confirmDestructiveActions)
+                Toggle("Check for updates automatically", isOn: $settings.checkForUpdatesAutomatically)
             } footer: {
                 Text(
                     "Destructive actions include power off, file deletion, "
                         + "replacement, and non-atomic moves."
                 )
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Button("Check for Updates…") {
+                    updateService.check(force: true)
+                }
+            } footer: {
+                Text("Stable releases are checked through the Stream64 GitHub repository.")
                     .foregroundStyle(.secondary)
             }
         }

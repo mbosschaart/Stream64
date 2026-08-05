@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.104b — 2026-08-06
+
+### Added
+
+- **GitHub update checking.** Stream64 can check the latest stable release at startup or through **Check for Updates…**, with a General Settings opt-out, architecture-matched ZIP downloads, SHA-256 verification, and confirmed automatic replacement/relaunch.
+
 ## 0.103b — 2026-08-04
 
 ### Added

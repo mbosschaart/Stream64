@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.103b-purple)
+![Version](https://img.shields.io/badge/version-0.104b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -20,6 +20,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **App-wide AirPlay audio** — one global toolbar route picker sends whichever C64 is currently selected to an AirPlay receiver without changing the Mac's system output; once selected, the route remains locked until explicitly stopped, including during view/C64 switching, resets, and transient transport gaps (AirPlay adds roughly 1–3 seconds of buffering)
+- **Update checking** — optionally checks the latest stable GitHub release at startup, with a manual **Check for Updates…** command, architecture-matched downloads, checksum verification, and automatic replacement/relaunch after confirmation
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
@@ -340,62 +341,88 @@ Right-click the picture for stream, machine and display controls. The toolbar ad
                      SessionManager / SwiftUI views / DisplaySettings
 ```
 
-Each configured device gets one `DeviceSession` owning its receivers, API client and display settings. Sessions are cached in `SessionManager` and survive view rebuilds. Suggested device defaults allocate distinct UDP port pairs, but manual edits are not collision-validated. `SingleInstanceLock` prevents separate Stream64 processes from competing for the same listeners. `Assembly64LibraryStore` and `Assembly64Cache` separate persistent user intent from regenerable metadata. Health monitoring, reconnect/backoff, screenshot GPU readback and resource lookup operate around the core stream path.
+Each configured device gets one `DeviceSession` owning its receivers, API client and display settings. Sessions are cached in `SessionManager` and survive view rebuilds. Device defaults and manual edits validate stream-port ranges and collisions. `SingleInstanceLock` prevents separate Stream64 processes from competing for the same listeners. `Assembly64LibraryStore` and `Assembly64Cache` separate persistent user intent from regenerable metadata. Health monitoring, reconnect/backoff, screenshot GPU readback and resource lookup operate around the core stream path.
 
 ## Source Layout
 
 ```
 Sources/Stream64/
-├── Stream64App.swift          App entry, menu bar, Help/About, window lifecycle
+├── Stream64App.swift          App entry, menus, Help/About, and window lifecycle
 ├── Models/
-│   ├── UltimateDevice.swift   Device config (address, ports, auto-connect)
-│   ├── DeviceStore.swift      Persistence (Application Support/Stream64/devices.json)
-│   ├── AppSettings.swift      Global prefs (audio, network, general) — @AppStorage
-│   ├── DisplaySettings.swift  Per-device rendering settings, persisted by device UUID
-│   ├── Assembly64LibraryStore.swift  Favorites, recents, saved searches/actions
-│   ├── Assembly64SearchQuery.swift   Tested AQL query composition
-│   ├── PETSCII.swift           ASCII/Unicode → PETSCII encoding for keyboard input
-│   ├── DebugStreamEntry.swift   6510/VIC/1541 bus-trace word decode + mode table
-│   ├── MemoryHeatmap.swift     64K-address last-read/last-write timestamps
-│   ├── SIDVoiceState.swift     Approximate SID register decode + oscillator/ADSR synth
-│   └── VT100Screen.swift       Minimal ANSI/VT100 terminal buffer + parser
+│   ├── AppSettings.swift, DisplaySettings.swift, DeviceStore.swift
+│   │                            Global, display, and device persistence models
+│   ├── UltimateDevice.swift, RemoteFile.swift
+│   │                            Device configuration and remote-file models
+│   ├── Assembly64LibraryStore.swift, Assembly64SearchQuery.swift
+│   │                            Library state and tested AQL query composition
+│   ├── C64Input.swift, C64Keymap.swift, PETSCII.swift
+│   │                            Keyboard, joystick, keymap, and PETSCII models
+│   ├── DebugStreamEntry.swift, MemoryHeatmap.swift
+│   │                            Bus-trace decoding and 64K activity state
+│   ├── SIDEngine.swift, SIDVoiceState.swift, SIDFilterState.swift
+│   │                            Shared SID synthesis, register, and filter state
+│   ├── SIDRegisterActivity.swift, SIDSpectrumAnalyzer.swift
+│   │                            SID register heatmaps and audio FFT analysis
+│   ├── SIDWindowLayout.swift    Persisted SID visualization window layouts
+│   ├── UltimateMenuScreen.swift Remote menu-screen decoding model
+│   └── VT100Screen.swift        ANSI/VT100 terminal buffer and parser
 ├── Services/
-│   ├── UltimateAPIClient.swift  REST client for the Ultimate's /v1 API
-│   ├── Assembly64Client.swift   Assembly64 search, metadata, archive/download API
-│   ├── Assembly64ArchiveInspector.swift  Safe in-memory ZIP inspection/extraction
-│   ├── Assembly64Cache.swift    Bounded regenerable metadata/preview cache
+│   ├── UltimateAPIClient.swift, UltimateFTPClient.swift
+│   │                            REST and FTP clients for Ultimate devices
+│   ├── DeviceSession.swift      Connection lifecycle, stream orchestration,
+│   │                            health monitoring, recovery, and input
+│   ├── VideoReceiver.swift, AudioReceiver.swift
+│   │                            UDP video/audio receivers and packet accounting
+│   ├── DebugStreamReceiver.swift UDP bus-trace receiver and observers
+│   ├── AirPlayOutputController.swift, LiveAirPlayEncoder.swift
+│   │                            Persistent app-wide AirPlay and AAC/HLS pipeline
+│   ├── UpdateService.swift      GitHub stable-release lookup, verification,
+│   │                            download, and safe replacement/relaunch
+│   ├── LiveHLSServer.swift      Authenticated temporary LAN HLS origin
+│   ├── UltimateTelnetClient.swift  Telnet transport for the Ultimate Menu
+│   ├── C64InputController.swift, GameControllerManager.swift
+│   │                            Keyboard, matrix, joystick, and controller input
+│   ├── DeviceDiscoveryService.swift, LocalNetwork.swift
+│   │                            Bounded discovery and network authorization
+│   ├── FileOperationCoordinator.swift, LocalFileSystemProvider.swift
+│   │                            Local/remote copy, move, conflict, and cleanup flow
+│   ├── TransferQueue.swift      Persistent, retryable file-transfer queue
+│   ├── Assembly64Client.swift, Assembly64Cache.swift
+│   │                            Assembly64 search, metadata, cache, and downloads
+│   ├── Assembly64ArchiveInspector.swift  Safe ZIP inspection/extraction
 │   ├── CSDBPreviewClient.swift  CSDB screenshot/source fallback
-│   ├── SingleInstanceLock.swift Process lock preventing duplicate UDP listeners
-│   ├── DeviceSession.swift      Connection lifecycle, keyboard queue, file loading
-│   ├── VideoReceiver.swift      UDP listener; assembles 4bpp packets into frames
-│   ├── AudioReceiver.swift      UDP listener; ring buffer → AVAudioSourceNode; RF filter
-│   ├── AirPlayOutputController.swift  Persistent global AVPlayer AirPlay route
-│   ├── LiveAirPlayEncoder.swift 47983 Hz PCM → bounded 48 kHz AAC/fMP4 HLS
-│   ├── LiveHLSServer.swift      Tokenized temporary LAN HLS origin
-│   ├── DebugStreamReceiver.swift  UDP listener for the 6510/VIC/1541 bus-trace stream
-│   └── UltimateTelnetClient.swift  TCP client for the Ultimate's Telnet (VT100) server
+│   └── SingleInstanceLock.swift Process lock preventing duplicate UDP listeners
 ├── Rendering/
 │   ├── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)
 │   └── MemoryMap3DRenderer.swift Instanced 65,536-address 3D memory terrain
 ├── Resources/
-│   └── dirty-glass-mask.png     Photographic RGBA glass-contamination material
+│   ├── dirty-glass-mask.png     Photographic RGBA glass-contamination material
+│   ├── logofactuur.png          Branded application logo
+│   └── Stream64logo.png         Branded splash/About logo
 └── Views/
-    ├── ContentView.swift        Split view, viewer pane, multi-device grid, toolbar
-    ├── VideoView.swift          NSViewRepresentable MTKView wrapper + key capture
-    ├── StreamContextMenu.swift  Right-click menu (full per-stream control set)
-    ├── Assembly64View.swift     Assembly64 search browser window
-    ├── MonitorBezelView.swift   1702/1084S bezels; KnobDial rotary control
-    ├── OnScreenKeyboardView.swift  Full C64 keyboard layout
-    ├── DeviceEditSheet.swift    Add/edit device with connection test
-    ├── SettingsView.swift       Preferences window (per-device video tab)
-    ├── DebugTraceView.swift     Debug bus-trace window (U64/Elite only)
-    ├── MemoryMapView.swift      Flat I/O-fade/byte-load maps and landmarks
-    ├── MemoryMap3DView.swift    Rotatable MTKView bridge and hover inspection
-    ├── AirPlayRoutePickerView.swift Native macOS app-only AirPlay picker
-    ├── TelnetMonitorView.swift  Telnet/VT100 "Ultimate Menu" window (U64/Elite only)
-    ├── SIDOscilloscopeView.swift  Live per-voice SID waveform window (U64/Elite only)
+    ├── ContentView.swift, VideoView.swift
+    │                            Main viewer, grid, MTKView, and keyboard capture
+    ├── StreamContextMenu.swift, SettingsView.swift, DeviceEditSheet.swift
+    │                            Per-stream controls, preferences, and device setup
+    ├── Assembly64View.swift, RemoteBrowserView.swift
+    │                            Assembly64 browser and Commander file manager
+    ├── DebugTraceView.swift, MemoryMapView.swift, MemoryMap3DView.swift
+    │                            Trace table, flat map, and 3D map UI
+    ├── TelnetMonitorView.swift, RemoteMenuView.swift
+    │                            Ultimate Menu terminal and menu-screen windows
+    ├── SIDOscilloscopeView.swift
+    │                            SID visualization window coordinator
+    ├── SID*.swift                SID waveform, mixer, filter, piano-roll,
+    │                            spectrum, dashboard, register, and 3D views
+    ├── AirPlayRoutePickerView.swift  Native app-only AirPlay route picker
+    ├── UpdateSheet.swift          Update status, release notes, and install flow
+    ├── PictureControlsView.swift, OnScreenKeyboardView.swift
+    │                            Floating picture controls and C64 keyboard
+    ├── MonitorBezelView.swift   Retained for future 1702/1084S reintroduction
+    ├── SplashView.swift, AboutView.swift  Branded launch/About windows
     └── HelpView.swift           In-app documentation window
-Tests/Stream64Tests/             AQL/CSDB, persistence/migration, ZIP safety, CRT constants, lock and Metal compile tests
+Tests/Stream64Tests/             AQL/CSDB, persistence, transfer, archive, stream,
+                                 SID, CRT, lock, and Metal regression tests
 Scripts/build-release.sh         arm64/x86_64 ad-hoc app/ZIP/DMG packaging
 Packaging/Info.plist             macOS application-bundle metadata
 Package.swift / Package.resolved SwiftPM targets, ZIPFoundation and pinned resolution

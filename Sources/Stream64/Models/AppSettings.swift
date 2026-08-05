@@ -111,6 +111,7 @@ final class AppSettings: ObservableObject {
     @AppStorage("reconnectAutomatically") var reconnectAutomatically: Bool = true
     @AppStorage("captureKeyboardWhenFocused") var captureKeyboardWhenFocused: Bool = true
     @AppStorage("confirmDestructiveActions") var confirmDestructiveActions: Bool = true
+    @AppStorage("checkForUpdatesAutomatically") var checkForUpdatesAutomatically: Bool = true
 }
 
 // Allow enums in @AppStorage via RawRepresentable String conformance (already String-backed).

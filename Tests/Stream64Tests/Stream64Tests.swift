@@ -2,9 +2,125 @@ import XCTest
 import ZIPFoundation
 import MetalKit
 import AVFoundation
+import CryptoKit
 @testable import Stream64
 
+private final class StaticUpdateTransport: UpdateHTTPTransport, @unchecked Sendable {
+    let data: Data
+    let statusCode: Int
+
+    init(data: Data, statusCode: Int) {
+        self.data = data
+        self.statusCode = statusCode
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        (
+            data,
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: nil,
+                headerFields: nil)!
+        )
+    }
+}
+
 final class Assembly64FeatureTests: XCTestCase {
+    func testUpdateVersionComparisonSupportsStream64BetaVersions() {
+        XCTAssertLessThan(
+            Stream64ReleaseVersion("0.102b")!,
+            Stream64ReleaseVersion("0.103b")!)
+        XCTAssertLessThan(
+            Stream64ReleaseVersion("0.103b")!,
+            Stream64ReleaseVersion("0.103")!)
+        XCTAssertEqual(
+            Stream64ReleaseVersion("v0.103b"),
+            Stream64ReleaseVersion("0.103b"))
+    }
+
+    func testUpdateAssetNamesMatchReleasePackaging() {
+        let names = UpdateService.assetNames(
+            tagName: "v0.103b", architecture: "arm64")
+        XCTAssertEqual(names.archive, "Stream64-0.103b-macos-arm64.zip")
+        XCTAssertEqual(
+            names.checksum,
+            "Stream64-0.103b-macos-arm64-SHA256.txt")
+    }
+
+    func testUpdateChecksumVerificationRejectsTampering() throws {
+        let archive = Data("release archive".utf8)
+        let digest = SHA256.hash(data: archive)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let checksum = Data("\(digest)  Stream64-update.zip\n".utf8)
+        XCTAssertNoThrow(try UpdateService.verifyChecksum(
+            archiveData: archive,
+            archiveName: "Stream64-update.zip",
+            checksumData: checksum))
+        XCTAssertThrowsError(try UpdateService.verifyChecksum(
+            archiveData: Data("tampered".utf8),
+            archiveName: "Stream64-update.zip",
+            checksumData: checksum))
+    }
+
+    @MainActor
+    func testUpdateServiceReportsAvailableStableRelease() async {
+        let json = """
+        {
+          "tag_name": "v99.0b",
+          "name": "Stream64 99.0b",
+          "body": "Update notes",
+          "draft": false,
+          "prerelease": false,
+          "assets": []
+        }
+        """
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let service = UpdateService(
+            transport: StaticUpdateTransport(
+                data: Data(json.utf8),
+                statusCode: 200),
+            defaults: defaults)
+        service.check(force: true)
+        for _ in 0..<10 { await Task.yield() }
+        guard case .available(let release) = service.state else {
+            return XCTFail("Expected an available stable release")
+        }
+        XCTAssertEqual(release.tagName, "v99.0b")
+    }
+
+    @MainActor
+    func testUpdateServiceReportsMalformedGitHubResponse() async {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let service = UpdateService(
+            transport: StaticUpdateTransport(
+                data: Data("not-json".utf8),
+                statusCode: 200),
+            defaults: defaults)
+        service.check(force: true)
+        for _ in 0..<10 { await Task.yield() }
+        guard case .failed = service.state else {
+            return XCTFail("Expected malformed response to fail")
+        }
+    }
+
+    @MainActor
+    func testUpdateServiceSkipsAutomaticCheckWhenDisabled() async {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defaults.set(false, forKey: "checkForUpdatesAutomatically")
+        let service = UpdateService(
+            transport: StaticUpdateTransport(
+                data: Data("not-json".utf8),
+                statusCode: 200),
+            defaults: defaults)
+        service.checkAutomatically()
+        for _ in 0..<10 { await Task.yield() }
+        guard case .idle = service.state else {
+            return XCTFail("Automatic checking should be disabled")
+        }
+    }
+
     func testQueryQuotesTextAndCombinesAllFilters() {
         let filters = Assembly64SearchFilters(
             repository: "csdb",

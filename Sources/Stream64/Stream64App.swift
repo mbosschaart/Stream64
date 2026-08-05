@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.102b"
+            ?? "0.104b"
     }
 }
 
@@ -210,6 +210,7 @@ struct Stream64App: App {
     /// App-level so the main window and the Assembly64 browser share the
     /// same live sessions.
     @StateObject private var sessionManager = SessionManager()
+    @StateObject private var updateService = UpdateService()
     /// Persistent library state survives Assembly64 window reconstruction.
     @StateObject private var assembly64Library = Assembly64LibraryStore()
 
@@ -229,8 +230,18 @@ struct Stream64App: App {
                 .environmentObject(deviceStore)
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
+                .environmentObject(updateService)
                 .onAppear {
                     appDelegate.sessionManager = sessionManager
+                }
+                .task {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { return }
+                    updateService.checkAutomatically()
+                }
+                .sheet(isPresented: $updateService.isPresented) {
+                    UpdateSheet()
+                        .environmentObject(updateService)
                 }
                 .frame(minWidth: 900, minHeight: 620)
         }
@@ -238,6 +249,11 @@ struct Stream64App: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About Stream64") {
                     openWindow(id: "about")
+                }
+            }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updateService.check(force: true)
                 }
             }
             CommandGroup(after: .newItem) {
@@ -316,6 +332,7 @@ struct Stream64App: App {
                 .environmentObject(deviceStore)
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
+                .environmentObject(updateService)
         }
     }
 }
