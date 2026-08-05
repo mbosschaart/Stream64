@@ -2,7 +2,6 @@ import XCTest
 import ZIPFoundation
 import MetalKit
 import AVFoundation
-import CryptoKit
 @testable import Stream64
 
 private final class StaticUpdateTransport: UpdateHTTPTransport, @unchecked Sendable {
@@ -39,31 +38,6 @@ final class Assembly64FeatureTests: XCTestCase {
             Stream64ReleaseVersion("0.103b"))
     }
 
-    func testUpdateAssetNamesMatchReleasePackaging() {
-        let names = UpdateService.assetNames(
-            tagName: "v0.103b", architecture: "arm64")
-        XCTAssertEqual(names.archive, "Stream64-0.103b-macos-arm64.zip")
-        XCTAssertEqual(
-            names.checksum,
-            "Stream64-0.103b-macos-arm64-SHA256.txt")
-    }
-
-    func testUpdateChecksumVerificationRejectsTampering() throws {
-        let archive = Data("release archive".utf8)
-        let digest = SHA256.hash(data: archive)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        let checksum = Data("\(digest)  Stream64-update.zip\n".utf8)
-        XCTAssertNoThrow(try UpdateService.verifyChecksum(
-            archiveData: archive,
-            archiveName: "Stream64-update.zip",
-            checksumData: checksum))
-        XCTAssertThrowsError(try UpdateService.verifyChecksum(
-            archiveData: Data("tampered".utf8),
-            archiveName: "Stream64-update.zip",
-            checksumData: checksum))
-    }
-
     @MainActor
     func testUpdateServiceReportsAvailableStableRelease() async {
         let json = """
@@ -71,9 +45,9 @@ final class Assembly64FeatureTests: XCTestCase {
           "tag_name": "v99.0b",
           "name": "Stream64 99.0b",
           "body": "Update notes",
+          "html_url": "https://github.com/mbosschaart/Stream64/releases/tag/v99.0b",
           "draft": false,
-          "prerelease": false,
-          "assets": []
+          "prerelease": false
         }
         """
         let defaults = UserDefaults(suiteName: UUID().uuidString)!

@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.105b-purple)
+![Version](https://img.shields.io/badge/version-0.106b-purple)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -20,7 +20,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **App-wide AirPlay audio** — one global toolbar route picker sends whichever C64 is currently selected to an AirPlay receiver without changing the Mac's system output; once selected, the route remains locked until explicitly stopped, including during view/C64 switching, resets, and transient transport gaps (AirPlay adds roughly 1–3 seconds of buffering)
-- **Update checking** — optionally checks the latest stable GitHub release at startup, with a manual **Check for Updates…** command, architecture-matched downloads, checksum verification, and automatic replacement/relaunch after confirmation
+- **Update checking** — optionally checks the latest stable GitHub release at startup, with a manual **Check for Updates…** command and a direct link to the GitHub release page for downloading
 - **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
@@ -376,8 +376,7 @@ Sources/Stream64/
 │   ├── DebugStreamReceiver.swift UDP bus-trace receiver and observers
 │   ├── AirPlayOutputController.swift, LiveAirPlayEncoder.swift
 │   │                            Persistent app-wide AirPlay and AAC/HLS pipeline
-│   ├── UpdateService.swift      GitHub stable-release lookup, verification,
-│   │                            download, and safe replacement/relaunch
+│   ├── UpdateService.swift      GitHub stable-release lookup and release-page link
 │   ├── LiveHLSServer.swift      Authenticated temporary LAN HLS origin
 │   ├── UltimateTelnetClient.swift  Telnet transport for the Ultimate Menu
 │   ├── C64InputController.swift, GameControllerManager.swift

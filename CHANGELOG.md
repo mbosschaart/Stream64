@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.106b — 2026-08-06
+
+### Changed
+
+- **Software updates now open the GitHub release page** instead of downloading, replacing, or relaunching the app. This keeps updates compatible with the current unsigned distribution workflow.
+
 ## 0.105b — 2026-08-06
 
 ### Fixed
