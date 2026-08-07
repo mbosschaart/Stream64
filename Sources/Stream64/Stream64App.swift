@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.106b"
+            ?? "0.107b"
     }
 }
 
@@ -293,7 +293,7 @@ struct Stream64App: App {
         Window("About Stream64", id: "about") {
             AboutView()
         }
-        .defaultSize(width: 520, height: 300)
+        .defaultSize(width: 520, height: 320)
         .windowResizability(.contentSize)
 
         Window("Assembly64", id: "assembly64") {

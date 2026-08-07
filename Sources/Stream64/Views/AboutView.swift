@@ -29,8 +29,11 @@ struct AboutView: View {
             Text("Designed by Martijn Bosschaart 2026")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("PolyForm Noncommercial License 1.0.0")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .padding(32)
-        .frame(width: 520, height: 300)
+        .frame(width: 520, height: 320)
     }
 }

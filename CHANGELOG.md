@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.107b — 2026-08-07
+
+### Changed
+
+- Future Stream64 source and binary releases are licensed under **PolyForm Noncommercial 1.0.0** with mandatory creator attribution. Commercial use and resale require a separate written license. Previously published GPL-3.0 releases retain their original license.
+
 ## 0.106b — 2026-08-06
 
 ### Changed

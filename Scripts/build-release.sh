@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.106b}"
+VERSION="${VERSION:-0.107b}"
 BUILD_NUMBER="${BUILD_NUMBER:-106}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
@@ -66,6 +66,7 @@ if [[ -f "$BIN_DIR/ZIPFoundation_ZIPFoundation.bundle/PrivacyInfo.xcprivacy" ]];
 fi
 
 cp "$ROOT_DIR/LICENSE" "$APP_BUNDLE/Contents/Resources/LICENSE"
+cp "$ROOT_DIR/NOTICE" "$APP_BUNDLE/Contents/Resources/NOTICE"
 
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 file "$APP_BUNDLE/Contents/MacOS/Stream64"
@@ -78,6 +79,7 @@ fi
 echo "Applying ad-hoc signature..."
 chmod -R u+w "$APP_BUNDLE"
 xattr -cr "$APP_BUNDLE"
+xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 

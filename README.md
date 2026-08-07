@@ -7,7 +7,8 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.106b-purple)
+![Version](https://img.shields.io/badge/version-0.107b-purple)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
@@ -533,6 +534,20 @@ The matrix-input protocol, ordered fallback strategy, focus-release safety, and 
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+Stream64 source releases after the license transition are available under the \
+**[PolyForm Noncommercial License 1.0.0](LICENSE)**. Personal, educational, \
+research, charitable, public-sector, and other noncommercial uses are permitted. \
+Commercial use, commercial resale, and incorporating Stream64 into a commercial \
+product or service are not permitted without a separate written commercial \
+license from the creator.
+
+The required creator attribution is recorded in [NOTICE](NOTICE) and must be \
+preserved with every source or binary copy:
+
+> Stream64 Copyright © 2026 Martijn Bosschaart. Stream64 was created by Martijn Bosschaart.
+
+Previously published GPL-3.0 releases remain available under GPL-3.0; their \
+already-granted rights are not revoked by this change. Third-party components \
+remain governed by their own licenses.
 
 Release history: [CHANGELOG.md](CHANGELOG.md).
