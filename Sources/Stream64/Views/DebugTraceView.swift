@@ -277,7 +277,8 @@ struct DebugTraceView: View {
                     visualization: model.memoryMapVisualization,
                     renderSettings: model.memoryMapRenderSettings,
                     threeDInteraction: model.memoryMap3DInteraction,
-                    threeDOptions: model.memoryMap3DOptions)
+                    threeDOptions: model.memoryMap3DOptions,
+                    videoGPUBehind: { session.isVideoGPUBehind })
             }
             if isActive || isErrored || model.exportStatus != nil {
                 Divider()

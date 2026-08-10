@@ -10,19 +10,18 @@ import SwiftUI
 struct SIDRegisterActivityView: View {
     let activity: SIDRegisterActivity
 
-    private static let refreshInterval: Double = 1.0 / 20.0
-
     var body: some View {
-        TimelineView(.periodic(from: .now, by: Self.refreshInterval)) { context in
-            VStack(spacing: 14) {
-                ForEach(Array(activity.lastWrite.enumerated()), id: \.offset) { chipIndex, lastWrite in
-                    SIDRegisterActivityChipGrid(
-                        chipIndex: chipIndex, lastWrite: lastWrite, now: context.date)
-                }
+        // Driven by the parent view model's engine pull — no extra 20 Hz
+        // TimelineView that would keep firing while other SID windows update.
+        let now = Date()
+        VStack(spacing: 14) {
+            ForEach(Array(activity.lastWrite.enumerated()), id: \.offset) { chipIndex, lastWrite in
+                SIDRegisterActivityChipGrid(
+                    chipIndex: chipIndex, lastWrite: lastWrite, now: now)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black)
     }
 }

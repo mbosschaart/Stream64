@@ -4,6 +4,10 @@ import SwiftUI
 /// machine controls, file actions, and this device's display settings.
 /// Attached to the video surface in both single view and grid tiles, so
 /// the menu always controls the stream under the pointer.
+///
+/// Hosts (`ViewerPane` / `ViewerTile`) must not observe `DeviceSession`
+/// on the same view that owns `.contextMenu` — session fps / presentFPS
+/// publishes would rebuild the host and dismiss this menu mid-selection.
 struct StreamContextMenu: View {
     /// Deliberately NOT @ObservedObject: menu items read state once when
     /// the menu opens. Observing would re-render the open menu on every

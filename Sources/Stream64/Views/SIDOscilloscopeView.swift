@@ -231,15 +231,10 @@ struct SIDVoiceChannel: Identifiable {
     }
 }
 
-/// Thin per-window state: which visualization mode this window shows and
-/// whether its phosphor-glow overlay is on — both are genuinely specific
-/// to *this* window (two windows on the same device can show different
-/// modes, or the same mode with different glow settings). Everything else
-/// (the actual SID data) now lives in the shared `SIDEngine` for this
-/// window's device — see that type for why. `SIDOscilloscopeView` reads
-/// this for `visualizationMode`/`phosphorGlowEnabled` and reads `engine`
-/// directly for the data, so it's observing two small, focused objects
-/// instead of one that mixed per-window and shared state together.
+/// Thin per-window state: which visualization mode this window shows,
+/// phosphor-glow, and mirrored SID data pulled from the shared
+/// `SIDEngine`. The view observes only this object — never the engine —
+/// so inactive / demoted windows do not rebuild when the engine ticks.
 @MainActor
 final class SIDOscilloscopeViewModel: ObservableObject {
     let session: DeviceSession
@@ -248,7 +243,22 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     @Published var visualizationMode: SIDVisualizationMode = .oscilloscope
     @Published var phosphorGlowEnabled = false
 
+    /// Per-window mirrors of engine state. The view observes *this* object
+    /// only — never the shared `SIDEngine` — so inactive windows do not
+    /// rebuild Canvases when other SID windows update.
+    @Published private(set) var channels: [SIDVoiceChannel] = []
+    @Published private(set) var chipCount = 1
+    @Published private(set) var filterStates: [SIDFilterRegisters] = []
+    @Published private(set) var registerActivity = SIDRegisterActivity(chipCount: 1)
+    @Published private(set) var spectrumBars: [Float] = []
+    @Published private(set) var spectrogramHistory: [[Float]] = []
+    @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
+
     private var engineToken: SIDEngine.SubscriberToken?
+    private var subscribedNeeds: SIDEngineNeeds?
+    /// False while the window is occluded or demoted under high load —
+    /// drops this window's needs from the shared engine.
+    private var isVisiblyActive = false
 
     init(session: DeviceSession) {
         self.session = session
@@ -261,91 +271,131 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     /// — a window's mode never changes after creation, so this only ever
     /// needs to compute `SIDEngineNeeds` once).
     func start() {
-        engineToken = engine.subscribe(needs: SIDEngineNeeds(mode: visualizationMode))
+        subscribedNeeds = SIDEngineNeeds(mode: visualizationMode)
+        // Force re-apply even if an occlusion notification already marked
+        // us visible before `subscribedNeeds` existed; reconcile may also
+        // call `setVisiblyActive` right after this.
+        isVisiblyActive = false
+        setVisiblyActive(true)
     }
 
     func stop() {
-        if let engineToken {
+        setVisiblyActive(false)
+        subscribedNeeds = nil
+    }
+
+    func setVisiblyActive(_ active: Bool) {
+        guard active != isVisiblyActive else { return }
+        isVisiblyActive = active
+        if active {
+            guard engineToken == nil, let subscribedNeeds else { return }
+            let needs = subscribedNeeds
+            engineToken = engine.subscribe(needs: needs) { [weak self] in
+                self?.pullFromEngine(needs: needs)
+            }
+            pullFromEngine(needs: needs)
+        } else if let engineToken {
             engine.unsubscribe(engineToken)
+            self.engineToken = nil
         }
-        engineToken = nil
+    }
+
+    private func pullFromEngine(needs: SIDEngineNeeds) {
+        chipCount = engine.chipCount
+        if needs.needsSampleSynthesis || needs.needsRegisterWrites {
+            channels = engine.channels
+        }
+        if needs.needsRegisterWrites {
+            filterStates = engine.filterStates
+            registerActivity = engine.registerActivity
+        }
+        if needs.usesSpectrumBars {
+            spectrumBars = engine.spectrumBars
+        }
+        if needs.usesSpectrogramHistory {
+            spectrogramHistory = engine.spectrogramHistory
+        }
+        if needs.needsLissajousPoints {
+            lissajousPoints = engine.lissajousPoints
+        }
     }
 }
 
 struct SIDOscilloscopeView: View {
-    @ObservedObject var model: SIDOscilloscopeViewModel
-    /// The shared per-device engine backing `model` — observed directly
-    /// (rather than forwarded through `model`) so this view re-renders
-    /// whenever the engine's data changes, exactly as if it were still
-    /// owned by `model` itself.
-    @ObservedObject var engine: SIDEngine
-    @ObservedObject var session: DeviceSession
+    /// Plain reference — must not be `@ObservedObject` or engine-driven
+    /// pulls rebuild this host and dismiss the right-click menu.
+    let model: SIDOscilloscopeViewModel
+    /// Plain reference — must not be `@ObservedObject` or every
+    /// `session.fps` tick rebuilds every open SID Canvas.
+    let session: DeviceSession
 
     init(model: SIDOscilloscopeViewModel, session: DeviceSession) {
         self.model = model
-        self.engine = model.engine
         self.session = session
     }
 
     var body: some View {
-        content
+        SIDOscilloscopeContent(model: model)
             .contextMenu {
                 SIDVisualizationMenuContent(model: model, session: session)
             }
             .frame(minWidth: 480, minHeight: 220)
     }
+}
 
-    @ViewBuilder
-    private var content: some View {
+private struct SIDOscilloscopeContent: View {
+    @ObservedObject var model: SIDOscilloscopeViewModel
+
+    var body: some View {
         switch model.visualizationMode {
         case .oscilloscope:
-            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
                 SIDChannelPanel(channel: channel, glow: model.phosphorGlowEnabled)
             }
         case .envelope:
-            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
                 SIDEnvelopePanel(channel: channel, glow: model.phosphorGlowEnabled)
             }
         case .mixerConsole:
-            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
                 SIDMixerStripPanel(channel: channel)
             }
         case .pianoRoll:
-            SIDPianoRollView(channels: engine.channels)
+            SIDPianoRollView(channels: model.channels)
         case .voiceLineup:
-            SIDVoiceLineupView(channels: engine.channels)
+            SIDVoiceLineupView(channels: model.channels)
         case .filterCurve:
-            SIDFilterCurveView(channels: engine.channels, filterStates: engine.filterStates)
+            SIDFilterCurveView(channels: model.channels, filterStates: model.filterStates)
         case .spectrum:
-            SIDSpectrumView(bars: engine.spectrumBars, glow: model.phosphorGlowEnabled)
+            SIDSpectrumView(bars: model.spectrumBars, glow: model.phosphorGlowEnabled)
         case .lissajous:
-            SIDLissajousView(points: engine.lissajousPoints, glow: model.phosphorGlowEnabled)
+            SIDLissajousView(points: model.lissajousPoints, glow: model.phosphorGlowEnabled)
         case .spectrogram:
-            SIDSpectrogramView(history: engine.spectrogramHistory)
+            SIDSpectrogramView(history: model.spectrogramHistory)
         case .waterfall3D:
-            SIDWaterfallSpectrumView(history: engine.spectrogramHistory)
+            SIDWaterfallSpectrumView(history: model.spectrogramHistory)
         case .barField3D:
-            SID3DBarSpectrumView(history: engine.spectrogramHistory)
+            SID3DBarSpectrumView(history: model.spectrogramHistory)
         case .vuMeterBank:
-            SIDVUMeterBankView(channels: engine.channels)
+            SIDVUMeterBankView(channels: model.channels)
         case .registerActivity:
-            SIDRegisterActivityView(activity: engine.registerActivity)
+            SIDRegisterActivityView(activity: model.registerActivity)
         case .adsrKnobs:
-            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
                 SIDADSRKnobPanel(channel: channel)
             }
         case .pulseWidth:
-            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
                 SIDPulseWidthPanel(channel: channel)
             }
         case .controlBits:
-            SIDChannelGrid(channels: engine.channels, chipCount: engine.chipCount) { channel in
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
                 SIDControlBitsPanel(channel: channel)
             }
         case .dashboard:
-            SIDDashboardView(channels: engine.channels, filterStates: engine.filterStates)
+            SIDDashboardView(channels: model.channels, filterStates: model.filterStates)
         case .colorfulWaveform:
-            SIDColorfulWaveformView(channels: engine.channels, glow: model.phosphorGlowEnabled)
+            SIDColorfulWaveformView(channels: model.channels, glow: model.phosphorGlowEnabled)
         }
     }
 
@@ -361,7 +411,9 @@ struct SIDOscilloscopeView: View {
 /// This mirrors the "SID Visualizations" entry on the stream's main
 /// right-click menu (`StreamContextMenu`), which behaves identically.
 struct SIDVisualizationMenuContent: View {
-    @ObservedObject var model: SIDOscilloscopeViewModel
+    /// Not `@ObservedObject`: observing would re-render the open menu on
+    /// every SID tick and collapse nested items while the user is picking.
+    let model: SIDOscilloscopeViewModel
     let session: DeviceSession
 
     var body: some View {
@@ -373,7 +425,9 @@ struct SIDVisualizationMenuContent: View {
             }
         }
         Divider()
-        Toggle("Phosphor Glow", isOn: $model.phosphorGlowEnabled)
+        Toggle("Phosphor Glow", isOn: Binding(
+            get: { model.phosphorGlowEnabled },
+            set: { model.phosphorGlowEnabled = $0 }))
         Divider()
         Button {
             SIDOscilloscopeWindowController.showAllInGrid(session: session)
@@ -776,6 +830,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             }
             guard !Task.isCancelled, let self, self.window != nil else { return }
             self.model.start()
+            Self.reconcileUIActivity(for: self.deviceID)
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -786,10 +841,25 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             ? base : "\(base) — \(model.visualizationMode.rawValue)"
     }
 
+    /// Pause engine subscriptions for occluded windows only. Focus must not
+    /// gate updates — every visible SID visualization should keep animating.
+    static func reconcileUIActivity(for deviceID: UUID) {
+        let matching = windows.values.filter { $0.deviceID == deviceID }
+        for controller in matching {
+            let visible = controller.window?.occlusionState.contains(.visible) == true
+            controller.model.setVisiblyActive(visible)
+        }
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        Self.reconcileUIActivity(for: deviceID)
+    }
+
     func windowWillClose(_ notification: Notification) {
         startupTask?.cancel()
         startupTask = nil
         model.stop()
         Self.windows.removeValue(forKey: windowID)
+        Self.reconcileUIActivity(for: deviceID)
     }
 }

@@ -455,18 +455,33 @@ struct MultiViewerGrid: View {
     }
 }
 
+/// Formats the frame-rate overlay. When present FPS is meaningful and
+/// diverges from the UDP receive rate, show both (`stream / display`).
+private func fpsOverlayText(stream: Double, present: Double) -> String {
+    guard present >= 1, abs(stream - present) >= 3 else {
+        return String(format: "%.0f fps", stream)
+    }
+    return String(format: "%.0f / %.0f fps", stream, present)
+}
+
 /// One live device tile in the grid: video, connection state, name banner.
+///
+/// Does **not** observe `DeviceSession` itself — fps / presentFPS ticks would
+/// rebuild this view and tear down an open right-click menu. Session-driven
+/// chrome lives in `ViewerTileContent`.
 struct ViewerTile: View {
-    @ObservedObject var session: DeviceSession
+    let session: DeviceSession
     let isSelected: Bool
     /// Control-drop: deliver the file to every connected stream ("Multi Drop").
     var multiDrop: ((URL) -> Void)?
     @EnvironmentObject var settings: AppSettings
     @State private var showPowerOffConfirmation = false
-    @State private var isDropTargeted = false
 
     var body: some View {
-        tileBody
+        ViewerTileContent(
+            session: session,
+            isSelected: isSelected,
+            multiDrop: multiDrop)
             .contextMenu {
                 StreamContextMenu(
                     session: session,
@@ -490,8 +505,15 @@ struct ViewerTile: View {
                 }
             }
     }
+}
 
-    private var tileBody: some View {
+private struct ViewerTileContent: View {
+    @ObservedObject var session: DeviceSession
+    let isSelected: Bool
+    var multiDrop: ((URL) -> Void)?
+    @State private var isDropTargeted = false
+
+    var body: some View {
         ZStack {
             Color.black
             VideoView(session: session)
@@ -514,11 +536,14 @@ struct ViewerTile: View {
                         .shadow(color: .black.opacity(0.8), radius: 1)
                     Spacer()
                     if session.display.showFPS, session.isConnected {
-                        Text(String(format: "%.0f fps", session.fps))
+                        Text(fpsOverlayText(
+                            stream: session.fps,
+                            present: session.presentFPS))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.green)
                             .shadow(color: .black, radius: 2)
                             .shadow(color: .black.opacity(0.8), radius: 1)
+                            .help("Stream receive rate / display present rate")
                     }
                 }
                 .padding(8)
@@ -767,7 +792,57 @@ struct EmptyStateView: View {
 
 // MARK: - Viewer pane
 
+/// Host for the stream viewer. Does **not** observe `DeviceSession` — fps /
+/// presentFPS publishes would rebuild the view and dismiss an open
+/// right-click menu mid-selection. Live session chrome lives in
+/// `ViewerPaneSessionContent`.
 struct ViewerPane: View {
+    let session: DeviceSession
+    @EnvironmentObject var settings: AppSettings
+    var isFullscreen: Bool = false
+    /// Control-drop: deliver the file to every connected stream ("Multi Drop").
+    var multiDrop: ((URL) -> Void)?
+    @State private var showPowerOffConfirmation = false
+
+    init(session: DeviceSession, isFullscreen: Bool = false, multiDrop: ((URL) -> Void)? = nil) {
+        self.session = session
+        self.isFullscreen = isFullscreen
+        self.multiDrop = multiDrop
+    }
+
+    static let droppableExtensions: Set<String> = ["prg", "d64", "g64", "d71", "g71", "d81"]
+
+    var body: some View {
+        ViewerPaneSessionContent(
+            session: session,
+            isFullscreen: isFullscreen,
+            multiDrop: multiDrop)
+            .contextMenu {
+                StreamContextMenu(
+                    session: session,
+                    monitorCaseVisible: false,
+                    requestPictureControls: {
+                        PictureControlsPanelController.show(display: session.display)
+                    }
+                ) {
+                    if settings.confirmDestructiveActions {
+                        showPowerOffConfirmation = true
+                    } else {
+                        Task { await session.powerOff() }
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Power off \(session.device.name)?",
+                isPresented: $showPowerOffConfirmation) {
+                Button("Power Off", role: .destructive) {
+                    Task { await session.powerOff() }
+                }
+            }
+    }
+}
+
+private struct ViewerPaneSessionContent: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var session: DeviceSession
     /// This device's own rendering settings — observed so toolbar pickers
@@ -776,11 +851,10 @@ struct ViewerPane: View {
     @ObservedObject var input: InputSettings
     @EnvironmentObject var settings: AppSettings
     var isFullscreen: Bool = false
-    /// Control-drop: deliver the file to every connected stream ("Multi Drop").
     var multiDrop: ((URL) -> Void)?
-    @State private var showPowerOffConfirmation = false
     @State private var isDropTargeted = false
     @State private var showOnScreenKeyboard = false
+    @State private var showPowerOffConfirmation = false
 
     init(session: DeviceSession, isFullscreen: Bool = false, multiDrop: ((URL) -> Void)? = nil) {
         self.session = session
@@ -795,8 +869,6 @@ struct ViewerPane: View {
         Binding(get: { display[keyPath: keyPath] },
                 set: { display[keyPath: keyPath] = $0 })
     }
-
-    static let droppableExtensions: Set<String> = ["prg", "d64", "g64", "d71", "g71", "d81"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -818,23 +890,8 @@ struct ViewerPane: View {
         }
         .ignoresSafeArea(.all, edges: isFullscreen ? .all : [])
         .animation(.easeInOut(duration: 0.2), value: showOnScreenKeyboard)
-        .contextMenu {
-            StreamContextMenu(
-                session: session,
-                monitorCaseVisible: false,
-                requestPictureControls: {
-                    PictureControlsPanelController.show(display: display)
-                }
-            ) {
-                if settings.confirmDestructiveActions {
-                    showPowerOffConfirmation = true
-                } else {
-                    Task { await session.powerOff() }
-                }
-            }
-        }
         .dropDestination(for: URL.self) { urls, _ in
-            let accepted = urls.filter { Self.droppableExtensions.contains($0.pathExtension.lowercased()) }
+            let accepted = urls.filter { ViewerPane.droppableExtensions.contains($0.pathExtension.lowercased()) }
             guard let url = accepted.first else { return false }
             // Control held at drop time = Multi Drop: every connected stream.
             if NSEvent.modifierFlags.contains(.control), let multiDrop {
@@ -947,11 +1004,14 @@ struct ViewerPane: View {
                 VStack {
                     HStack {
                         Spacer()
-                        Text(String(format: "%.1f fps", session.fps))
+                        Text(fpsOverlayText(
+                            stream: session.fps,
+                            present: session.presentFPS))
                             .font(.caption.monospacedDigit())
                             .padding(6)
                             .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
                             .foregroundStyle(.green)
+                            .help("Stream receive rate / display present rate")
                             .padding(8)
                     }
                     Spacer()

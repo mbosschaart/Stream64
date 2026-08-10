@@ -90,8 +90,9 @@ struct MemoryMap3DCamera: Equatable {
 
 /// Draws all 65,536 byte positions as GPU-instanced bars. Bar geometry is
 /// generated entirely in the vertex shader from vertex/instance IDs; the CPU
-/// only uploads a 128 KB value+flags texture at the same 20 Hz cadence as the
-/// flat map. Camera-only redraws do not repack that data.
+/// repacks instance buffers only when the heatmap generation or LOD changes.
+/// Activity pulse decays in the shader from per-instance access timestamps so
+/// the 20 Hz timer can redraw without scanning 64K addresses every tick.
 final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
     struct Uniforms {
         var viewProjection: simd_float4x4
@@ -100,6 +101,10 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         /// 0 = C64 CPU/VIC regions, 1 = 1541 regions.
         var sourceMode: Float
         var regionOverlays: Float
+        /// Seconds since `timeBase` — used with per-instance `accessedAt`.
+        var currentTime: Float
+        /// 1 when activity pulse is enabled.
+        var activityPulseEnabled: Float
     }
 
     struct InstanceData {
@@ -108,8 +113,8 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         /// Low byte = value; next byte = flags from
         /// `MemoryMap3DInstanceEncoding`; third byte = LOD block span.
         var packedValueFlagsAndSpan: UInt32
-        /// 0...1 recent-access flash mixed into the base read/write color.
-        var activity: Float
+        /// Access time relative to renderer `timeBase`, or -1 if unused.
+        var accessedAt: Float
         var padding: UInt32 = 0
     }
 
@@ -118,6 +123,92 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         if distance < 2.15 { return 2 }
         if distance < 3.05 { return 4 }
         return 8
+    }
+
+    /// Decision for one timer tick — kept pure for unit tests.
+    enum TickAction: Equatable {
+        /// Nothing to do this tick.
+        case skip
+        /// Re-present existing instances (activity pulse / camera) — no snapshot.
+        case redrawOnly
+        /// Copy heatmap + rebuild instance buffers.
+        case rebuild
+    }
+
+    /// - Parameters:
+    ///   - stableTickParity: increments on every timer fire while generation
+    ///     is unchanged; used to present activity-only frames at half rate
+    ///     (10 Hz from a 20 Hz timer).
+    static func tickAction(
+        generation: UInt64,
+        lastGeneration: UInt64?,
+        blockSize: Int,
+        lastLOD: Int,
+        activityPulse: Bool,
+        stableTickParity: Int,
+        videoGPUBehind: Bool
+    ) -> TickAction {
+        if videoGPUBehind { return .skip }
+        let dataChanged = lastGeneration != generation || lastLOD != blockSize
+        if dataChanged { return .rebuild }
+        guard activityPulse else { return .skip }
+        // Half-rate presents while only the shader clock advances.
+        return stableTickParity.isMultiple(of: 2) ? .redrawOnly : .skip
+    }
+
+    /// Fills `destination` from a heatmap snapshot. Pure CPU work — safe to
+    /// run off the main thread so the live CRT present path is not blocked.
+    static func fillInstances(
+        values: [UInt8],
+        accessTimes: [Double],
+        directions: [Bool],
+        blockSize: Int,
+        timeBase: Double,
+        destination: UnsafeMutablePointer<InstanceData>
+    ) -> Int {
+        var instanceCount = 0
+        for blockZ in stride(from: 0, to: 256, by: blockSize) {
+            for blockX in stride(from: 0, to: 256, by: blockSize) {
+                var valueTotal = 0
+                var observedCount = 0
+                var latestAccess = 0.0
+                var latestWasRead = true
+                for z in blockZ..<(blockZ + blockSize) {
+                    for x in blockX..<(blockX + blockSize) {
+                        let address = z * 256 + x
+                        let access = accessTimes[address]
+                        guard access > 0 else { continue }
+                        valueTotal += Int(values[address])
+                        observedCount += 1
+                        if access >= latestAccess {
+                            latestAccess = access
+                            latestWasRead = directions[address]
+                        }
+                    }
+                }
+
+                guard observedCount > 0 else { continue }
+                let value = UInt8(valueTotal / observedCount)
+                // Zero-height blocks are visually identical to no geometry.
+                guard value > 0 else { continue }
+                let flags = MemoryMap3DInstanceEncoding.flags(
+                    accessed: true,
+                    wasRead: latestWasRead)
+                let accessedAt: Float = latestAccess > 0
+                    ? Float(latestAccess - timeBase)
+                    : -1
+                destination[instanceCount] = InstanceData(
+                    coordinate:
+                        UInt32(blockX) | (UInt32(blockZ) << 16),
+                    packedValueFlagsAndSpan:
+                        UInt32(value)
+                        | (UInt32(flags) << 8)
+                        | (UInt32(blockSize) << 16),
+                    accessedAt: accessedAt)
+                instanceCount += 1
+            }
+        }
+        return instanceCount
     }
 
     static func activityIntensity(
@@ -177,6 +268,8 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         float cellSize;
         float sourceMode;
         float regionOverlays;
+        float currentTime;
+        float activityPulseEnabled;
     };
 
     struct BarVertexOut {
@@ -188,7 +281,7 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
     struct InstanceData {
         uint coordinate;
         uint packedValueFlagsAndSpan;
-        float activity;
+        float accessedAt;
         uint padding;
     };
 
@@ -248,6 +341,15 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
             (float(z) + float(span) * 0.5) * uniforms.cellSize - 0.5
                 + local.z * barWidth);
 
+        float activity = 0.0;
+        if (uniforms.activityPulseEnabled > 0.5 && instance.accessedAt >= 0.0) {
+            float linear = clamp(
+                1.0 - (uniforms.currentTime - instance.accessedAt) / 0.35,
+                0.0,
+                1.0);
+            activity = linear * linear;
+        }
+
         BarVertexOut out;
         out.position = uniforms.viewProjection * float4(world, 1);
         out.normal = barNormals[vertexID];
@@ -256,7 +358,7 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         out.color = mix(
             baseColor,
             float3(1.0),
-            clamp(instance.activity, 0.0, 1.0) * 0.58);
+            clamp(activity, 0.0, 1.0) * 0.58);
         return out;
     }
 
@@ -363,6 +465,17 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
     private var lastDataGeneration: UInt64?
     private var lastLOD = 0
+    /// Epoch for packing access timestamps as Float seconds (avoids losing
+    /// sub-second precision that absolute CFAbsoluteTime has in Float).
+    private let timeBase = CFAbsoluteTimeGetCurrent()
+    private var deferredRedrawPending = false
+    /// Counts timer firings while heatmap generation is unchanged so
+    /// activity-only presents can run at 10 Hz on a 20 Hz timer.
+    private var stableTickParity = 0
+    /// Buffer index currently being filled on a background queue, if any.
+    private var buildingBufferIndex: Int?
+    /// When true, this tick yields to the session's CRT video path.
+    var videoGPUBehind: () -> Bool = { false }
 
     var heatmap: MemoryHeatmap?
     var source: DebugStreamSource = .cpu6510
@@ -529,78 +642,77 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         guard view?.window == nil
                 || view?.window?.occlusionState.contains(.visible) == true
         else { return }
-        let snapshot = heatmap.renderSnapshot()
-        let values = snapshot.lastValue
-        let accessTimes = snapshot.lastAccess
-        let directions = snapshot.lastAccessWasRead
-        let now = CFAbsoluteTimeGetCurrent()
         let blockSize = options.adaptiveLOD
             ? Self.lodBlockSize(for: camera.distance)
             : 1
-        if !options.activityPulse,
-           snapshot.generation == lastDataGeneration,
-           blockSize == lastLOD {
+        let generation = heatmap.currentGeneration()
+        let dataChanged = lastDataGeneration != generation || lastLOD != blockSize
+        if dataChanged {
+            stableTickParity = 0
+        } else {
+            stableTickParity &+= 1
+        }
+        switch Self.tickAction(
+            generation: generation,
+            lastGeneration: lastDataGeneration,
+            blockSize: blockSize,
+            lastLOD: lastLOD,
+            activityPulse: options.activityPulse,
+            stableTickParity: stableTickParity,
+            videoGPUBehind: videoGPUBehind()
+        ) {
+        case .skip:
+            return
+        case .redrawOnly:
             requestDraw()
             return
+        case .rebuild:
+            break
         }
+
+        // Snapshot + 64K LOD pack are expensive; do them off the main run
+        // loop so CRT `draw(in:)` is not delayed by secondary viz work.
+        guard buildingBufferIndex == nil else { return }
         bufferLock.lock()
+        let busy = Set(
+            bufferInFlight.enumerated().compactMap { $0.element ? $0.offset : nil }
+            + [currentBufferIndex])
         guard let nextBufferIndex = (0..<instanceBuffers.count).first(
-            where: { !bufferInFlight[$0] && $0 != currentBufferIndex })
+            where: { !busy.contains($0) })
         else {
             bufferLock.unlock()
+            scheduleDeferredRedraw()
             return
         }
         bufferLock.unlock()
-        let buffer = instanceBuffers[nextBufferIndex]
-        let destination = buffer.contents().bindMemory(
-            to: InstanceData.self,
-            capacity: MemoryHeatmap.addressSpace)
-        var instanceCount = 0
-        for blockZ in stride(from: 0, to: 256, by: blockSize) {
-            for blockX in stride(from: 0, to: 256, by: blockSize) {
-                var valueTotal = 0
-                var observedCount = 0
-                var latestAccess = 0.0
-                var latestWasRead = true
-                for z in blockZ..<(blockZ + blockSize) {
-                    for x in blockX..<(blockX + blockSize) {
-                        let address = z * 256 + x
-                        let access = accessTimes[address]
-                        guard access > 0 else { continue }
-                        valueTotal += Int(values[address])
-                        observedCount += 1
-                        if access >= latestAccess {
-                            latestAccess = access
-                            latestWasRead = directions[address]
-                        }
-                    }
-                }
 
-                guard observedCount > 0 else { continue }
-                let value = UInt8(valueTotal / observedCount)
-                // Zero-height blocks are visually identical to no geometry.
-                guard value > 0 else { continue }
-                let flags = MemoryMap3DInstanceEncoding.flags(
-                    accessed: true,
-                    wasRead: latestWasRead)
-                destination[instanceCount] = InstanceData(
-                    coordinate:
-                        UInt32(blockX) | (UInt32(blockZ) << 16),
-                    packedValueFlagsAndSpan:
-                        UInt32(value)
-                        | (UInt32(flags) << 8)
-                        | (UInt32(blockSize) << 16),
-                    activity: Self.activityIntensity(
-                        accessedAt: options.activityPulse ? latestAccess : 0,
-                        now: now))
-                instanceCount += 1
+        buildingBufferIndex = nextBufferIndex
+        let buffer = instanceBuffers[nextBufferIndex]
+        let timeBase = self.timeBase
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let snapshot = heatmap.renderSnapshot()
+            let destination = buffer.contents().bindMemory(
+                to: InstanceData.self,
+                capacity: MemoryHeatmap.addressSpace)
+            let instanceCount = Self.fillInstances(
+                values: snapshot.lastValue,
+                accessTimes: snapshot.lastAccess,
+                directions: snapshot.lastAccessWasRead,
+                blockSize: blockSize,
+                timeBase: timeBase,
+                destination: destination)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.buildingBufferIndex = nil
+                // Window may have closed while the pack was in flight.
+                guard self.view != nil else { return }
+                self.currentBufferIndex = nextBufferIndex
+                self.currentInstanceCount = instanceCount
+                self.lastDataGeneration = snapshot.generation
+                self.lastLOD = blockSize
+                self.requestDraw()
             }
         }
-        currentBufferIndex = nextBufferIndex
-        currentInstanceCount = instanceCount
-        lastDataGeneration = snapshot.generation
-        lastLOD = blockSize
-        requestDraw()
     }
 
     private func startTimer() {
@@ -618,6 +730,16 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
         view.setNeedsDisplay(view.bounds)
     }
 
+    private func scheduleDeferredRedraw() {
+        guard !deferredRedrawPending else { return }
+        deferredRedrawPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.deferredRedrawPending = false
+            self.requestDraw()
+        }
+    }
+
     func mtkView(
         _ view: MTKView,
         drawableSizeWillChange size: CGSize
@@ -627,7 +749,10 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         drawPending = false
+        // Prefer the live CRT stream when its display path is under pressure.
+        guard !videoGPUBehind() else { return }
         guard inFlightSemaphore.wait(timeout: .now()) == .success else {
+            scheduleDeferredRedraw()
             return
         }
         guard view.drawableSize.width > 0,
@@ -652,7 +777,9 @@ final class MemoryMap3DRenderer: NSObject, MTKViewDelegate {
             maximumHeight: 0.46,
             cellSize: 1.0 / Float(MemoryMapView.side),
             sourceMode: source == .drive1541 ? 1 : 0,
-            regionOverlays: options.regionOverlays ? 1 : 0)
+            regionOverlays: options.regionOverlays ? 1 : 0,
+            currentTime: Float(CFAbsoluteTimeGetCurrent() - timeBase),
+            activityPulseEnabled: options.activityPulse ? 1 : 0)
 
         encoder.setDepthStencilState(depthState)
         encoder.setRenderPipelineState(basePipeline)

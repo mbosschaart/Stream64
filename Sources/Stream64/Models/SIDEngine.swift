@@ -81,6 +81,57 @@ final class SIDEngine: ObservableObject {
     /// doesn't try to synthesize a huge backlog of samples the instant it
     /// resumes.
     private static let maxTickSeconds = 0.1
+    /// Cap the audio-tap mailbox at ~100 ms of interleaved stereo float
+    /// samples (~48 kHz). If MainActor ticks fall behind, drop oldest audio
+    /// instead of letting the queue grow without bound.
+    nonisolated static let maxPendingAudioSamples = 10_000
+    /// Visible-subscriber count at which SID windows switch to key-window-only
+    /// UI updates and the engine lowers its tick rate (Open All = 18).
+    nonisolated static let highLoadSubscriberThreshold = 6
+    /// Further degradation for full Open-All style loads.
+    nonisolated static let extremeLoadSubscriberThreshold = 12
+
+    nonisolated static func effectiveTickInterval(
+        subscriberCount: Int,
+        videoDisplayBehind: Bool = false
+    ) -> TimeInterval {
+        // Prefer the live C64 picture over SID Canvas work when the stream
+        // display path is starved (even with a single SID window open).
+        if videoDisplayBehind { return 1.0 / 12.0 }
+        if subscriberCount >= extremeLoadSubscriberThreshold { return 1.0 / 10.0 }
+        if subscriberCount >= highLoadSubscriberThreshold { return 1.0 / 15.0 }
+        return 1.0 / 30.0
+    }
+
+    nonisolated static func synthesisSampleCap(
+        subscriberCount: Int,
+        requested: Int,
+        videoDisplayBehind: Bool = false
+    ) -> Int {
+        let requested = max(1, requested)
+        if videoDisplayBehind || subscriberCount >= extremeLoadSubscriberThreshold {
+            return max(1, requested / 4)
+        }
+        if subscriberCount >= highLoadSubscriberThreshold {
+            return max(1, requested / 2)
+        }
+        return requested
+    }
+
+    /// Appends interleaved audio samples into the mailbox, dropping the oldest
+    /// samples when `maxCount` is exceeded. Exposed for unit tests; called from
+    /// the audio-receiver queue, so it must stay nonisolated.
+    nonisolated static func appendCappedAudioSamples(
+        _ pending: inout [Float],
+        _ interleaved: [Float],
+        maxCount: Int = maxPendingAudioSamples
+    ) {
+        pending.append(contentsOf: interleaved)
+        let overflow = pending.count - maxCount
+        if overflow > 0 {
+            pending.removeFirst(overflow)
+        }
+    }
 
     private static var instances: [UUID: SIDEngine] = [:]
 
@@ -113,7 +164,12 @@ final class SIDEngine: ObservableObject {
     @Published private(set) var spectrogramHistory: [[Float]] = []
     @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
 
-    private var subscribers: [SubscriberToken: SIDEngineNeeds] = [:]
+    private struct Subscriber {
+        var needs: SIDEngineNeeds
+        var onFrame: () -> Void
+    }
+
+    private var subscribers: [SubscriberToken: Subscriber] = [:]
     private var aggregateNeeds: SIDEngineNeeds = .none
 
     /// The mutable working copies `tick()` steps every sample; the
@@ -123,6 +179,10 @@ final class SIDEngine: ObservableObject {
     private var workingFilterStates: [SIDFilterRegisters] = []
     private var workingRegisterActivity = SIDRegisterActivity(chipCount: 1)
     private var chipBaseAddresses: [UInt16] = [0xD400]
+    /// Snapshot of `chipBaseAddresses` for the debug-receiver queue. The
+    /// entries observer must not read `@MainActor` state from that queue.
+    private var observerChipBases: [UInt16] = [0xD400]
+    private let chipBasesLock = NSLock()
 
     private var pendingVoiceWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
     private var pendingFilterWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
@@ -146,13 +206,14 @@ final class SIDEngine: ObservableObject {
     private var timer: Timer?
     private var lastTick = Date()
     private var resetObservation: AnyCancellable?
+    /// Drops coalesced timer firings while a tick is still on the main
+    /// run loop (nested run-loop / long tick), so work cannot pile up.
+    private var tickRunning = false
 
     private init(session: DeviceSession) {
         self.session = session
         lastTick = Date()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tick() }
-        }
+        installTickTimer(interval: Self.effectiveTickInterval(subscriberCount: 0))
         // `.dropFirst()` because `$machineResetToken` immediately replays
         // its *current* value to a new subscriber — without it, a freshly
         // created engine would clear state it hasn't even configured yet
@@ -162,18 +223,43 @@ final class SIDEngine: ObservableObject {
         }
     }
 
+    private func installTickTimer(interval: TimeInterval) {
+        timer?.invalidate()
+        // Fire directly on the main RunLoop instead of `Task { @MainActor }`.
+        // A Task per tick can queue up when `tick()` overruns the period;
+        // calling synchronously lets the timer naturally skip.
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.coalescedTick()
+            }
+        }
+    }
+
+    private func retuneTickTimerIfNeeded() {
+        let interval = Self.effectiveTickInterval(
+            subscriberCount: subscribers.count,
+            videoDisplayBehind: session.isVideoGPUBehind)
+        guard abs((timer?.timeInterval ?? 0) - interval) > 0.001 else { return }
+        installTickTimer(interval: interval)
+    }
+
     /// Registers a window's needs (derived from its `SIDVisualizationMode`)
     /// and starts whichever shared subsystems no *other* current
     /// subscriber already needed — the SID-config fetch and debug-trace
-    /// observer, or the audio-tap observer — gated independently. Callers
-    /// must hold onto the returned token and pass it to `unsubscribe(_:)`
-    /// when their window closes.
-    func subscribe(needs: SIDEngineNeeds) -> SubscriberToken {
+    /// observer, or the audio-tap observer — gated independently. `onFrame`
+    /// is invoked once per engine tick so each window can pull into its own
+    /// `@Published` mirror — views must not observe this engine directly or
+    /// every open SID Canvas rebuilds on every tick.
+    /// Callers must hold onto the returned token and pass it to
+    /// `unsubscribe(_:)` when their window closes.
+    func subscribe(needs: SIDEngineNeeds, onFrame: @escaping () -> Void) -> SubscriberToken {
         let token = SubscriberToken()
         let before = aggregateNeeds
-        subscribers[token] = needs
+        subscribers[token] = Subscriber(needs: needs, onFrame: onFrame)
         recomputeAggregateNeeds()
         applyNeedsTransition(from: before, to: aggregateNeeds)
+        retuneTickTimerIfNeeded()
         return token
     }
 
@@ -190,10 +276,17 @@ final class SIDEngine: ObservableObject {
         let before = aggregateNeeds
         recomputeAggregateNeeds()
         applyNeedsTransition(from: before, to: aggregateNeeds)
+        retuneTickTimerIfNeeded()
     }
 
     private func recomputeAggregateNeeds() {
-        aggregateNeeds = subscribers.values.reduce(.none) { $0.union($1) }
+        aggregateNeeds = subscribers.values.reduce(.none) { $0.union($1.needs) }
+    }
+
+    private func notifySubscribers() {
+        for subscriber in subscribers.values {
+            subscriber.onFrame()
+        }
     }
 
     private func teardown() {
@@ -274,7 +367,9 @@ final class SIDEngine: ObservableObject {
 
         entriesObserverID = session.debugStreamReceiver.addEntriesObserver { [weak self] entries in
             guard let self else { return }
-            let bases = self.chipBaseAddresses
+            self.chipBasesLock.lock()
+            let bases = self.observerChipBases
+            self.chipBasesLock.unlock()
             var voiceWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
             var filterWrites: [(chipIndex: Int, offset: Int, value: UInt8)] = []
             for entry in entries where !entry.isRead {
@@ -318,7 +413,7 @@ final class SIDEngine: ObservableObject {
         audioObserverID = session.audioReceiver.addSampleObserver { [weak self] interleaved in
             guard let self else { return }
             self.audioLock.lock()
-            self.pendingAudioSamples.append(contentsOf: interleaved)
+            Self.appendCappedAudioSamples(&self.pendingAudioSamples, interleaved)
             self.audioLock.unlock()
         }
     }
@@ -401,6 +496,9 @@ final class SIDEngine: ObservableObject {
         if let socket2 = config.socket2Address {
             chipBaseAddresses.append(socket2)
         }
+        chipBasesLock.lock()
+        observerChipBases = chipBaseAddresses
+        chipBasesLock.unlock()
         chipCount = chipBaseAddresses.count
         workingChannels = (0..<chipBaseAddresses.count).flatMap { chip in
             (0..<3).map { voice in
@@ -416,14 +514,26 @@ final class SIDEngine: ObservableObject {
         registerActivity = workingRegisterActivity
     }
 
+    private func coalescedTick() {
+        guard !tickRunning else { return }
+        tickRunning = true
+        retuneTickTimerIfNeeded()
+        tick()
+        tickRunning = false
+    }
+
     private func tick() {
         let now = Date()
         let dt = min(now.timeIntervalSince(lastTick), Self.maxTickSeconds)
         lastTick = now
+        let videoDisplayBehind = session.isVideoGPUBehind
 
         drainPendingAudioSamples()
 
-        guard dt > 0, !workingChannels.isEmpty else { return }
+        guard dt > 0, !workingChannels.isEmpty else {
+            notifySubscribers()
+            return
+        }
 
         pendingLock.lock()
         let voiceWrites = pendingVoiceWrites
@@ -448,15 +558,18 @@ final class SIDEngine: ObservableObject {
             workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset + 21, at: now)
         }
 
-        // Register-only visualizations do not need a published-state update
-        // on every timer tick. When there are no writes to apply, publishing
-        // the same large channel/filter arrays still invalidates every open
-        // SwiftUI SID window and can starve the main thread when several
-        // visualizations are open together. Audio-driven modes publish from
+        // Register-only visualizations do not need a full synthesis pass on
+        // every timer tick. Audio-driven modes publish from
         // `handleAudioSamples`; synthesized modes continue through the loop.
+        // Subscriber callbacks still run so per-window mirrors (and fades)
+        // can refresh without every Canvas observing this engine.
         if voiceWrites.isEmpty,
            filterWrites.isEmpty,
            !aggregateNeeds.needsSampleSynthesis {
+            if aggregateNeeds.needsRegisterWrites {
+                registerActivity = workingRegisterActivity
+            }
+            notifySubscribers()
             return
         }
 
@@ -468,7 +581,10 @@ final class SIDEngine: ObservableObject {
         // unconditionally either way.
         if aggregateNeeds.needsSampleSynthesis {
             let stepDt = 1.0 / Self.simulationSampleRate
-            let sampleCount = max(1, Int((dt * Self.simulationSampleRate).rounded()))
+            let sampleCount = Self.synthesisSampleCap(
+                subscriberCount: subscribers.count,
+                requested: Int((dt * Self.simulationSampleRate).rounded()),
+                videoDisplayBehind: videoDisplayBehind)
             // Sized once per tick and reused across every sample below,
             // rather than reallocated on each of the ~267 iterations — its
             // size (chip count × 3 voices) never changes within a tick.
@@ -501,7 +617,12 @@ final class SIDEngine: ObservableObject {
         }
 
         channels = workingChannels
-        filterStates = workingFilterStates
-        registerActivity = workingRegisterActivity
+        // Only fan out register-driven published state when some subscriber
+        // still needs it — audio-tap-only layouts skip these assignments.
+        if aggregateNeeds.needsRegisterWrites {
+            filterStates = workingFilterStates
+            registerActivity = workingRegisterActivity
+        }
+        notifySubscribers()
     }
 }

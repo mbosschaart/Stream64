@@ -3,7 +3,11 @@ import MetalKit
 
 /// SwiftUI wrapper around the Metal-backed video view, with C64 keyboard capture.
 struct VideoView: NSViewRepresentable {
-    @ObservedObject var session: DeviceSession
+    /// Plain reference — must not be `@ObservedObject`. Session publishes fps /
+    /// presentFPS often enough that observing it would call `updateNSView`
+    /// every tick and rebuild any SwiftUI parents that also observe session
+    /// (collapsing open context menus).
+    let session: DeviceSession
     /// Observed directly: updateNSView pushes these values to the renderer,
     /// so the view must re-render when they change — regardless of whether
     /// the host view (pane, grid tile) observes them.
@@ -25,6 +29,12 @@ struct VideoView: NSViewRepresentable {
         let view = KeyCapturingMTKView(frame: .zero)
         let renderer = MetalFrameRenderer(mtkView: view)
         context.coordinator.renderer = renderer
+        renderer?.onLoadStats = { [weak session = context.coordinator.session] presentFPS, gpuBehind in
+            MainActor.assumeIsolated {
+                session?.reportVideoRenderLoad(
+                    presentFPS: presentFPS, gpuBehind: gpuBehind)
+            }
+        }
         view.onKeyDown = { input in
             MainActor.assumeIsolated {
                 context.coordinator.session.handleHostKeyDown(input)
@@ -68,26 +78,91 @@ struct VideoView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: KeyCapturingMTKView, context: Context) {
-        context.coordinator.renderer?.scalingMode = display.scalingMode
-        context.coordinator.renderer?.filterMode = display.filterMode
-        context.coordinator.renderer?.reflectionEnabled = display.bezelReflection
-        context.coordinator.renderer?.signalLevel = display.tubeInput.signalLevel
-        context.coordinator.renderer?.crtScreenColor = display.crtScreenColor
-        context.coordinator.renderer?.crtDirtyGlass = display.crtDirtyGlass
-        context.coordinator.renderer?.monitorDotPitchMillimeters =
-            display.bezelStyle.dotPitchMillimeters
-        context.coordinator.renderer?.bezelSurfaceMode = monitorCaseVisible
+        guard let renderer = context.coordinator.renderer else {
+            nsView.captureEnabled = settings.captureKeyboardWhenFocused
+            return
+        }
+        let bezelSurfaceMode: Float = monitorCaseVisible
             ? (display.bezelStyle == .c1702 ? 1 : 2)
             : 0
-        context.coordinator.renderer?.picture = display.picture
-        context.coordinator.renderer?.setPalette(C64Palette.palette(for: display.palette))
-        context.coordinator.renderer?.updateAnimationState()
-        nsView.captureEnabled = settings.captureKeyboardWhenFocused
+        let signalLevel = display.tubeInput.signalLevel
+        let dotPitch = display.bezelStyle.dotPitchMillimeters
+        var needsRedraw = false
+
+        if context.coordinator.appliedScalingMode != display.scalingMode {
+            renderer.scalingMode = display.scalingMode
+            context.coordinator.appliedScalingMode = display.scalingMode
+            needsRedraw = true
+        }
+        if context.coordinator.appliedFilterMode != display.filterMode {
+            renderer.filterMode = display.filterMode
+            context.coordinator.appliedFilterMode = display.filterMode
+            needsRedraw = true
+        }
+        if context.coordinator.appliedReflection != display.bezelReflection {
+            renderer.reflectionEnabled = display.bezelReflection
+            context.coordinator.appliedReflection = display.bezelReflection
+            needsRedraw = true
+        }
+        if context.coordinator.appliedSignalLevel != signalLevel {
+            renderer.signalLevel = signalLevel
+            context.coordinator.appliedSignalLevel = signalLevel
+            needsRedraw = true
+        }
+        if context.coordinator.appliedCRTScreenColor != display.crtScreenColor {
+            renderer.crtScreenColor = display.crtScreenColor
+            context.coordinator.appliedCRTScreenColor = display.crtScreenColor
+            needsRedraw = true
+        }
+        if context.coordinator.appliedCRTDirtyGlass != display.crtDirtyGlass {
+            renderer.crtDirtyGlass = display.crtDirtyGlass
+            context.coordinator.appliedCRTDirtyGlass = display.crtDirtyGlass
+            needsRedraw = true
+        }
+        if context.coordinator.appliedDotPitch != dotPitch {
+            renderer.monitorDotPitchMillimeters = dotPitch
+            context.coordinator.appliedDotPitch = dotPitch
+            needsRedraw = true
+        }
+        if context.coordinator.appliedBezelSurfaceMode != bezelSurfaceMode {
+            renderer.bezelSurfaceMode = bezelSurfaceMode
+            context.coordinator.appliedBezelSurfaceMode = bezelSurfaceMode
+            needsRedraw = true
+        }
+        // PictureControls is a live reference the renderer reads every frame;
+        // only bind it once — knob drags must not force SwiftUI/Metal churn.
+        if renderer.picture !== display.picture {
+            renderer.picture = display.picture
+        }
+        if context.coordinator.appliedPalette != display.palette {
+            renderer.setPalette(C64Palette.palette(for: display.palette))
+            context.coordinator.appliedPalette = display.palette
+            needsRedraw = true
+        }
+
+        let animationChanged = renderer.updateAnimationState()
+        if needsRedraw && !animationChanged {
+            renderer.requestRedraw()
+        }
+
+        let captureEnabled = settings.captureKeyboardWhenFocused
+        if nsView.captureEnabled != captureEnabled {
+            nsView.captureEnabled = captureEnabled
+        }
     }
 
     final class Coordinator {
         let session: DeviceSession
         var renderer: MetalFrameRenderer?
+        var appliedScalingMode: ScalingMode?
+        var appliedFilterMode: FilterMode?
+        var appliedReflection: Bool?
+        var appliedSignalLevel: Float?
+        var appliedCRTScreenColor: CRTScreenColor?
+        var appliedCRTDirtyGlass: Bool?
+        var appliedDotPitch: Float?
+        var appliedBezelSurfaceMode: Float?
+        var appliedPalette: PaletteChoice?
 
         init(session: DeviceSession) {
             self.session = session

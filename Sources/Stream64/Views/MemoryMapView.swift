@@ -62,6 +62,7 @@ struct MemoryMapView: View {
     let renderSettings: MemoryMapRenderSettings
     let threeDInteraction: MemoryMap3DInteraction
     let threeDOptions: MemoryMap3DOptions
+    var videoGPUBehind: () -> Bool = { false }
 
     static let side = 256
     /// Wide enough for labels such as "Char ROM (banked)" without truncation.
@@ -78,7 +79,8 @@ struct MemoryMapView: View {
                 heatmap: heatmap,
                 source: source,
                 options: threeDOptions,
-                interaction: threeDInteraction)
+                interaction: threeDInteraction,
+                videoGPUBehind: videoGPUBehind)
                 .padding(Self.mapInset)
                 .background(Color.black)
         } else {

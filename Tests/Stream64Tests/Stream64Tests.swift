@@ -1490,6 +1490,171 @@ final class Assembly64FeatureTests: XCTestCase {
             MemoryHeatmap.addressSpace)
     }
 
+    func testMemoryHeatmapSnapshotPreservesRecordedValuesOutsideWriterLock() {
+        let heatmap = MemoryHeatmap()
+        let write = DebugStreamEntry(
+            word: (UInt32(0xC0) << 16) | 0x0400,
+            source: .cpu6510)
+        heatmap.record([write])
+        let snapshot = heatmap.renderSnapshot()
+        XCTAssertGreaterThan(snapshot.generation, 0)
+        XCTAssertEqual(snapshot.lastValue[0x0400], 0xC0)
+        XCTAssertFalse(snapshot.lastAccessWasRead[0x0400])
+        XCTAssertGreaterThan(snapshot.lastAccess[0x0400], 0)
+    }
+
+    func testMemoryHeatmapCurrentGenerationTracksRecordAndReset() {
+        let heatmap = MemoryHeatmap()
+        let initial = heatmap.currentGeneration()
+        let write = DebugStreamEntry(
+            word: (UInt32(0x11) << 16) | 0x1000,
+            source: .cpu6510)
+        heatmap.record([write])
+        let afterRecord = heatmap.currentGeneration()
+        XCTAssertGreaterThan(afterRecord, initial)
+        heatmap.reset()
+        XCTAssertGreaterThan(heatmap.currentGeneration(), afterRecord)
+    }
+
+    func testMemoryMap3DTickActionSkipsSnapshotWhenStable() {
+        XCTAssertEqual(
+            MemoryMap3DRenderer.tickAction(
+                generation: 3,
+                lastGeneration: 3,
+                blockSize: 2,
+                lastLOD: 2,
+                activityPulse: false,
+                stableTickParity: 0,
+                videoGPUBehind: false),
+            .skip)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.tickAction(
+                generation: 3,
+                lastGeneration: 3,
+                blockSize: 2,
+                lastLOD: 2,
+                activityPulse: true,
+                stableTickParity: 0,
+                videoGPUBehind: false),
+            .redrawOnly)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.tickAction(
+                generation: 3,
+                lastGeneration: 3,
+                blockSize: 2,
+                lastLOD: 2,
+                activityPulse: true,
+                stableTickParity: 1,
+                videoGPUBehind: false),
+            .skip)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.tickAction(
+                generation: 4,
+                lastGeneration: 3,
+                blockSize: 2,
+                lastLOD: 2,
+                activityPulse: true,
+                stableTickParity: 0,
+                videoGPUBehind: false),
+            .rebuild)
+        XCTAssertEqual(
+            MemoryMap3DRenderer.tickAction(
+                generation: 4,
+                lastGeneration: 3,
+                blockSize: 2,
+                lastLOD: 2,
+                activityPulse: true,
+                stableTickParity: 0,
+                videoGPUBehind: true),
+            .skip)
+    }
+
+    func testSIDEngineAdaptiveTickAndSampleCap() {
+        XCTAssertEqual(
+            SIDEngine.effectiveTickInterval(subscriberCount: 1),
+            1.0 / 30.0,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            SIDEngine.effectiveTickInterval(subscriberCount: 6),
+            1.0 / 15.0,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            SIDEngine.effectiveTickInterval(subscriberCount: 12),
+            1.0 / 10.0,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            SIDEngine.effectiveTickInterval(
+                subscriberCount: 1, videoDisplayBehind: true),
+            1.0 / 12.0,
+            accuracy: 0.0001)
+        XCTAssertEqual(
+            SIDEngine.synthesisSampleCap(subscriberCount: 1, requested: 267),
+            267)
+        XCTAssertEqual(
+            SIDEngine.synthesisSampleCap(subscriberCount: 6, requested: 267),
+            133)
+        XCTAssertEqual(
+            SIDEngine.synthesisSampleCap(subscriberCount: 12, requested: 267),
+            66)
+        XCTAssertEqual(
+            SIDEngine.synthesisSampleCap(
+                subscriberCount: 1, requested: 267, videoDisplayBehind: true),
+            66)
+    }
+
+    func testMemoryMap3DFillInstancesPacksNonZeroBlocks() {
+        var values = [UInt8](repeating: 0, count: MemoryHeatmap.addressSpace)
+        var accessTimes = [Double](repeating: 0, count: MemoryHeatmap.addressSpace)
+        var directions = [Bool](repeating: true, count: MemoryHeatmap.addressSpace)
+        values[0] = 128
+        accessTimes[0] = 100
+        values[257] = 64 // (1,1) in a 2×2 block with origin (0,0) when blockSize=2
+        accessTimes[257] = 101
+        directions[257] = false
+
+        let buffer = UnsafeMutablePointer<MemoryMap3DRenderer.InstanceData>.allocate(
+            capacity: 16)
+        defer { buffer.deallocate() }
+        let count = MemoryMap3DRenderer.fillInstances(
+            values: values,
+            accessTimes: accessTimes,
+            directions: directions,
+            blockSize: 2,
+            timeBase: 99,
+            destination: buffer)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(buffer[0].coordinate & 0xFFFF, 0)
+        XCTAssertEqual((buffer[0].coordinate >> 16) & 0xFFFF, 0)
+        XCTAssertEqual(buffer[0].packedValueFlagsAndSpan & 0xFF, 96) // (128+64)/2
+    }
+
+    @MainActor
+    func testAcquireDebugTraceReturnsNilWhenDisconnected() async {
+        let session = DeviceSession(
+            device: UltimateDevice(
+                name: "Debug Lease",
+                host: "192.0.2.20"),
+            settings: AppSettings())
+        let token = await session.acquireDebugTrace(mode: .cpu6510Only)
+        XCTAssertNil(token)
+        XCTAssertEqual(session.debugTraceState, .inactive)
+    }
+
+    func testSIDEngineAudioMailboxDropsOldestWhenCapped() {
+        var pending: [Float] = Array(repeating: 1, count: 8)
+        SIDEngine.appendCappedAudioSamples(
+            &pending,
+            Array(repeating: 2, count: 6),
+            maxCount: 10)
+        XCTAssertEqual(pending.count, 10)
+        XCTAssertEqual(pending.first, 1)
+        XCTAssertEqual(pending.last, 2)
+        // Four of the original ones should remain, then six new samples.
+        XCTAssertEqual(pending.filter { $0 == 1 }.count, 4)
+        XCTAssertEqual(pending.filter { $0 == 2 }.count, 6)
+        XCTAssertEqual(SIDEngine.maxPendingAudioSamples, 10_000)
+    }
+
     func testDebugStreamPacketParsingToleratesShortPacket() {
         let (sequence, entries) = DebugStreamEntry.parsePacket(Data([0x01]), source: .vic)
         XCTAssertEqual(sequence, 0)
@@ -1957,13 +2122,13 @@ final class Assembly64FeatureTests: XCTestCase {
             settings: AppSettings())
 
         let engineA = SIDEngine.shared(for: session)
-        let tokenA = engineA.subscribe(needs: SIDEngineNeeds(mode: .registerActivity))
+        let tokenA = engineA.subscribe(needs: SIDEngineNeeds(mode: .registerActivity)) {}
 
         // A second subscribe for the same device must reuse the same
         // engine instance, not create a competing one.
         let engineB = SIDEngine.shared(for: session)
         XCTAssertTrue(engineA === engineB)
-        let tokenB = engineB.subscribe(needs: SIDEngineNeeds(mode: .adsrKnobs))
+        let tokenB = engineB.subscribe(needs: SIDEngineNeeds(mode: .adsrKnobs)) {}
 
         engineA.unsubscribe(tokenA)
         // One of two subscribers left — the engine must still be alive
@@ -1991,8 +2156,8 @@ final class Assembly64FeatureTests: XCTestCase {
             settings: AppSettings())
         let engine = SIDEngine.shared(for: session)
 
-        let registerToken = engine.subscribe(needs: SIDEngineNeeds(mode: .registerActivity))
-        let audioToken = engine.subscribe(needs: SIDEngineNeeds(mode: .spectrum))
+        let registerToken = engine.subscribe(needs: SIDEngineNeeds(mode: .registerActivity)) {}
+        let audioToken = engine.subscribe(needs: SIDEngineNeeds(mode: .spectrum)) {}
 
         engine.unsubscribe(registerToken)
         // The audio-tap subscriber is still active, so the engine must
@@ -2336,6 +2501,13 @@ final class Assembly64FeatureTests: XCTestCase {
             MemoryMap3DRenderer.activityIntensity(
                 accessedAt: 10, now: 10.35),
             0,
+            accuracy: 0.0001)
+        // Shader path uses the same decay curve from uploaded timestamps;
+        // keep the CPU helper as the reference for that math.
+        XCTAssertEqual(
+            MemoryMap3DRenderer.activityIntensity(
+                accessedAt: 10, now: 10.175),
+            0.25,
             accuracy: 0.0001)
 
         XCTAssertEqual(

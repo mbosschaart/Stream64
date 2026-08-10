@@ -201,7 +201,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     as cursor keys when only one device is configured.)
 
     **Frame rate overlay** — enable per device via right-click → Show Frame \
-    Rate. Shows the live stream rate (~50 fps for PAL).
+    Rate. Shows the live UDP stream receive rate (~50 fps for PAL). When the \
+    display path falls behind under heavy SID / Debug Trace load, a second \
+    number appears (`stream / display`) for Metal presents per second.
 
     **Screenshot** — the toolbar camera, right-click → Save Screenshot…, or \
     ⇧⌘S saves the actual filtered Metal output as PNG, including signal \
@@ -573,6 +575,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Picture judders when the window is in the background** — expected \
     macOS behavior is throttled; the app keeps rendering, but fully covered \
     windows may still skip presentation. Bring the window forward.
+
+    **Stream fps drops with SID windows or the 3D Memory Map open** — enable \
+    Show Frame Rate; if you see `stream / display`, the picture path is \
+    yielding time to those visualizations. Closing unused SID windows or the \
+    Debug Trace map usually restores a full display rate. Occluded SID \
+    windows pause automatically.
 
     **Two devices, one shows no picture** — both are probably configured \
     with the same local ports. Edit one device and give it a unique \

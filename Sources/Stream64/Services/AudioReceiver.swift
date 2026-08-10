@@ -16,7 +16,11 @@ private let logger = Logger(subsystem: "net.bosschaart.Stream64", category: "Aud
 /// the jitter-buffer target is trimmed.
 ///
 /// Packet layout: u16 sequence, then 192 stereo sample pairs (768 bytes).
-final class AudioReceiver {
+///
+/// `@unchecked Sendable` because mutable state is confined to `queue` /
+/// unfair-lock / `engineLifecycleLock`; NotificationCenter and Network
+/// callbacks need to hop onto those without Sendable closure diagnostics.
+final class AudioReceiver: @unchecked Sendable {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "audio-receiver")
     private let connectionsLock = NSLock()
@@ -202,47 +206,19 @@ final class AudioReceiver {
         lock.deallocate()
     }
 
-    func start(port: UInt16) throws {
-        stop()
-
-        os_unfair_lock_lock(lock)
-        readIndex = 0
-        writeIndex = 0
-        framesAvailable = 0
-        primed = false
-        os_unfair_lock_unlock(lock)
-
-        // A stopped engine has no active render callback, so it is safe to
-        // reset the TV-speaker filter before starting a fresh stream.
-        rfLowState = (0, 0)
-        rfLowState2 = 0
-        rfHighState = (0, 0)
-        rfHighPrev = (0, 0)
-        rfHumPhase = 0
-        powerOffCrackleRemaining = 0
-        powerOffCrackleImpulse = 0
-        powerOffCracklePhase = 0
-
+    func start(port: UInt16) async throws {
+        resetForStart()
         pinOutputToCurrentDefaultDevice()
 
         do {
-            engineLifecycleLock.lock()
-            try engine.start()
-            engineLifecycleLock.unlock()
+            try startEngineLocked()
         } catch {
-            engineLifecycleLock.unlock()
             // CoreAudio can refuse (error 35) when the engine is restarted
             // in quick succession — e.g. stop/start during a reconnect.
-            // A brief pause and one retry clears it.
-            Thread.sleep(forTimeInterval: 0.25)
-            engineLifecycleLock.lock()
-            do {
-                try engine.start()
-                engineLifecycleLock.unlock()
-            } catch {
-                engineLifecycleLock.unlock()
-                throw error
-            }
+            // Yield asynchronously so @MainActor callers never freeze on a
+            // Thread.sleep; one retry usually clears the transient refusal.
+            try await Task.sleep(for: .milliseconds(250))
+            try startEngineLocked()
         }
         started = true
         // Engine creation/restart can reset the mixer's gain to its default.
@@ -290,6 +266,37 @@ final class AudioReceiver {
         }
         listener.start(queue: queue)
         self.listener = listener
+    }
+
+    /// Synchronous setup for `start` — keeps lock usage out of the async
+    /// function body (Swift 6 treats NSLock / os_unfair_lock as unavailable
+    /// from asynchronous contexts).
+    private func resetForStart() {
+        stop()
+
+        os_unfair_lock_lock(lock)
+        readIndex = 0
+        writeIndex = 0
+        framesAvailable = 0
+        primed = false
+        os_unfair_lock_unlock(lock)
+
+        // A stopped engine has no active render callback, so it is safe to
+        // reset the TV-speaker filter before starting a fresh stream.
+        rfLowState = (0, 0)
+        rfLowState2 = 0
+        rfHighState = (0, 0)
+        rfHighPrev = (0, 0)
+        rfHumPhase = 0
+        powerOffCrackleRemaining = 0
+        powerOffCrackleImpulse = 0
+        powerOffCracklePhase = 0
+    }
+
+    private func startEngineLocked() throws {
+        engineLifecycleLock.lock()
+        defer { engineLifecycleLock.unlock() }
+        try engine.start()
     }
 
     func stop() {

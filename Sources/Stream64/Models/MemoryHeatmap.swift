@@ -9,8 +9,10 @@ import Foundation
 ///
 /// Written directly from `DebugStreamReceiver`'s private queue (very high
 /// frequency — up to roughly a million entries/second). Renderers consume
-/// lock-protected immutable snapshots; Swift Array storage cannot safely be
-/// mutated while another thread reads or replaces it.
+/// immutable snapshots. Snapshot copies run **outside** the writer lock:
+/// under the lock we only retain Array headers (CoW share); element copies
+/// happen after unlock, and the next `record`/`reset` uniquifies writer
+/// storage via copy-on-write instead of stalling the UDP path.
 final class MemoryHeatmap {
     static let addressSpace = 65536
 
@@ -78,18 +80,32 @@ final class MemoryHeatmap {
         }
     }
 
-    /// Copies only the arrays needed by the renderers. Constructing from
-    /// unsafe buffers forces independent storage before unlocking, avoiding
-    /// copy-on-write sharing with the receiver's live mutable arrays.
-    func renderSnapshot() -> RenderSnapshot {
+    /// Cheap generation sample for renderers that only need to know whether
+    /// data changed since the last full snapshot — avoids a ~650 KB copy on
+    /// every timer tick.
+    func currentGeneration() -> UInt64 {
         lock.lock()
         defer { lock.unlock() }
+        return generationValue
+    }
+
+    /// Publishes an immutable renderer snapshot. The writer lock is held only
+    /// long enough to sample the generation and retain Array headers; the
+    /// ~650 KB element copies happen after unlock so `record()` is not stalled
+    /// for the duration of the memcpy.
+    func renderSnapshot() -> RenderSnapshot {
+        lock.lock()
+        let generation = generationValue
+        let access = lastAccess
+        let directions = lastAccessWasRead
+        let values = lastValue
+        lock.unlock()
+
         return RenderSnapshot(
-            generation: generationValue,
-            lastAccess: lastAccess.withUnsafeBufferPointer { Array($0) },
-            lastAccessWasRead:
-                lastAccessWasRead.withUnsafeBufferPointer { Array($0) },
-            lastValue: lastValue.withUnsafeBufferPointer { Array($0) })
+            generation: generation,
+            lastAccess: access.withUnsafeBufferPointer { Array($0) },
+            lastAccessWasRead: directions.withUnsafeBufferPointer { Array($0) },
+            lastValue: values.withUnsafeBufferPointer { Array($0) })
     }
 
     func state(at address: Int) -> AddressState? {

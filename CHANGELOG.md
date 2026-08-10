@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.108b — 2026-08-11
+
+### Fixed
+
+- **Live stream display FPS no longer collapses when SID visualizations and the 3D Memory Map are open.** Secondary views were timer-driven on the main run loop while the CRT path is demand-driven, so SID synthesis and 3D heatmap rebuilds starved Metal presents even though those windows still felt responsive. Display-path pressure is now detected from slow presents (not only GPU semaphore misses); the 3D map rebuilds off the main thread and yields presents under pressure; SID ticks and sample synthesis throttle while the stream is behind.
+- **Right-click menus no longer jump or dismiss mid-selection.** Host views that owned `.contextMenu` were observing `DeviceSession` / SID model publishes (fps, present rate, engine ticks), so SwiftUI rebuilt the menu while the user was traversing it. Context menus now sit on non-observing hosts; menu content snapshots state instead of observing live objects; `VideoView` no longer observes the session for fps churn.
+
+### Improved
+
+- **Frame-rate overlay reports `stream / display`** when Metal presents fall behind the UDP receive rate, so heavy secondary visualization load is visible at a glance.
+- **SID visualization windows** mirror shared engine data per window (instead of every Canvas observing one shared `SIDEngine`), pause when occluded, and adapt tick rate / sample caps under Open-All style loads.
+- **3D Memory Map** peeks heatmap generation cheaply, skips redundant snapshot copies, and prefers the live CRT present path when the display is under pressure.
+- Session streaming / debug-trace / audio startup paths gained safer cancellation, generation gates, and bounded mailboxes so recovery work cannot stack against the render loop.
+
 ## 0.107b — 2026-08-07
 
 ### Changed

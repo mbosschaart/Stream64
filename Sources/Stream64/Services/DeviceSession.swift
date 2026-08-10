@@ -20,12 +20,21 @@ final class DeviceSession: ObservableObject {
     }
 
     @Published private(set) var state: ConnectionState = .disconnected
+    /// Assembled UDP frames per second (receive path) — not Metal presents.
     @Published private(set) var fps: Double = 0
+    /// Completed Metal presents per second for the live viewer (display path).
+    @Published private(set) var presentFPS: Double = 0
     @Published private(set) var isPaused = false
     /// True while video packets are actually arriving (measured, not
     /// assumed from API acknowledgements).
     @Published private(set) var isStreaming = false
     @Published var transferStatus: TransferStatus?
+    /// Set from `MetalFrameRenderer` when the CRT display path is under
+    /// pressure — GPU in-flight slots exhausted *or* presents slowed by
+    /// main-thread contention (SID / memory-map work). Not `@Published` —
+    /// Debug Trace / 3D map / SID poll it on their own timers so SwiftUI
+    /// trees are not invalidated by load flips.
+    private(set) var isVideoGPUBehind = false
 
     enum TransferStatus: Equatable {
         case uploading(String)
@@ -118,9 +127,22 @@ final class DeviceSession: ObservableObject {
         startHealthMonitor()
     }
 
+    /// Called on the main thread from `MetalFrameRenderer` after presents /
+    /// semaphore misses. Updates display-path FPS and GPU back-pressure.
+    func reportVideoRenderLoad(presentFPS: Double, gpuBehind: Bool) {
+        if abs(presentFPS - self.presentFPS) >= 0.5 {
+            self.presentFPS = presentFPS
+        }
+        isVideoGPUBehind = gpuBehind
+    }
+
     private var lastStatsAt = Date.distantPast
     private var stalenessMonitor: Task<Void, Never>?
     private var streamRecoveryTask: Task<Void, Never>?
+    /// Single generation-scoped silent-stream watchdog. Replaced on each
+    /// schedule so connect/recovery/restart cannot stack overlapping
+    /// stop/settle/start cycles.
+    private var silentStreamWatchTask: Task<Void, Never>?
 
     /// onStats only fires while frames arrive; when the stream dies the
     /// callbacks just stop. This watchdog turns isStreaming off after
@@ -133,6 +155,8 @@ final class DeviceSession: ObservableObject {
                 if self.isStreaming, Date().timeIntervalSince(self.lastStatsAt) > 3 {
                     self.isStreaming = false
                     self.fps = 0
+                    self.presentFPS = 0
+                    self.isVideoGPUBehind = false
                     self.recoverStaleStreams()
                 }
             }
@@ -338,7 +362,7 @@ final class DeviceSession: ObservableObject {
             try validateLocalPortSet()
             try videoReceiver.start(port: try validatedLocalPort(
                 device.videoPort, name: "Video"))
-            let audioOK = startAudioIfEnabled()
+            let audioOK = await startAudioIfEnabled()
             // Receivers expose lifetime packet counters. Snapshot after
             // opening them and only treat packets arriving *after this
             // connection attempt* as proof of an already-running stream.
@@ -368,8 +392,10 @@ final class DeviceSession: ObservableObject {
 
             if !videoLive || (settings.audioEnabled && !audioLive) {
                 do {
-                    try await startStreaming(video: !videoLive,
-                                             audio: settings.audioEnabled && !audioLive)
+                    try await startStreaming(
+                        video: !videoLive,
+                        audio: settings.audioEnabled && !audioLive,
+                        generation: generation)
                     guard isCurrentConnection(generation) else {
                         abandonStaleConnectionAttempt()
                         return
@@ -382,8 +408,10 @@ final class DeviceSession: ObservableObject {
                         abandonStaleConnectionAttempt()
                         return
                     }
-                    try await startStreaming(video: !videoLive,
-                                             audio: settings.audioEnabled && !audioLive)
+                    try await startStreaming(
+                        video: !videoLive,
+                        audio: settings.audioEnabled && !audioLive,
+                        generation: generation)
                     guard isCurrentConnection(generation) else {
                         abandonStaleConnectionAttempt()
                         return
@@ -423,13 +451,13 @@ final class DeviceSession: ObservableObject {
 
     /// Configure and start the audio receiver. Returns false on failure
     /// (audio never blocks the connection).
-    private func startAudioIfEnabled() -> Bool {
+    private func startAudioIfEnabled() async -> Bool {
         guard settings.audioEnabled else { return true }
         audioReceiver.volume = Float(settings.volume)
         audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
         audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
         do {
-            try audioReceiver.start(port: try validatedLocalPort(
+            try await audioReceiver.start(port: try validatedLocalPort(
                 device.audioPort, name: "Audio"))
             return true
         } catch {
@@ -445,7 +473,7 @@ final class DeviceSession: ObservableObject {
             for _ in 0..<4 {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.isConnected else { return }
-                if self.startAudioIfEnabled() { return }
+                if await self.startAudioIfEnabled() { return }
             }
             self?.transferStatus = .failed("Audio unavailable — video only. Reconnect to retry.")
             Task { [weak self] in
@@ -459,29 +487,52 @@ final class DeviceSession: ObservableObject {
     /// must not fight them by re-kicking.
     private var streamsStoppedByUser = false
 
+    private func cancelStreamLifecycleTasks() {
+        streamRecoveryTask?.cancel()
+        streamRecoveryTask = nil
+        silentStreamWatchTask?.cancel()
+        silentStreamWatchTask = nil
+    }
+
     private func recoverStaleStreams() {
         guard isConnected,
               !streamsStoppedByUser,
               streamRecoveryTask == nil else { return }
+        let generation = connectionGeneration
         streamRecoveryTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.streamRecoveryTask != nil {
+                    self.streamRecoveryTask = nil
+                }
+            }
             for attempt in 0..<2 where !Task.isCancelled {
                 do {
-                    try await self.startStreaming()
-                    self.watchForSilentStream(attempt: attempt)
-                    self.streamRecoveryTask = nil
+                    try await self.startStreaming(generation: generation)
+                    guard !Task.isCancelled,
+                          self.isCurrentConnection(generation),
+                          self.isConnected,
+                          !self.streamsStoppedByUser else { return }
+                    self.watchForSilentStream(attempt: attempt, generation: generation)
+                    return
+                } catch is CancellationError {
                     return
                 } catch {
+                    guard !Task.isCancelled,
+                          self.isCurrentConnection(generation),
+                          self.isConnected,
+                          !self.streamsStoppedByUser else { return }
                     if attempt == 0 {
                         try? await Task.sleep(for: .seconds(1))
                     }
                 }
             }
-            self.streamRecoveryTask = nil
-            if self.isConnected, !self.streamsStoppedByUser {
-                self.transferStatus = .failed(
-                    "The stream stopped and could not be re-armed automatically.")
-            }
+            guard !Task.isCancelled,
+                  self.isCurrentConnection(generation),
+                  self.isConnected,
+                  !self.streamsStoppedByUser else { return }
+            self.transferStatus = .failed(
+                "The stream stopped and could not be re-armed automatically.")
         }
     }
 
@@ -489,14 +540,33 @@ final class DeviceSession: ObservableObject {
     /// acknowledges stream-start without sending packets (notably right
     /// after a cold power-on); one stop/start re-kick fixes it. Bounded to
     /// a few attempts so a genuinely broken path still surfaces as an error.
-    private func watchForSilentStream(attempt: Int = 0) {
-        Task { [weak self] in
+    private func watchForSilentStream(
+        attempt: Int = 0,
+        generation: UInt64? = nil
+    ) {
+        let generation = generation ?? connectionGeneration
+        silentStreamWatchTask?.cancel()
+        silentStreamWatchTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
-            guard let self, self.isConnected, !self.streamsStoppedByUser else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentConnection(generation),
+                  self.isConnected,
+                  !self.streamsStoppedByUser else { return }
             if self.fps < 1 {
                 if attempt < 2 {
-                    try? await self.startStreaming()
-                    self.watchForSilentStream(attempt: attempt + 1)
+                    do {
+                        try await self.startStreaming(generation: generation)
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        // Fall through to the next attempt / error surface.
+                    }
+                    guard !Task.isCancelled,
+                          self.isCurrentConnection(generation),
+                          self.isConnected,
+                          !self.streamsStoppedByUser else { return }
+                    self.watchForSilentStream(attempt: attempt + 1, generation: generation)
                 } else {
                     self.transferStatus = .failed(
                         "No video arriving. Ultimate 64 A/V streams use the "
@@ -512,7 +582,15 @@ final class DeviceSession: ObservableObject {
     /// address. Streams stop on the device side after a reboot or when a
     /// configured stream duration expires — call this to (re)start them
     /// without tearing down the local receivers.
-    func startStreaming(video: Bool = true, audio: Bool? = nil) async throws {
+    func startStreaming(
+        video: Bool = true,
+        audio: Bool? = nil,
+        generation: UInt64? = nil
+    ) async throws {
+        let generation = generation ?? connectionGeneration
+        guard isConnected || connecting, isCurrentConnection(generation) else {
+            throw CancellationError()
+        }
         guard let localIP = LocalNetwork.primaryIPv4Address(reachingDevice: device.host) else {
             throw UltimateAPIClient.APIError.invalidURL
         }
@@ -532,14 +610,26 @@ final class DeviceSession: ObservableObject {
         if startAudio {
             try? await client.stopAudioStream()
         }
+        guard isCurrentConnection(generation),
+              isConnected || connecting else {
+            throw CancellationError()
+        }
         if video || startAudio {
             try await Task.sleep(for: .seconds(1))
+        }
+        guard isCurrentConnection(generation),
+              isConnected || connecting else {
+            throw CancellationError()
         }
         if video {
             try await client.startVideoStream(
                 destinationHost: localIP,
                 port: device.videoPort,
                 durationSeconds: settings.streamDurationSeconds)
+        }
+        guard isCurrentConnection(generation),
+              isConnected || connecting else {
+            throw CancellationError()
         }
         if startAudio {
             try await client.startAudioStream(
@@ -552,8 +642,10 @@ final class DeviceSession: ObservableObject {
     /// startStreaming for UI call sites: failures surface in `state`.
     func restartStreams() async {
         streamsStoppedByUser = false
-        await run { try await self.startStreaming() }
-        watchForSilentStream()
+        let generation = connectionGeneration
+        await run { try await self.startStreaming(generation: generation) }
+        guard isCurrentConnection(generation), isConnected else { return }
+        watchForSilentStream(generation: generation)
     }
 
     /// Ask the device to stop sending streams, keeping the session (REST
@@ -561,11 +653,12 @@ final class DeviceSession: ObservableObject {
     /// restartStreams; the picture freezes on the last received frame.
     func stopStreams() async {
         streamsStoppedByUser = true
-        streamRecoveryTask?.cancel()
-        streamRecoveryTask = nil
+        cancelStreamLifecycleTasks()
         try? await client.stopVideoStream()
         try? await client.stopAudioStream()
         fps = 0
+        presentFPS = 0
+        isVideoGPUBehind = false
         isStreaming = false
     }
 
@@ -592,12 +685,15 @@ final class DeviceSession: ObservableObject {
         healthMonitor = nil
         stalenessMonitor?.cancel()
         stalenessMonitor = nil
+        cancelStreamLifecycleTasks()
         videoReceiver.stop()
         audioReceiver.stop()
         debugStreamReceiver.stop()
         debugTraceConsumers.removeAll()
         debugTraceState = .inactive
         fps = 0
+        presentFPS = 0
+        isVideoGPUBehind = false
         isPaused = false
         state = .disconnected
     }
@@ -661,16 +757,29 @@ final class DeviceSession: ObservableObject {
 
     /// Acquire shared ownership of the session's debug stream. Multiple
     /// Debug Trace/SID windows can hold leases simultaneously; only the first
-    /// starts the device stream.
+    /// starts the device stream. Returns `nil` when the stream cannot be
+    /// brought to `.active` — callers must not treat a failed start as a live
+    /// lease. If the stream is already active in a different mode and this is
+    /// the sole consumer path (no other leases yet), it restarts in `mode`;
+    /// otherwise the existing mode is shared and the new lease joins it.
     func acquireDebugTrace(mode: DebugStreamMode) async -> UUID? {
         guard isConnected else { return nil }
+
+        switch debugTraceState {
+        case .active(let activeMode) where activeMode != mode:
+            if debugTraceConsumers.isEmpty {
+                await startDebugTrace(mode: mode)
+            }
+            // else: join the already-running stream in its current mode
+        case .inactive, .error:
+            await startDebugTrace(mode: mode)
+        case .active, .starting:
+            break
+        }
+
+        guard case .active = debugTraceState else { return nil }
         let token = UUID()
         debugTraceConsumers.insert(token)
-        if case .inactive = debugTraceState {
-            await startDebugTrace(mode: mode)
-        } else if case .error = debugTraceState {
-            await startDebugTrace(mode: mode)
-        }
         return token
     }
 
@@ -1167,6 +1276,9 @@ final class DeviceSession: ObservableObject {
     private func run(_ operation: @escaping () async throws -> Void) async {
         do {
             try await operation()
+        } catch is CancellationError {
+            // Generation-gated stream work treats disconnect as cancellation;
+            // that must not surface as a user-visible session error.
         } catch {
             state = .error(error.localizedDescription)
         }

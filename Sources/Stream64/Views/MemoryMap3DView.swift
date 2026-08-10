@@ -21,6 +21,8 @@ struct MemoryMap3DView: NSViewRepresentable {
     let source: DebugStreamSource
     let options: MemoryMap3DOptions
     let interaction: MemoryMap3DInteraction
+    /// When the live CRT viewer is missing GPU slots, skip 3D presents.
+    var videoGPUBehind: () -> Bool = { false }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -33,6 +35,7 @@ struct MemoryMap3DView: NSViewRepresentable {
             heatmap: heatmap)
         renderer?.source = source
         renderer?.options = options
+        renderer?.videoGPUBehind = videoGPUBehind
         context.coordinator.renderer = renderer
         view.memoryRenderer = renderer
         interaction.renderer = renderer
@@ -46,6 +49,7 @@ struct MemoryMap3DView: NSViewRepresentable {
         context.coordinator.renderer?.heatmap = heatmap
         context.coordinator.renderer?.source = source
         context.coordinator.renderer?.options = options
+        context.coordinator.renderer?.videoGPUBehind = videoGPUBehind
         if !options.hoverInspection {
             nsView.hideHoverInspection()
         }

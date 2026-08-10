@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.107b-purple)
+![Version](https://img.shields.io/badge/version-0.108b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -295,10 +295,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.102b BUILD_NUMBER=102 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.108b BUILD_NUMBER=108 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.102b BUILD_NUMBER=102 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.108b BUILD_NUMBER=108 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -496,9 +496,10 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 
 - **Sessions live in `SessionManager` held by `@StateObject`.** SwiftUI discards `@State` writes made during body evaluation and recreates plain-property objects when the view struct rebuilds — both variants caused duplicate sessions (black screens, phantom audio) before landing here.
 - **Triple-buffered frame textures.** With expensive fragment shaders (CRT modes), uploading into the texture the GPU is reading tears the picture. Sharp mode never showed it; Composite/RF did.
-- **fps publishes only on ≥0.5 changes.** Per-second `@Published` updates re-rendered every observer — including rebuilding (and collapsing) any open context menu.
-- **Context menus snapshot state rather than observe it.** A menu that observes live objects gets rebuilt mid-traversal.
-- **`VideoView` observes `DisplaySettings` directly.** The renderer receives settings in `updateNSView`, which only runs when that view re-renders — hosts (grid tiles) don't necessarily re-render on settings changes.
+- **fps / presentFPS publish only on ≥0.5 changes.** Per-second `@Published` updates re-rendered every observer — including rebuilding (and collapsing) any open context menu.
+- **Context-menu hosts must not observe high-frequency session/SID state.** `ViewerPane` / `ViewerTile` / `SIDOscilloscopeView` keep `.contextMenu` on a non-observing shell; live chrome lives in child views. Menu content (`StreamContextMenu`, `SIDVisualizationMenuContent`) snapshots state instead of observing it.
+- **`VideoView` observes `DisplaySettings` only — not `DeviceSession`.** The renderer receives settings in `updateNSView`; session fps ticks must not force `updateNSView` or rebuild parents that own context menus.
+- **Prefer the live CRT present path under secondary viz load.** SID ticks and 3D Memory Map rebuilds are cheaper / off-main / yielding when presents slow down; the frame-rate overlay shows `stream / display` when the two diverge.
 - **Stream pickup compares lifetime-counter baselines.** Receiver packet totals survive listener restarts; comparing them with zero skipped `stream:start` after reconnect. Each connect now requires post-baseline packet growth.
 - **Stop, settle, then start.** C64 Ultimate 1.1.0 can report "Network Host Resolve Error" if start immediately follows stop. The app stops requested streams, waits one second, then starts them; persistent failure retains Reboot & Retry.
 - **REST errors can arrive inside HTTP 2xx.** Non-empty device `errors` arrays are treated as failures instead of trusting status code alone.

@@ -44,6 +44,23 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     private var pendingFrame: Data?
     private var resetHistoryOnNextFrame = false
     private var lastFrameSubmission: DispatchTime?
+    /// Ensures a semaphore miss still gets one follow-up draw once the GPU
+    /// catches up (demand-driven path would otherwise stall until the next
+    /// UDP frame / RF timer tick).
+    private var deferredRedrawPending = false
+    /// Recent in-flight semaphore misses; ≥2 means the CRT GPU path is behind.
+    private var recentSemaphoreMisses = 0
+    /// Consecutive slow presents while UDP frames are still arriving — detects
+    /// main-thread starvation (SID / 3D map) that never trips the semaphore.
+    private var slowPresentStreak = 0
+    private var lastSuccessfulPresentTime: DispatchTime?
+    private(set) var isGPUBehind = false
+    private var presentCount = 0
+    private var lastPresentStatsTime = DispatchTime.now()
+    private var lastReportedPresentFPS: Double = 0
+    /// Main-thread callback with present FPS and display-behind state (~1 Hz,
+    /// plus immediate flips of the behind flag).
+    var onLoadStats: ((_ presentFPS: Double, _ gpuBehind: Bool) -> Void)?
     /// Set by `requestFilteredScreenshot`, consumed on the next `draw(in:)`.
     /// Both are only ever touched on the main thread (MTKView's display
     /// link — and the occlusion-fallback timer — always call draw() there),
@@ -1126,9 +1143,28 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    func updateAnimationState() {
-        updateAnimationTimer(enabled: signalLevel >= 2)
-        requestRedraw()
+    private func scheduleDeferredRedraw() {
+        guard !deferredRedrawPending else { return }
+        deferredRedrawPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.deferredRedrawPending = false
+            self.requestRedraw()
+        }
+    }
+
+    /// Updates the RF animation timer. Returns whether the enabled state
+    /// changed so callers can avoid redundant redraws.
+    @discardableResult
+    func updateAnimationState() -> Bool {
+        let wantTimer = signalLevel >= 2 || powerOffEffectStartedAt != nil
+        let wasRunning = animationTimer != nil
+        updateAnimationTimer(enabled: wantTimer)
+        let changed = wantTimer != wasRunning
+        if changed {
+            requestRedraw()
+        }
+        return changed
     }
 
     private func updateAnimationTimer(enabled: Bool) {
@@ -1283,9 +1319,59 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+    private func noteSemaphoreMiss() {
+        recentSemaphoreMisses = min(recentSemaphoreMisses + 1, 8)
+        publishBehindFlagIfChanged()
+    }
+
+    private func noteSuccessfulPresent() {
+        if recentSemaphoreMisses > 0 {
+            recentSemaphoreMisses -= 1
+        }
+        let now = DispatchTime.now()
+        if let last = lastSuccessfulPresentTime {
+            let gap = Double(now.uptimeNanoseconds - last.uptimeNanoseconds)
+                / 1_000_000_000
+            let recentlyFed = lastFrameSubmission.map {
+                Double(now.uptimeNanoseconds - $0.uptimeNanoseconds)
+                    / 1_000_000_000 < 0.15
+            } ?? false
+            // ~50 Hz stream → 20 ms gaps. Sustained >~24 ms means the
+            // demand-driven CRT path is losing main-run-loop time to
+            // secondary visualizations even when the GPU semaphore is free.
+            if recentlyFed, gap > (1.0 / 42.0), gap < 0.25 {
+                slowPresentStreak = min(slowPresentStreak + 1, 10)
+            } else if gap <= (1.0 / 48.0) {
+                slowPresentStreak = max(0, slowPresentStreak - 2)
+            }
+        }
+        lastSuccessfulPresentTime = now
+        publishBehindFlagIfChanged()
+        presentCount += 1
+        let elapsed = Double(now.uptimeNanoseconds - lastPresentStatsTime.uptimeNanoseconds)
+            / 1_000_000_000
+        guard elapsed >= 1.0 else { return }
+        let fps = Double(presentCount) / elapsed
+        presentCount = 0
+        lastPresentStatsTime = now
+        lastReportedPresentFPS = fps
+        onLoadStats?(fps, isGPUBehind)
+    }
+
+    private func publishBehindFlagIfChanged() {
+        let behind = recentSemaphoreMisses >= 2 || slowPresentStreak >= 3
+        guard behind != isGPUBehind else { return }
+        isGPUBehind = behind
+        onLoadStats?(lastReportedPresentFPS, behind)
+    }
+
     func draw(in view: MTKView) {
         guard inFlightSemaphore.wait(timeout: .now()) == .success else {
-            // Let the GPU catch up instead of overwriting in-flight textures.
+            // Let the GPU catch up instead of overwriting in-flight textures,
+            // but schedule one deferred redraw so a pending frame is not stuck
+            // until the next UDP packet or RF timer tick.
+            noteSemaphoreMiss()
+            scheduleDeferredRedraw()
             return
         }
         guard let drawable = view.currentDrawable,
@@ -1422,6 +1508,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        noteSuccessfulPresent()
     }
 
     deinit {
