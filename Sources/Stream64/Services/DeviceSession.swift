@@ -662,10 +662,18 @@ final class DeviceSession: ObservableObject {
         isStreaming = false
     }
 
-    func disconnect(stopRemoteStreams: Bool = true) async {
+    func disconnect(
+        stopRemoteStreams: Bool = true,
+        waitForInputRelease: Bool = true
+    ) async {
         connectionGeneration &+= 1
         prepareForEviction()
-        await input.cancelAndRelease()
+        if waitForInputRelease {
+            await input.cancelAndRelease()
+        } else {
+            // App quit must not stall on release-all retries to a dead host.
+            Task { await input.cancelAndRelease() }
+        }
         if stopRemoteStreams {
             try? await client.stopVideoStream()
             try? await client.stopAudioStream()

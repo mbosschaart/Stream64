@@ -90,14 +90,24 @@ final class SessionManager: ObservableObject {
         }
     }
 
-    func disconnectAll() async {
-        let currentSessions = Array(sessions.values)
-        for session in currentSessions {
-            await session.disconnect()
-        }
-        sessions.removeAll()
-        audibleID = nil
+    /// Immediate local teardown for app quit — stops AirPlay and every
+    /// receiver/engine before any remote REST work, so music cannot keep
+    /// playing while `disconnect` awaits an unreachable Ultimate.
+    func prepareForAppTermination() {
         airPlayOutput.stopAirPlay()
+        audibleID = nil
+        for session in sessions.values {
+            session.prepareForEviction()
+        }
+    }
+
+    func disconnectAll() async {
+        prepareForAppTermination()
+        let currentSessions = Array(sessions.values)
+        sessions.removeAll()
+        for session in currentSessions {
+            await session.disconnect(waitForInputRelease: false)
+        }
     }
 
     /// Multi Drop: load a file on every connected session at once.
@@ -347,9 +357,9 @@ private struct AirPlayGlobalControl: View {
 }
 
 /// Attaches the main-viewer lifecycle directly to its concrete NSWindow.
-/// SwiftUI view disappearance is not a reliable close signal because it can
-/// occur during scene reconstruction; this receives willClose only for the
-/// actual viewer window hosting the representable.
+/// Closing that window means quit the app (SID / Debug Trace / etc. are
+/// auxiliaries). SwiftUI often detaches this representable *before*
+/// `willClose` is delivered — the observer must survive `window == nil`.
 private struct MainViewerWindowObserver: NSViewRepresentable {
     @Binding var window: NSWindow?
 
@@ -367,9 +377,17 @@ private final class MainViewerWindowObservationView: NSView {
     var onWindowChanged: ((NSWindow?) -> Void)?
     private weak var observedWindow: NSWindow?
     private var closeObserver: NSObjectProtocol?
+    private var isQuittingFromViewerClose = false
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil {
+            // SwiftUI tears the hosting view out of the NSWindow before
+            // willClose in some close paths. Keep observing the previous
+            // window so terminate still runs; only update the binding.
+            onWindowChanged?(nil)
+            return
+        }
         guard window !== observedWindow else { return }
         removeObservation()
         observedWindow = window
@@ -379,17 +397,27 @@ private final class MainViewerWindowObservationView: NSView {
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
-            queue: .main) { _ in
-                // AppDelegate.applicationShouldTerminate closes every
-                // auxiliary and extra viewer window before returning now.
-                DispatchQueue.main.async {
-                    NSApp.terminate(nil)
-                }
-            }
+            queue: .main
+        ) { [weak self] _ in
+            self?.quitBecauseMainViewerClosed()
+        }
     }
 
     deinit {
         removeObservation()
+    }
+
+    private func quitBecauseMainViewerClosed() {
+        guard !isQuittingFromViewerClose else { return }
+        isQuittingFromViewerClose = true
+        removeObservation()
+        // Stop audio immediately — terminate may return `.terminateLater`
+        // while remote stream-stop awaits, and users close via the red
+        // traffic light far more often than ⌘Q.
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.sessionManager?.prepareForAppTermination()
+        }
+        NSApp.terminate(nil)
     }
 
     private func removeObservation() {
@@ -398,7 +426,6 @@ private final class MainViewerWindowObservationView: NSView {
             self.closeObserver = nil
         }
         observedWindow = nil
-        onWindowChanged?(nil)
     }
 }
 

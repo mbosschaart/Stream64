@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.109b — 2026-08-11
+
+### Fixed
+
+- **Closing the streaming window now quits the app cleanly.** SwiftUI often detached the main-viewer close observer before `willClose`, and quit waited on remote stream-stop/release calls, so the UI could disappear while audio and the process kept running. Local audio/AirPlay now stop immediately, remote cleanup is time-bounded, and closing the stream window reliably terminates Stream64.
+
 ## 0.108b — 2026-08-11
 
 ### Fixed

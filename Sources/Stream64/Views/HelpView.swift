@@ -582,6 +582,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     Debug Trace map usually restores a full display rate. Occluded SID \
     windows pause automatically.
 
+    **Closing the stream window** quits Stream64 entirely (including SID / \
+    Debug Trace windows) and stops local audio immediately.
+
     **Two devices, one shows no picture** — both are probably configured \
     with the same local ports. Edit one device and give it a unique \
     video/audio port pair (e.g. 11002/11003).

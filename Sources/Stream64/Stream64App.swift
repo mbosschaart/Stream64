@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.108b"
+            ?? "0.109b"
     }
 }
 
@@ -47,11 +47,17 @@ enum Stream64Assets {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let instanceLock = SingleInstanceLock()
     private var isTerminatingCompletely = false
-    weak var sessionManager: SessionManager?
+    private var didReplyToTerminate = false
+    /// Strong on purpose: quit must still reach sessions after SwiftUI has
+    /// torn down the main window / `onAppear` wiring.
+    var sessionManager: SessionManager?
     private var splashWindow: NSWindow?
     private var hiddenLaunchWindows: [NSWindow] = []
     private var windowOrderObserver: NSObjectProtocol?
     private var isShowingSplash = false
+    /// Cap remote stream-stop work during quit so an unreachable device
+    /// cannot leave Stream64 as a zombie process with audio still playing.
+    private static let terminationCleanupLimit: Duration = .seconds(2)
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         switch instanceLock.acquire() {
@@ -81,30 +87,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // MainViewerWindowObserver explicitly terminates when a viewer closes.
-        // Returning true here would also terminate while the standalone
-        // startup splash hands off to the already-created viewer window.
-        false
+        // Keep false during the splash handoff — the viewer window already
+        // exists (hidden) and returning true would quit mid-launch. After
+        // splash, closing the last window must quit even if the main-viewer
+        // willClose observer lost the race with SwiftUI teardown.
+        !isShowingSplash
     }
 
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
         // Also cover Command-Q / Dock Quit, not only red-close on the viewer.
-        // Remote streams use duration 0 by default, so terminate only after
-        // every cached session has sent its stop requests and released local
-        // receivers.
-        guard !isTerminatingCompletely else { return .terminateLater }
+        // Remote streams use duration 0 by default; we still try to stop them,
+        // but local audio/AirPlay must die immediately and quit must never
+        // hang forever waiting on REST.
+        if isTerminatingCompletely {
+            return didReplyToTerminate ? .terminateNow : .terminateLater
+        }
         isTerminatingCompletely = true
+
+        // Stop music and free UDP ports before any await / window teardown.
+        sessionManager?.prepareForAppTermination()
+
         for window in sender.windows {
             window.orderOut(nil)
             window.close()
         }
+
         Task { @MainActor [weak self] in
-            await self?.sessionManager?.disconnectAll()
-            NSApp.reply(toApplicationShouldTerminate: true)
+            guard let self else {
+                NSApp.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            await self.runTerminationCleanup()
+            self.finishTermination()
+        }
+        // Safety net if remote stop stalls past the cleanup limit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.finishTermination()
         }
         return .terminateLater
+    }
+
+    private func runTerminationCleanup() async {
+        guard let sessionManager else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                await sessionManager.disconnectAll()
+            }
+            group.addTask {
+                try? await Task.sleep(for: Self.terminationCleanupLimit)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func finishTermination() {
+        guard !didReplyToTerminate else { return }
+        didReplyToTerminate = true
+        // Belt-and-suspenders: local teardown again in case sessions were
+        // created after the first prepare call.
+        sessionManager?.prepareForAppTermination()
+        NSApp.reply(toApplicationShouldTerminate: true)
     }
 
     private func prepareForSplash() {
