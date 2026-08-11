@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.114b — 2026-08-12
+
+### Fixed
+
+- **Install and Relaunch no longer beachballs.** The updater was opening the new app while the old process still held the single-instance lock, so Launch Services reactivated the installing instance and the new process quit itself. Relaunch now waits for this PID to exit, then opens the replacement; quit during update skips the slow disconnect wait.
+
 ## 0.113b — 2026-08-12
 
 ### Fixed

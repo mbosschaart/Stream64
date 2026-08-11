@@ -110,6 +110,10 @@ final class UpdateService: ObservableObject {
     static let repositoryURL = URL(
         string: "https://api.github.com/repos/mbosschaart/Stream64/releases/latest")!
     nonisolated static let fallbackTeamIdentifier = "EJ77LX9A8T"
+    /// Set just before the post-install quit so `AppDelegate` can exit
+    /// immediately instead of awaiting stream teardown — and so a helper
+    /// can relaunch only after this process (and its instance lock) is gone.
+    static var isRelaunchingAfterUpdate = false
 
     @Published private(set) var state: UpdateState = .idle
     @Published var isPresented = false
@@ -383,14 +387,47 @@ final class UpdateService: ObservableObject {
                 currentApp, withItemAt: replacement, backupItemName: backupName)
             try? FileManager.default.removeItem(at: backupURL)
             Self.removeStaleUpdateBackups(in: parent, keeping: backupURL)
-            NSWorkspace.shared.open(currentApp)
+
+            // Do NOT open the app while this process is still alive:
+            // Launch Services would activate this instance, and the new
+            // process would lose the SingleInstanceLock and quit itself —
+            // leaving the install sheet spinning forever.
+            Self.isRelaunchingAfterUpdate = true
+            try Self.scheduleRelaunchAfterExit(of: currentApp)
             NSApp.terminate(nil)
         } catch is CancellationError {
+            Self.isRelaunchingAfterUpdate = false
             state = .idle
         } catch {
+            Self.isRelaunchingAfterUpdate = false
             state = .failed(error.localizedDescription)
             isPresented = true
         }
+    }
+
+    /// Spawns a detached helper that waits until this PID exits (releasing
+    /// the instance flock), then opens the replacement app.
+    nonisolated static func scheduleRelaunchAfterExit(of appURL: URL) throws {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let quotedPath = shellQuote(appURL.path)
+        let script = """
+        while /bin/kill -0 \(pid) 2>/dev/null; do /bin/sleep 0.05; done
+        /bin/sleep 0.2
+        exec /usr/bin/open -n \(quotedPath)
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        // Detach from this process group so AppKit teardown cannot kill the
+        // waiter before it relaunches Stream64.
+        process.qualityOfService = .userInitiated
+        try process.run()
+    }
+
+    nonisolated static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     nonisolated static func expectedTeamIdentifier() -> String {

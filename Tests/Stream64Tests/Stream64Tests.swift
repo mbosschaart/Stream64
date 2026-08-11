@@ -2603,6 +2603,15 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertFalse(UpdateService.expectedTeamIdentifier().isEmpty)
     }
 
+    func testUpdateRelaunchShellQuoteEscapesEmbeddedQuotes() {
+        XCTAssertEqual(
+            UpdateService.shellQuote("/Applications/Stream64.app"),
+            "'/Applications/Stream64.app'")
+        XCTAssertEqual(
+            UpdateService.shellQuote("/tmp/O'Brien/Stream64.app"),
+            "'/tmp/O'\\''Brien/Stream64.app'")
+    }
+
     @MainActor
     func testEmbeddedMetalShadersCompile() throws {
         guard MTLCreateSystemDefaultDevice() != nil else {

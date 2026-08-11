@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.113b"
+            ?? "0.114b"
     }
 }
 
@@ -108,6 +108,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Stop music and free UDP ports before any await / window teardown.
         sessionManager?.prepareForAppTermination()
+
+        // Post-update relaunch: exit immediately so the waiter script can
+        // open the new binary. A `.terminateLater` disconnect wait (or
+        // Launch Services activating this still-running instance) was what
+        // left the install sheet beachballing.
+        if UpdateService.isRelaunchingAfterUpdate {
+            for window in sender.windows {
+                window.orderOut(nil)
+            }
+            return .terminateNow
+        }
 
         for window in sender.windows {
             window.orderOut(nil)
