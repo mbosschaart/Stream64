@@ -369,10 +369,20 @@ final class UpdateService: ObservableObject {
             try Self.verifyTeamIdentifier(of: replacement)
             Self.clearQuarantine(at: replacement)
 
+            // Keep the original item's Finder/TCC-facing metadata when
+            // swapping the bundle contents. `.usingNewMetadataOnly` made
+            // each update look like a brand-new app to Local Network
+            // privacy, so discovery permission was lost after install.
+            // Delete the temporary backup immediately — leftover
+            // `.Stream64-backup-*.app` bundles also accumulate as stale
+            // Local Network entries.
             let backupName = ".Stream64-backup-\(UUID().uuidString).app"
+            let parent = currentApp.deletingLastPathComponent()
+            let backupURL = parent.appendingPathComponent(backupName)
             _ = try FileManager.default.replaceItemAt(
-                currentApp, withItemAt: replacement, backupItemName: backupName,
-                options: .usingNewMetadataOnly)
+                currentApp, withItemAt: replacement, backupItemName: backupName)
+            try? FileManager.default.removeItem(at: backupURL)
+            Self.removeStaleUpdateBackups(in: parent, keeping: backupURL)
             NSWorkspace.shared.open(currentApp)
             NSApp.terminate(nil)
         } catch is CancellationError {
@@ -437,6 +447,25 @@ final class UpdateService: ObservableObject {
         process.standardError = FileHandle.nullDevice
         try? process.run()
         process.waitUntilExit()
+    }
+
+    /// Removes leftover `.Stream64-backup-*.app` bundles from earlier updates.
+    /// Backups use a leading '.' so enumeration must include hidden items.
+    nonisolated static func removeStaleUpdateBackups(
+        in directory: URL,
+        keeping currentBackup: URL? = nil
+    ) {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for url in contents {
+            let name = url.lastPathComponent
+            guard name.hasPrefix(".Stream64-backup-"),
+                  name.hasSuffix(".app"),
+                  url != currentBackup else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }
 

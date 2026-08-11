@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.113b — 2026-08-12
+
+### Fixed
+
+- **In-app updates no longer reset Local Network privacy identity.** Replacing the app now preserves the installed bundle’s metadata (instead of `.usingNewMetadataOnly`) and deletes temporary `.Stream64-backup-*.app` leftovers that accumulated as stale Local Network entries. Help documents how to clean up older ad-hoc/`dist/` copies.
+
 ## 0.112b — 2026-08-12
 
 ### Added

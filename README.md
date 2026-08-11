@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.112b-purple)
+![Version](https://img.shields.io/badge/version-0.113b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -298,10 +298,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.112b BUILD_NUMBER=112 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.113b BUILD_NUMBER=113 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.112b BUILD_NUMBER=112 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.113b BUILD_NUMBER=113 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

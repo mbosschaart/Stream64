@@ -557,6 +557,15 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let troubleshootingText = """
+    **Device discovery or streaming fails after an update / many Stream64 \
+    entries under Local Network** — macOS Local Network privacy tracks each \
+    signed build separately. Older ad-hoc builds and copies under `dist/` \
+    leave stale toggles. Prefer a single installed copy in **Applications**, \
+    delete unused Stream64.app folders elsewhere, then in \
+    **System Settings → Privacy & Security → Local Network** turn Stream64 \
+    off and on again (or Allow if prompted). In-app updates now preserve the \
+    installed app's identity metadata so permission should stick.
+
     **Black screen after connecting** — use **Start Streaming** (toolbar or \
     right-click). If that fails, check that no firewall blocks inbound UDP \
     on the device's video/audio ports.
