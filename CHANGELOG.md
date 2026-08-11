@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.110b — 2026-08-11
+
+### Added
+
+- **Piano Keyboard SID visualization** — a per-voice piano (fixed C1–C7) whose keys press and light up to match the tone each SID channel is currently playing. Available from **SID Visualizations** alongside the existing modes (19 total).
+- **Audio output device picker** in Settings → Audio — choose which Mac speaker/headphones Stream64 uses locally, independent of the system default and of AirPlay.
+- **Drag-and-drop `.sid` and `.crt`** onto the stream (alongside `.prg` and disk images) — SIDs play via the Ultimate's built-in player; cartridges start immediately.
+
+### Improved
+
+- **Integer scaling** falls back to Fit when the largest whole-pixel scale would leave most of the window empty, so awkward fullscreen sizes no longer look tiny.
+- **Save Window Layout overwrites** any previously saved per-device arrangement (empty captures no longer clear a good snapshot).
+- **Joystick / gamepad input no longer tanks stream display FPS** — successful matrix sends no longer republish input capability on every batch, the live viewer no longer observes high-churn `InputSettings`, and analog stick samples are coalesced with unchanged-axis early-outs.
+
 ## 0.109b — 2026-08-11
 
 ### Fixed

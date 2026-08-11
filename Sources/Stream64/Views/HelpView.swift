@@ -183,7 +183,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Scaling modes** (toolbar or right-click → Scaling)
 
     • **Fit** — largest 4:3 picture that fits the window
-    • **Integer** — whole-pixel multiples only, for the sharpest possible image
+    • **Integer** — whole-pixel multiples for the sharpest image; if the \
+    largest whole-pixel size would leave most of the window empty, Stream64 \
+    temporarily uses Fit instead so fullscreen does not look tiny
     • **Fill** — stretches to fill the window
 
     The picture always renders at the authentic **4:3 aspect ratio** in Fit and \
@@ -302,6 +304,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     • **.prg** — uploaded and run immediately (reset + load + RUN)
     • **.d64 / .g64 / .d71 / .g71 / .d81** — disk image, mounted in drive A
+    • **.sid** — played with the Ultimate's built-in SID player
+    • **.crt** — started as a cartridge
 
     The file uploads straight from your Mac — it does not need to exist on \
     the Ultimate's storage. A banner shows upload progress and the result.
@@ -472,7 +476,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     Closing any main viewer window fully quits Stream64 and closes every \
     Assembly64, Help, Settings and additional viewer window.
 
-    **Settings → Audio** — volume and the jitter buffer. A larger buffer \
+    **Settings → Audio** — choose the Mac output device for local playback, \
+    volume, and the jitter buffer. A larger buffer \
     smooths playback on busy networks at \
     the cost of latency; 60 ms is a good default.
 
@@ -519,33 +524,34 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **SID Oscilloscope** — right-click menu → **SID Visualizations**
 
-    An 18-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+    A 19-mode SID visualizer — 3 channels normally, 6 when a second SID is \
     configured. Pick any mode from **SID Visualizations** to open it in its \
     own window; any number of modes can be open side by side, or use \
     **Open All in Grid** to open every mode at once, automatically tiled to \
     fit the screen. However your windows end up arranged, **Save Window \
-    Layout** remembers it per device, so **Restore Window Layout** can \
-    bring it back later — even after quitting and relaunching the app. Both \
-    are also on the right-click menu, so restoring works even with no SID \
-    windows currently open.
+    Layout** remembers it per device (overwriting any previously saved \
+    arrangement), so **Restore Window Layout** can bring it back later — \
+    even after quitting and relaunching the app. Both are also on the \
+    right-click menu, so restoring works even with no SID windows currently \
+    open.
 
     A window's mode is fixed once it's open — picking a different mode from \
     either menu always opens a *new* window rather than switching the \
     current one, so e.g. an Oscilloscope window and a Spectrum Analyzer \
     window can both stay open and updating live side by side.
 
-    Thirteen modes reconstruct their picture from SID register *writes*, \
+    Fourteen modes reconstruct their picture from SID register *writes*, \
     seen automatically on a 6510 Debug Trace: **Oscilloscope**, **ADSR \
-    Envelope**, **Mixer Console**, **Piano Roll**, **Voice Lineup**, \
-    **Filter Curve**, **VU Meter Bank**, **Register Activity Grid**, **ADSR \
-    Knobs**, **Pulse Width**, **Control Bits**, **SID Dashboard**, and \
-    **Colorful Waveform**. Five instead read the real post-mix Ultimate \
-    audio stream — **Spectrum Analyzer**, **Lissajous Scope**, \
-    **Spectrogram**, **3D Waterfall**, and **3D Bar Field** — so they \
-    reflect genuine SID output, including real filter behavior the \
-    register-driven modes only approximate. A **Phosphor Glow** toggle \
-    (each window's right-click menu) adds a CRT-bloom overlay to whichever \
-    mode that window is showing.
+    Envelope**, **Mixer Console**, **Piano Roll**, **Piano Keyboard**, \
+    **Voice Lineup**, **Filter Curve**, **VU Meter Bank**, **Register \
+    Activity Grid**, **ADSR Knobs**, **Pulse Width**, **Control Bits**, \
+    **SID Dashboard**, and **Colorful Waveform**. Five instead read the \
+    real post-mix Ultimate audio stream — **Spectrum Analyzer**, \
+    **Lissajous Scope**, **Spectrogram**, **3D Waterfall**, and \
+    **3D Bar Field** — so they reflect genuine SID output, including real \
+    filter behavior the register-driven modes only approximate. A \
+    **Phosphor Glow** toggle (each window's right-click menu) adds a \
+    CRT-bloom overlay to whichever mode that window is showing.
     """
 
     private static let troubleshootingText = """

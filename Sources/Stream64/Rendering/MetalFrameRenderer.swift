@@ -1537,28 +1537,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     }
 
     private func computeScale(drawableSize: CGSize) -> SIMD2<Float> {
-        guard drawableSize.width > 0, drawableSize.height > 0 else { return .one }
-        // A C64 on a real TV displays at 4:3 — the 384x272 frame's pixels
-        // are not square, so scaling targets the display aspect, not the
-        // pixel dimensions.
-        let displayAspect: Float = 4.0 / 3.0
-        let frameH = Float(VideoReceiver.height)
-        let viewW = Float(drawableSize.width)
-        let viewH = Float(drawableSize.height)
-
-        switch scalingMode {
-        case .fill:
-            return SIMD2<Float>(1, 1)
-        case .aspectFit:
-            let outH = min(viewH, viewW / displayAspect)
-            return SIMD2<Float>(outH * displayAspect / viewW, outH / viewH)
-        case .integer:
-            // Whole multiples of the source height, width follows 4:3.
-            let maxScale = min(viewH / frameH, viewW / (frameH * displayAspect))
-            let scale = max(1, floor(maxScale))
-            let outH = frameH * scale
-            return SIMD2<Float>(outH * displayAspect / viewW, outH / viewH)
-        }
+        // A C64 on a real TV displays at 4:3 — the 384×272 frame's pixels
+        // are not square, so scaling targets the display aspect. Integer
+        // mode falls back to Fit when the largest whole-pixel scale would
+        // leave most of the window empty (see `VideoScaling`).
+        VideoScaling.scaleFactors(mode: scalingMode, drawableSize: drawableSize)
     }
 }
 

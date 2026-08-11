@@ -10,6 +10,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     case envelope = "ADSR Envelope"
     case mixerConsole = "Mixer Console"
     case pianoRoll = "Piano Roll"
+    case pianoKeyboard = "Piano Keyboard"
     case voiceLineup = "Voice Lineup"
     case filterCurve = "Filter Curve"
     case spectrum = "Spectrum Analyzer"
@@ -44,8 +45,8 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// SID Dashboard, Filter Curve, Register Activity) or note-onset timing
     /// (Piano Roll, Voice Lineup — driven by `pushNoteHistory()`, which
     /// only needs the *current* register values, not synthesized samples)
-    /// don't need this at all, and paid for it unconditionally before this
-    /// was added.
+    /// or live pitch alone (Piano Keyboard) don't need this at all, and
+    /// paid for it unconditionally before this was added.
     var needsSampleSynthesis: Bool {
         switch self {
         case .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform: return true
@@ -84,6 +85,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
         case .envelope: return "waveform.path"
         case .mixerConsole: return "slider.vertical.3"
         case .pianoRoll: return "pianokeys"
+        case .pianoKeyboard: return "pianokeys.inverse"
         case .voiceLineup: return "rectangle.stack.fill"
         case .filterCurve: return "waveform.path.ecg"
         case .spectrum: return "chart.bar.fill"
@@ -217,16 +219,29 @@ struct SIDVoiceChannel: Identifiable {
         Self.noteName(forHz: frequencyHz)
     }
 
+    /// Nearest MIDI note number for the current frequency, or `nil` when
+    /// the voice isn't producing a usable pitch.
+    var midiNoteNumber: Int? {
+        Self.midiNoteNumber(forHz: frequencyHz)
+    }
+
     private static let noteLetters = [
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ]
 
-    static func noteName(forHz hz: Double) -> String {
-        guard hz > 1 else { return "—" }
+    /// A440 equal-temperament MIDI number for `hz`, rounded to the nearest
+    /// semitone. Shared by note-name labels and the Piano Keyboard mode.
+    static func midiNoteNumber(forHz hz: Double) -> Int? {
+        guard hz > 1 else { return nil }
         let midi = 69 + 12 * log2(hz / 440)
-        guard midi.isFinite else { return "—" }
+        guard midi.isFinite else { return nil }
         let rounded = Int(midi.rounded())
-        guard rounded >= 0, rounded < 128 else { return "—" }
+        guard (0..<128).contains(rounded) else { return nil }
+        return rounded
+    }
+
+    static func noteName(forHz hz: Double) -> String {
+        guard let rounded = midiNoteNumber(forHz: hz) else { return "—" }
         return "\(noteLetters[rounded % 12])\(rounded / 12 - 1)"
     }
 }
@@ -362,6 +377,10 @@ private struct SIDOscilloscopeContent: View {
             }
         case .pianoRoll:
             SIDPianoRollView(channels: model.channels)
+        case .pianoKeyboard:
+            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
+                SIDPianoKeyboardPanel(channel: channel)
+            }
         case .voiceLineup:
             SIDVoiceLineupView(channels: model.channels)
         case .filterCurve:
@@ -435,17 +454,24 @@ struct SIDVisualizationMenuContent: View {
             Label("Open All in Grid", systemImage: "square.grid.3x3")
         }
         Divider()
-        Button {
-            session.saveWindowLayout()
-        } label: {
-            Label("Save Window Layout", systemImage: "square.and.arrow.down")
+        // Always available: saving overwrites any existing per-device
+        // snapshot. Grouped separately from Restore so a disabled
+        // Restore item cannot affect Save in nested SwiftUI menus.
+        Group {
+            Button {
+                session.saveWindowLayout()
+            } label: {
+                Label("Save Window Layout", systemImage: "square.and.arrow.down")
+            }
         }
-        Button {
-            session.restoreWindowLayout()
-        } label: {
-            Label("Restore Window Layout", systemImage: "square.and.arrow.up")
+        Group {
+            Button {
+                session.restoreWindowLayout()
+            } label: {
+                Label("Restore Window Layout", systemImage: "square.and.arrow.up")
+            }
+            .disabled(!session.hasSavedWindowLayout)
         }
-        .disabled(!session.hasSavedWindowLayout)
     }
 }
 
@@ -669,7 +695,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         // Pack every window at its actual minimum usable size (matching
         // `window.minSize` below) rather than stretching cells to fill
         // whatever space dividing the screen evenly would give each
-        // one — with 18 modes, that stretching could make even a simple
+        // one — with many modes, that stretching could make even a simple
         // bar-graph mode occupy a needlessly huge chunk of the screen.
         // `gridLayout` still picks a sensible (rows, columns) split
         // (preferring fewer, wider rows) using this fixed size as the
@@ -723,8 +749,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     }
 
     /// Whether any SID Oscilloscope window is currently open for
-    /// `deviceID` — used to disable "Save Window Layout" when there's
-    /// nothing to save.
+    /// `deviceID`.
     static func hasAnyOpenWindows(for deviceID: UUID) -> Bool {
         windows.values.contains { $0.deviceID == deviceID }
     }

@@ -1088,6 +1088,38 @@ final class Assembly64FeatureTests: XCTestCase {
             $0.inputs == ["left"] && $0.transition == .release
         })
 
+        let countAfterEdges = await transport.inputEventCount
+        // Held left is already emitted — repeating it and an unchanged
+        // stick sample must not enqueue anything new.
+        controller.setJoystick(
+            source: "keyboard", input: .left, pressed: true)
+        controller.setJoystickAxes(
+            source: "gamepad-stick",
+            left: false, right: false, up: false, down: false)
+        controller.setJoystickAxes(
+            source: "gamepad-stick",
+            left: false, right: false, up: true, down: false)
+        controller.setJoystickAxes(
+            source: "gamepad-stick",
+            left: false, right: false, up: true, down: false)
+        for _ in 0..<100 {
+            if await transport.inputEventCount >= countAfterEdges + 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let afterRedundant = await transport.allInputEvents
+        XCTAssertEqual(
+            afterRedundant.filter {
+                $0.inputs == ["up"] && $0.transition == .press
+            }.count,
+            1)
+        let countAfterRedundant = await transport.inputEventCount
+        XCTAssertEqual(
+            countAfterRedundant,
+            countAfterEdges + 1,
+            "redundant joystick updates must not enqueue extra events")
+
         controller.keyDown(
             hostKeyCode: 0, inputs: ["a"],
             fallback: 0x41, holdable: true)
@@ -1128,6 +1160,36 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(keymap.name, "Test Map")
         XCTAssertEqual(keymap.type, .positional)
         XCTAssertEqual(keymap.mappings["KeyA"], 0x41)
+    }
+
+    @MainActor
+    func testInputCapabilityDoesNotRepublishOnSuccessfulSends() async throws {
+        let device = UltimateDevice(
+            id: UUID(), name: "Input", host: "192.168.1.64")
+        let transport = ScriptedInputTransport()
+        let controller = C64InputController(
+            device: device, transport: transport)
+        controller.settings.transport = .matrix
+        controller.settings.updateCapability(.supported)
+
+        var publishCount = 0
+        let token = controller.settings.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { token.cancel() }
+
+        controller.setJoystick(
+            source: "keyboard", input: .left, pressed: true)
+        controller.setJoystick(
+            source: "keyboard", input: .left, pressed: false)
+        for _ in 0..<100 {
+            if await transport.inputEventCount >= 2 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Successful matrix sends must not churn InputSettings while already
+        // marked supported — that used to rebuild the live viewer every batch.
+        XCTAssertEqual(publishCount, 0)
+        XCTAssertEqual(controller.settings.capability, .supported)
     }
 
     @MainActor
@@ -1567,6 +1629,34 @@ final class Assembly64FeatureTests: XCTestCase {
                 stableTickParity: 0,
                 videoGPUBehind: true),
             .skip)
+    }
+
+    func testVideoScalingIntegerFallsBackWhenUtilizationIsPoor() {
+        // 800pt-tall / wide enough for 4:3 fit → fit height 800, 2× integer
+        // is only 544 (~68%), so Integer should fall back (return nil).
+        XCTAssertNil(
+            VideoScaling.integerScaleFactor(viewWidth: 1200, viewHeight: 800))
+
+        // 1080p-class height: 3× (816) uses ~76% of fit → keep integer.
+        XCTAssertEqual(
+            VideoScaling.integerScaleFactor(viewWidth: 1920, viewHeight: 1080),
+            3)
+
+        // Fill ignores aspect; Fit and Integer-with-fallback agree on a
+        // small window where integer would look tiny.
+        let tiny = CGSize(width: 640, height: 400)
+        let fit = VideoScaling.scaleFactors(mode: .aspectFit, drawableSize: tiny)
+        let smartInteger = VideoScaling.scaleFactors(
+            mode: .integer, drawableSize: tiny)
+        XCTAssertEqual(fit.x, smartInteger.x, accuracy: 0.0001)
+        XCTAssertEqual(fit.y, smartInteger.y, accuracy: 0.0001)
+    }
+
+    func testViewerPaneDroppableExtensionsIncludeSIDAndCRT() {
+        XCTAssertTrue(ViewerPane.droppableExtensions.contains("sid"))
+        XCTAssertTrue(ViewerPane.droppableExtensions.contains("crt"))
+        XCTAssertTrue(ViewerPane.droppableExtensions.contains("prg"))
+        XCTAssertTrue(ViewerPane.droppableExtensions.contains("d64"))
     }
 
     func testSIDEngineAdaptiveTickAndSampleCap() {
@@ -2290,6 +2380,35 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertFalse(SIDWindowLayoutStore.hasSavedLayout(for: id))
     }
 
+    func testSIDWindowLayoutStoreOverwritesExistingLayout() throws {
+        let id = UUID()
+        defer { SIDWindowLayoutStore.clear(for: id) }
+        let original = [
+            SIDWindowLayoutEntry(
+                mode: SIDVisualizationMode.oscilloscope.rawValue,
+                frame: CGRect(x: 10, y: 20, width: 300, height: 180)),
+        ]
+        SIDWindowLayoutStore.save(
+            SIDWindowLayoutSnapshot(entries: original, savedAt: Date(timeIntervalSince1970: 1)),
+            for: id)
+
+        let replacement = [
+            SIDWindowLayoutEntry(
+                mode: SIDVisualizationMode.spectrum.rawValue,
+                frame: CGRect(x: 40, y: 60, width: 400, height: 220)),
+            SIDWindowLayoutEntry(
+                mode: SIDVisualizationMode.lissajous.rawValue,
+                frame: CGRect(x: 450, y: 60, width: 400, height: 220)),
+        ]
+        SIDWindowLayoutStore.save(
+            SIDWindowLayoutSnapshot(entries: replacement, savedAt: Date(timeIntervalSince1970: 2)),
+            for: id)
+
+        let loaded = try XCTUnwrap(SIDWindowLayoutStore.load(for: id))
+        XCTAssertEqual(loaded.entries, replacement)
+        XCTAssertEqual(loaded.savedAt, Date(timeIntervalSince1970: 2))
+    }
+
     func testSIDSpectrumAnalyzerAutoGainAvoidsAllBarsPeggedAtMax() throws {
         let sampleRate = 48000.0
         let analyzer = SIDSpectrumAnalyzer(sampleRate: sampleRate)
@@ -2357,6 +2476,21 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(SIDVoiceChannel.noteName(forHz: 440), "A4")
         XCTAssertEqual(SIDVoiceChannel.noteName(forHz: 261.63), "C4")
         XCTAssertEqual(SIDVoiceChannel.noteName(forHz: 0), "—")
+        XCTAssertEqual(SIDVoiceChannel.midiNoteNumber(forHz: 440), 69)
+        XCTAssertEqual(SIDVoiceChannel.midiNoteNumber(forHz: 261.63), 60)
+        XCTAssertNil(SIDVoiceChannel.midiNoteNumber(forHz: 0))
+    }
+
+    func testSIDPianoKeyboardLayoutUsesFixedRange() {
+        XCTAssertFalse(SIDPianoKeyboardLayout.isBlackKey(60)) // C4
+        XCTAssertTrue(SIDPianoKeyboardLayout.isBlackKey(61))  // C#4
+        XCTAssertEqual(SIDPianoKeyboardLayout.range.lowerBound % 12, 0)
+        let whites = SIDPianoKeyboardLayout.whiteKeys()
+        // C1…C7 is six full octaves of white keys plus the top C (7×6+1).
+        XCTAssertEqual(whites.count, 43)
+        XCTAssertEqual(whites.first, SIDPianoKeyboardLayout.minMidi) // C1
+        XCTAssertEqual(whites.last, SIDPianoKeyboardLayout.maxMidi)  // C7
+        XCTAssertTrue(SIDPianoKeyboardLayout.range.contains(96))
     }
 
     /// Covers the register read/write hex round-trip only — mode selection

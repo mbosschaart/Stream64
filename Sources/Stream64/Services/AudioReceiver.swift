@@ -105,6 +105,26 @@ final class AudioReceiver: @unchecked Sendable {
         }
     }
 
+    /// Empty / unset follows the system default output. Non-empty is a
+    /// CoreAudio device UID from `AudioOutputDevices`.
+    private var storedPreferredOutputUID = AudioOutputDevices.systemDefaultUID
+    var preferredOutputDeviceUID: String {
+        get {
+            configurationLock.lock()
+            defer { configurationLock.unlock() }
+            return storedPreferredOutputUID
+        }
+        set {
+            configurationLock.lock()
+            let changed = storedPreferredOutputUID != newValue
+            storedPreferredOutputUID = newValue
+            configurationLock.unlock()
+            if changed {
+                pinSelectedOrDefaultOutputDevice()
+            }
+        }
+    }
+
     /// Lifetime packet count for this receiver instance. Stream pickup uses
     /// a per-connect baseline rather than comparing this value with zero.
     /// Written on the receive queue; racy polling reads are fine.
@@ -208,7 +228,7 @@ final class AudioReceiver: @unchecked Sendable {
 
     func start(port: UInt16) async throws {
         resetForStart()
-        pinOutputToCurrentDefaultDevice()
+        pinSelectedOrDefaultOutputDevice()
 
         do {
             try startEngineLocked()
@@ -239,7 +259,7 @@ final class AudioReceiver: @unchecked Sendable {
         ) { [weak self] _ in
             self?.queue.async {
                 guard let self, self.started else { return }
-                self.pinOutputToCurrentDefaultDevice()
+                self.pinSelectedOrDefaultOutputDevice()
                 if !self.externalOutputSuppressed,
                    !self.engine.isRunning {
                     try? self.engine.start()
@@ -321,24 +341,24 @@ final class AudioReceiver: @unchecked Sendable {
         }
     }
 
-    /// Forces the engine's output unit onto whatever CoreAudio currently
-    /// reports as the default output device, rather than trusting
-    /// AVAudioEngine to pick it automatically (see the comment at the
-    /// `configChangeObserver` registration above for why).
-    private func pinOutputToCurrentDefaultDevice() {
+    /// Pins the engine's output unit to the user's preferred device, or the
+    /// system default when none is set / the preferred device is gone —
+    /// rather than trusting AVAudioEngine's automatic selection (see the
+    /// `configChangeObserver` registration above).
+    private func pinSelectedOrDefaultOutputDevice() {
         guard let audioUnit = engine.outputNode.audioUnit else { return }
 
-        var deviceID = AudioDeviceID(0)
-        var deviceIDSize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var defaultDeviceAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        let readStatus = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &defaultDeviceAddress, 0, nil,
-            &deviceIDSize, &deviceID)
-        guard readStatus == noErr else {
-            logger.error("Could not read default output device (status \(readStatus))")
+        configurationLock.lock()
+        let preferredUID = storedPreferredOutputUID
+        configurationLock.unlock()
+
+        var deviceID: AudioDeviceID
+        if let preferred = AudioOutputDevices.deviceID(forUID: preferredUID) {
+            deviceID = preferred
+        } else if let defaultID = AudioOutputDevices.defaultOutputDeviceID() {
+            deviceID = defaultID
+        } else {
+            logger.error("Could not resolve an output device to pin")
             return
         }
 

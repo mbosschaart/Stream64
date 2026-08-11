@@ -455,6 +455,7 @@ final class DeviceSession: ObservableObject {
         guard settings.audioEnabled else { return true }
         audioReceiver.volume = Float(settings.volume)
         audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
+        audioReceiver.preferredOutputDeviceUID = settings.audioOutputDeviceUID
         audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
         do {
             try await audioReceiver.start(port: try validatedLocalPort(
@@ -933,10 +934,15 @@ final class DeviceSession: ObservableObject {
     /// Saves the current arrangement (mode, position, size) of every
     /// open SID Oscilloscope window for this device, so it can be
     /// restored later with `restoreWindowLayout()` — even after quitting
-    /// and relaunching the app.
+    /// and relaunching the app. Replaces any previously saved layout for
+    /// this device. No-ops when nothing is open, so an accidental Save
+    /// cannot clear an existing snapshot.
     func saveWindowLayout() {
         let entries = SIDOscilloscopeWindowController.currentLayout(for: device.id)
-        SIDWindowLayoutStore.save(SIDWindowLayoutSnapshot(entries: entries, savedAt: Date()), for: device.id)
+        guard !entries.isEmpty else { return }
+        SIDWindowLayoutStore.save(
+            SIDWindowLayoutSnapshot(entries: entries, savedAt: Date()),
+            for: device.id)
     }
 
     /// Re-opens whatever SID Oscilloscope window arrangement was last
@@ -1065,8 +1071,8 @@ final class DeviceSession: ObservableObject {
         await input.cancelAndRelease()
     }
 
-    /// Load a dropped file: .prg is uploaded and run, disk images are
-    /// uploaded and mounted in drive A.
+    /// Load a dropped file: `.prg`/`.crt` run, `.sid` plays, disk images
+    /// mount in drive A.
     func loadFile(
         at url: URL,
         mountBehavior: MountBehavior = .mountOnly
@@ -1272,6 +1278,7 @@ final class DeviceSession: ObservableObject {
     func applyAudioSettings() {
         audioReceiver.volume = Float(settings.volume)
         audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
+        audioReceiver.preferredOutputDeviceUID = settings.audioOutputDeviceUID
         audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
     }
 

@@ -59,7 +59,7 @@ struct SIDEngineNeeds: Hashable {
 /// Drives SID register-write decoding, audio-rate oscillator/envelope
 /// synthesis, and FFT/spectrum analysis **once per device**, shared by
 /// every open SID Oscilloscope window on that device — regardless of how
-/// many are open or which of the 18 visualization modes each one shows.
+/// many are open or which visualization mode each one shows.
 ///
 /// Before this existed, each window ran a fully independent copy of all of
 /// this: its own 30 Hz timer, its own debug-trace filtering, its own 8 kHz

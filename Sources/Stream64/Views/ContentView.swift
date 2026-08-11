@@ -90,6 +90,12 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    func applyAudioOutputDeviceUID(_ uid: String) {
+        for session in sessions.values {
+            session.audioReceiver.preferredOutputDeviceUID = uid
+        }
+    }
+
     /// Immediate local teardown for app quit — stops AirPlay and every
     /// receiver/engine before any remote REST work, so music cannot keep
     /// playing while `disconnect` awaits an unreachable Ultimate.
@@ -166,7 +172,13 @@ struct ContentView: View {
         .onChange(of: settings.volume) {
             sessionManager.applyGlobalVolume(Float(settings.volume))
         }
-        .onAppear { applyAudioPolicy() }
+        .onChange(of: settings.audioOutputDeviceUID) {
+            sessionManager.applyAudioOutputDeviceUID(settings.audioOutputDeviceUID)
+        }
+        .onAppear {
+            applyAudioPolicy()
+            sessionManager.applyAudioOutputDeviceUID(settings.audioOutputDeviceUID)
+        }
         .toolbar { airPlayToolbar }
         .toolbar(isFullscreen ? .hidden : .automatic, for: .windowToolbar)
         .sheet(isPresented: $showingAddDevice) {
@@ -837,7 +849,9 @@ struct ViewerPane: View {
         self.multiDrop = multiDrop
     }
 
-    static let droppableExtensions: Set<String> = ["prg", "d64", "g64", "d71", "g71", "d81"]
+    static let droppableExtensions: Set<String> = [
+        "prg", "d64", "g64", "d71", "g71", "d81", "sid", "crt",
+    ]
 
     var body: some View {
         ViewerPaneSessionContent(
@@ -875,7 +889,10 @@ private struct ViewerPaneSessionContent: View {
     /// This device's own rendering settings — observed so toolbar pickers
     /// and the video refresh when they change.
     @ObservedObject var display: DisplaySettings
-    @ObservedObject var input: InputSettings
+    /// Deliberately NOT `@ObservedObject`: joystick/matrix traffic used to
+    /// republish `InputSettings` often enough to rebuild this whole host
+    /// (including `VideoView`) and starve Metal presents. Toolbar controls
+    /// and release-on-change side effects observe input in child views.
     @EnvironmentObject var settings: AppSettings
     var isFullscreen: Bool = false
     var multiDrop: ((URL) -> Void)?
@@ -886,7 +903,6 @@ private struct ViewerPaneSessionContent: View {
     init(session: DeviceSession, isFullscreen: Bool = false, multiDrop: ((URL) -> Void)? = nil) {
         self.session = session
         self.display = session.display
-        self.input = session.input.settings
         self.isFullscreen = isFullscreen
         self.multiDrop = multiDrop
     }
@@ -953,14 +969,9 @@ private struct ViewerPaneSessionContent: View {
         .onChange(of: display.filterMode) {
             session.applyAudioSettings()
         }
-        .onChange(of: input.joystickEnabled) {
-            session.input.releaseAll()
-        }
-        .onChange(of: input.joystickPort) {
-            session.input.releaseAll()
-        }
-        .onChange(of: input.joystickFireKey) {
-            session.input.releaseAll()
+        .background {
+            // Observes input without invalidating the video host above.
+            JoystickInputSideEffects(session: session)
         }
         .onReceive(NotificationCenter.default.publisher(for: .saveScreenshotRequested)) { _ in
             session.saveScreenshot()
@@ -1058,7 +1069,7 @@ private struct ViewerPaneSessionContent: View {
                     .font(.largeTitle)
                 Text("Drop to load on the C64")
                     .font(.headline)
-                Text(".prg runs the program · disk images mount in drive A")
+                Text(".prg / .crt run · .sid plays · disk images mount in drive A")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1211,22 +1222,7 @@ private struct ViewerPaneSessionContent: View {
             }
             .help("Show the on-screen C64 keyboard")
 
-            Toggle(isOn: $input.joystickEnabled) {
-                Label(
-                    input.joystickEnabled
-                        ? "Joystick Input" : "Keyboard Input",
-                    systemImage: "gamecontroller")
-            }
-            .disabled(input.capability != .supported)
-            .help(
-                "F10 toggles virtual joystick input; fire key is configurable "
-                    + "in Settings → Input")
-
-            Picker("Port", selection: $input.joystickPort) {
-                Text("Joy 1").tag(1)
-                Text("Joy 2").tag(2)
-            }
-            .help("Virtual joystick port (F11 switches)")
+            JoystickToolbarControls(input: session.input.settings)
 
             Divider()
 
@@ -1313,5 +1309,57 @@ private struct ViewerPaneSessionContent: View {
             }
             .help("Enter full screen (move the pointer to the top to exit)")
         }
+    }
+}
+
+/// Joystick toolbar controls observe `InputSettings` on their own so
+/// capability/toggle updates don't rebuild the live `VideoView` host.
+private struct JoystickToolbarControls: View {
+    @ObservedObject var input: InputSettings
+
+    var body: some View {
+        Toggle(isOn: $input.joystickEnabled) {
+            Label(
+                input.joystickEnabled
+                    ? "Joystick Input" : "Keyboard Input",
+                systemImage: "gamecontroller")
+        }
+        .disabled(input.capability != .supported)
+        .help(
+            "F10 toggles virtual joystick input; fire key is configurable "
+                + "in Settings → Input")
+
+        Picker("Port", selection: $input.joystickPort) {
+            Text("Joy 1").tag(1)
+            Text("Joy 2").tag(2)
+        }
+        .help("Virtual joystick port (F11 switches)")
+    }
+}
+
+/// Releases held joystick/keyboard state when joystick preferences change,
+/// without observing `InputSettings` on the video host view.
+private struct JoystickInputSideEffects: View {
+    let session: DeviceSession
+    @ObservedObject private var input: InputSettings
+
+    init(session: DeviceSession) {
+        self.session = session
+        self.input = session.input.settings
+    }
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onChange(of: input.joystickEnabled) {
+                session.input.releaseAll()
+            }
+            .onChange(of: input.joystickPort) {
+                session.input.releaseAll()
+            }
+            .onChange(of: input.joystickFireKey) {
+                session.input.releaseAll()
+            }
     }
 }

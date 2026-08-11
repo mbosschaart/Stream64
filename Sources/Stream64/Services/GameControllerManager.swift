@@ -7,6 +7,10 @@ final class GameControllerManager {
 
     private weak var target: C64InputController?
     private var observers: [NSObjectProtocol] = []
+    /// Latest analog samples awaiting a MainActor flush, keyed by source.
+    /// Written from GameController callbacks (any queue) and drained on the
+    /// main actor so rapid stick jitter collapses to one apply per turn.
+    private let pendingAxes = PendingAxesBox()
 
     private init() {
         observers.append(NotificationCenter.default.addObserver(
@@ -32,25 +36,19 @@ final class GameControllerManager {
             releaseControllerInputs()
         }
         self.target = target
-        target?.settings.connectedControllerName =
-            GCController.controllers().first?.vendorName
+        target?.settings.updateConnectedControllerName(
+            GCController.controllers().first?.vendorName)
     }
 
     private func configure(_ controller: GCController) {
-        target?.settings.connectedControllerName = controller.vendorName
+        target?.settings.updateConnectedControllerName(controller.vendorName)
         if let pad = controller.extendedGamepad {
             pad.dpad.valueChangedHandler = { [weak self] _, x, y in
-                Task { @MainActor in
-                    self?.applyAxes(
-                        source: "gamepad-dpad", x: x, y: y)
-                }
+                self?.scheduleAxes(source: "gamepad-dpad", x: x, y: y)
             }
             pad.leftThumbstick.valueChangedHandler = {
                 [weak self] _, x, y in
-                Task { @MainActor in
-                    self?.applyAxes(
-                        source: "gamepad-stick", x: x, y: y)
-                }
+                self?.scheduleAxes(source: "gamepad-stick", x: x, y: y)
             }
             pad.buttonA.pressedChangedHandler = {
                 [weak self] _, _, pressed in
@@ -60,10 +58,7 @@ final class GameControllerManager {
             }
         } else if let pad = controller.microGamepad {
             pad.dpad.valueChangedHandler = { [weak self] _, x, y in
-                Task { @MainActor in
-                    self?.applyAxes(
-                        source: "gamepad-dpad", x: x, y: y)
-                }
+                self?.scheduleAxes(source: "gamepad-dpad", x: x, y: y)
             }
             pad.buttonA.pressedChangedHandler = {
                 [weak self] _, _, pressed in
@@ -74,19 +69,32 @@ final class GameControllerManager {
         }
     }
 
+    private func scheduleAxes(source: String, x: Float, y: Float) {
+        let shouldFlush = pendingAxes.store(source: source, x: x, y: y)
+        guard shouldFlush else { return }
+        Task { @MainActor in
+            self.flushPendingAxes()
+        }
+    }
+
+    private func flushPendingAxes() {
+        let batch = pendingAxes.takeAll()
+        for (source, sample) in batch {
+            applyAxes(source: source, x: sample.x, y: sample.y)
+        }
+    }
+
     private func applyAxes(source: String, x: Float, y: Float) {
         guard let target,
               target.settings.gameControllerEnabled,
               target.settings.joystickEnabled else { return }
         let threshold = Float(target.settings.deadzone)
-        target.setJoystick(
-            source: source, input: .left, pressed: x < -threshold)
-        target.setJoystick(
-            source: source, input: .right, pressed: x > threshold)
-        target.setJoystick(
-            source: source, input: .up, pressed: y > threshold)
-        target.setJoystick(
-            source: source, input: .down, pressed: y < -threshold)
+        target.setJoystickAxes(
+            source: source,
+            left: x < -threshold,
+            right: x > threshold,
+            up: y > threshold,
+            down: y < -threshold)
     }
 
     private func setFire(_ pressed: Bool) {
@@ -99,19 +107,49 @@ final class GameControllerManager {
 
     private func disconnect(_ controller: GCController) {
         releaseControllerInputs()
-        target?.settings.connectedControllerName =
+        target?.settings.updateConnectedControllerName(
             GCController.controllers().first {
                 $0 !== controller
-            }?.vendorName
+            }?.vendorName)
     }
 
     private func releaseControllerInputs() {
+        _ = pendingAxes.takeAll()
         guard let target else { return }
-        for source in ["gamepad-dpad", "gamepad-stick", "gamepad-button"] {
-            for input in JoystickDirection.allCases {
-                target.setJoystick(
-                    source: source, input: input, pressed: false)
-            }
+        for source in ["gamepad-dpad", "gamepad-stick"] {
+            target.setJoystickAxes(
+                source: source, left: false, right: false,
+                up: false, down: false)
         }
+        target.setJoystick(
+            source: "gamepad-button", input: .fire, pressed: false)
+    }
+}
+
+/// Thread-safe pending-axis buffer for GameController callbacks that may
+/// arrive off the main actor. Latest sample per source wins.
+private final class PendingAxesBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: (x: Float, y: Float)] = [:]
+    private var flushScheduled = false
+
+    /// Stores the sample. Returns `true` when the caller should schedule a
+    /// MainActor flush (only the first pending write after a drain).
+    func store(source: String, x: Float, y: Float) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        values[source] = (x, y)
+        guard !flushScheduled else { return false }
+        flushScheduled = true
+        return true
+    }
+
+    func takeAll() -> [String: (x: Float, y: Float)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let out = values
+        values.removeAll(keepingCapacity: true)
+        flushScheduled = false
+        return out
     }
 }

@@ -133,10 +133,14 @@ struct StreamContextMenu: View {
                     session.openAllSIDVisualizations()
                 }
                 Divider()
+                // Save stays enabled even when a layout is already stored —
+                // `saveWindowLayout()` overwrites that snapshot. It also
+                // stays enabled when the menu's open-window snapshot is
+                // stale: an empty capture is a no-op and will not clear a
+                // previously saved layout.
                 Button("Save Window Layout", systemImage: "square.and.arrow.down") {
                     session.saveWindowLayout()
                 }
-                .disabled(!session.hasOpenSIDWindows)
 
                 Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
                     session.restoreWindowLayout()

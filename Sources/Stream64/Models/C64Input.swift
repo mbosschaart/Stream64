@@ -111,6 +111,20 @@ final class InputSettings: ObservableObject {
     @Published var connectedControllerName: String?
     @Published var servicesReady = false
 
+    /// Assigns `capability` only when it changes. `@Published` fires on
+    /// every write — including `.supported = .supported` after each
+    /// successful matrix send — which used to rebuild the live viewer
+    /// while joystick traffic was in flight.
+    func updateCapability(_ value: MachineInputCapability) {
+        guard capability != value else { return }
+        capability = value
+    }
+
+    func updateConnectedControllerName(_ value: String?) {
+        guard connectedControllerName != value else { return }
+        connectedControllerName = value
+    }
+
     private struct Snapshot: Codable {
         var transport: InputTransportPreference
         var keymap: C64KeymapChoice

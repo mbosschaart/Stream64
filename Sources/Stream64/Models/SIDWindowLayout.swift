@@ -26,6 +26,8 @@ enum SIDWindowLayoutStore {
         "sidWindowLayout.\(deviceID.uuidString)"
     }
 
+    /// Persists `snapshot` for `deviceID`, replacing any layout already
+    /// stored under the same key.
     static func save(_ snapshot: SIDWindowLayoutSnapshot, for deviceID: UUID) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults.standard.set(data, forKey: storageKey(for: deviceID))

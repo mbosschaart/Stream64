@@ -102,6 +102,8 @@ final class AppSettings: ObservableObject {
     @AppStorage("audioEnabled") var audioEnabled: Bool = true
     @AppStorage("volume") var volume: Double = 0.8
     @AppStorage("audioBufferMs") var audioBufferMs: Double = 60
+    /// CoreAudio device UID, or empty for the system default output.
+    @AppStorage("audioOutputDeviceUID") var audioOutputDeviceUID: String = ""
 
     // Network
     @AppStorage("connectTimeoutSeconds") var connectTimeoutSeconds: Double = 5

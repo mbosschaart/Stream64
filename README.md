@@ -1,13 +1,13 @@
 # Stream64
 
-A native macOS viewer and remote control for the **Commodore 64 Ultimate** family (C64 Ultimate, Ultimate 64, Ultimate 64 Elite, Ultimate-II+). Stream64 receives the device's live video and audio streams over the network and renders them with Metal — with authentic CRT simulation, complete monitor cases, full keyboard input, drag-and-drop file loading, and simultaneous multi-device viewing.
+A native macOS viewer and remote control for the **Commodore 64 Ultimate** family (C64 Ultimate, Ultimate 64, Ultimate 64 Elite, Ultimate-II+). Stream64 receives the device's live video and audio streams over the network and renders them with Metal — with authentic CRT / signal simulation, full keyboard input, drag-and-drop file loading, and simultaneous multi-device viewing.
 
 Designed by Martijn Bosschaart, 2026.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.109b-purple)
+![Version](https://img.shields.io/badge/version-0.110b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -22,13 +22,14 @@ Designed by Martijn Bosschaart, 2026.
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **App-wide AirPlay audio** — one global toolbar route picker sends whichever C64 is currently selected to an AirPlay receiver without changing the Mac's system output; once selected, the route remains locked until explicitly stopped, including during view/C64 switching, resets, and transient transport gaps (AirPlay adds roughly 1–3 seconds of buffering)
 - **Update checking** — optionally checks the latest stable GitHub release at startup, with a manual **Check for Updates…** command and a direct link to the GitHub release page for downloading
-- **File loading** — drag a `.prg` or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
+- **File loading** — drag a `.prg`, `.sid`, `.crt`, or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
+- **Audio output device picker** — choose which Mac speaker/headphones Stream64 uses locally (independent of the system default and of AirPlay)
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
 - **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
-- **SID Oscilloscope** (Ultimate 64/Elite only) — an 18-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 18 at once, auto-tiled into a grid, via "Open All in Grid"), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
+- **SID Oscilloscope** (Ultimate 64/Elite only) — a 19-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 19 at once, auto-tiled into a grid, via "Open All in Grid"), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -215,7 +216,7 @@ sometimes need different handling on that transport.
 
 ### SID Oscilloscope
 
-An 18-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+A 19-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
 dual-8580 U64-II). Reached from the stream's right-click menu under "SID \
@@ -233,10 +234,11 @@ centered on screen. However the windows end up arranged — from "Open All in \
 Grid" or hand-picked and nudged into place — "Save Window Layout" (also in \
 both menus) remembers every open window's mode, position, and size per \
 device, so "Restore Window Layout" can bring back that exact arrangement \
-later, even after quitting and relaunching the app; both are on the stream's \
-menu too so restoring works even with no SID windows currently open.
+later, even after quitting and relaunching the app (Save overwrites whatever \
+was stored for that device); both are on the stream's menu too so restoring \
+works even with no SID windows currently open.
 
-Thirteen modes are register-driven — reconstructed from SID register *writes* \
+Fourteen modes are register-driven — reconstructed from SID register *writes* \
 seen on a 6510-capable Debug Trace, since there's no way to read individual \
 voices off the wire (the audio stream is only the final post-mix output), \
 through a small approximate SID emulation core (oscillator shapes, a \
@@ -248,6 +250,7 @@ for specifics worth knowing before treating any of it as reference-accurate):
 - **ADSR Envelope** — the same per-channel grid, plotting the envelope curve instead of the waveform
 - **Mixer Console** — a denser per-channel strip: waveform + VU meter + ADSR-stage badge + note/frequency
 - **Piano Roll** — all channels on one shared pitch axis, showing note-on runs over the last ~10 seconds
+- **Piano Keyboard** — a per-channel piano keyboard whose keys press and light up to match the tone each voice is currently playing
 - **Voice Lineup** — every channel as a stacked, time-aligned lane with note-name labels at each onset and dashed guide lines wherever two or more channels change notes at (nearly) the same moment — a chiptune's version of a chord hit, inspired by Sonic Lineup's multi-track alignment view
 - **Filter Curve** — an approximate frequency-response curve per chip from the (newly decoded) filter/resonance/mode registers, plus which channels are routed through it
 - **VU Meter Bank** — large, bold per-channel level meters with a peak-hold notch, laid out like a real mixing console's meter bridge
@@ -295,10 +298,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.109b BUILD_NUMBER=109 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.110b BUILD_NUMBER=110 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.109b BUILD_NUMBER=109 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.110b BUILD_NUMBER=110 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -437,13 +440,13 @@ The Ultimate sends the VIC frame as UDP packets: a 12-byte header (sequence, fra
 
 `MetalFrameRenderer` uploads each frame into a **ring of three `r8Uint` textures** (never writing a texture the GPU may still be reading — a CPU `replace()` during a slow fragment shader pass tears the picture) and draws a fullscreen quad. The fragment shader does palette lookup on the GPU from a 16×1 palette texture, so the CPU never touches RGB.
 
-The scaling math targets a **4:3 display aspect** (the C64's pixels are not square; 384×272 ≈ 1.41:1 as raw pixels but a real C64 fills a 4:3 tube). Fit letterboxes, Integer steps in whole multiples of the source height.
+The scaling math targets a **4:3 display aspect** (the C64's pixels are not square; 384×272 ≈ 1.41:1 as raw pixels but a real C64 fills a 4:3 tube). Fit letterboxes; Integer steps in whole multiples of the source height, and falls back to Fit when the largest whole-pixel scale would leave most of the window empty (common in awkward fullscreen sizes).
 
 ### Audio
 
 The audio stream is 16-bit stereo at 47983 Hz (the Ultimate's actual PAL-derived rate), 192 sample pairs per packet. `AudioReceiver` uses a **pull model**: an `AVAudioSourceNode` render callback pulls from a lock-guarded ring buffer. A jitter buffer (default 60 ms, configurable) absorbs network variance; backlog beyond the target is trimmed so latency is bounded and can never ratchet upward — network hiccups produce a brief silence, not permanent delay.
 
-The engine's output is explicitly pinned to the current default output device (rather than left to `AVAudioEngine`'s own default selection) and re-pinned whenever CoreAudio's device graph changes — see `HANDOVER.md` §17 for why this matters when the default output is a multi-output/aggregate device.
+By default the engine's output is pinned to the current system default output device (rather than left to `AVAudioEngine`'s own default selection) and re-pinned whenever CoreAudio's device graph changes — see `HANDOVER.md` §17 for why this matters when the default output is a multi-output/aggregate device. Settings → Audio can instead lock local playback to a specific output device; that choice is independent of AirPlay.
 
 App-only AirPlay uses a separate global path because macOS's public `AVRoutePickerView` routes an `AVPlayer`, not an arbitrary `AVAudioEngine`. Stream64 converts the currently audible session's live 47983 Hz PCM to 48 kHz AAC, publishes a short bounded audio-only HLS window through an authenticated temporary LAN server, and assigns that one app-wide player to the system picker. Once external playback activates, the app remains locked to that route until the user explicitly chooses **This Mac**/Stop AirPlay: typing, changing views, switching C64s, resets/reboots and temporary source/transport gaps can produce silence or “Connecting…” but never re-enable local output. A real-time silence heartbeat keeps the HLS timeline alive between sources, and switching C64s swaps PCM on that same timeline without changing the AirPlay destination.
 
@@ -482,7 +485,7 @@ All held keyboard/controller state is released on focus loss, app deactivation, 
 
 ### File Loading
 
-Drag-and-drop accepts PRG and disk images: `.prg` uses `POST /v1/runners:run_prg` (reset, DMA-load, run); D64/G64/D71/G71/D81 use multipart `POST /v1/drives/a:mount`. The file never needs to exist on Ultimate storage, and ⌃-drop fans it out to connected sessions. SID and CRT runner support is used by Assembly64 and safe archive loading, not the current drag target.
+Drag-and-drop accepts `.prg` (`POST /v1/runners:run_prg`), disk images (multipart `POST /v1/drives/a:mount`), `.sid` (`POST /v1/runners:sidplay`), and `.crt` (`POST /v1/runners:run_crt`). The file never needs to exist on Ultimate storage, and ⌃-drop fans it out to connected sessions. Assembly64 and Commander use the same runners for remote/library loads.
 
 **Mount & Run** (Assembly64 browser) chains mount → machine reset → a 3 s BASIC-boot wait → keyboard-buffer injection of `LOAD"*",8,1` and `RUN` — fully automatic disk boot.
 

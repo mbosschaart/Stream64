@@ -423,6 +423,7 @@ private struct DeviceVideoSettings: View {
 struct AudioSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var sessionManager: SessionManager
+    @State private var outputDevices: [AudioOutputDevices.Device] = []
 
     var body: some View {
         Form {
@@ -430,9 +431,29 @@ struct AudioSettingsTab: View {
                 Toggle("Enable audio streaming", isOn: $settings.audioEnabled)
             }
 
-            Section("Output") {
+            Section {
+                Picker("Mac speaker / headphones", selection: $settings.audioOutputDeviceUID) {
+                    Text("System Default").tag(AudioOutputDevices.systemDefaultUID)
+                    ForEach(outputDevices) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                }
+                .disabled(!settings.audioEnabled)
+
+                if !settings.audioOutputDeviceUID.isEmpty,
+                   !outputDevices.contains(where: { $0.uid == settings.audioOutputDeviceUID }) {
+                    Text("The previously chosen device is unavailable; playback is using the system default until it returns or you pick another.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 AirPlaySettingsControl(
                     controller: sessionManager.airPlayOutput)
+            } header: {
+                Text("Output")
+            } footer: {
+                Text("Local Stream64 playback uses the device above. AirPlay is a separate app-wide route and does not change this Mac's system output.")
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -461,6 +482,10 @@ struct AudioSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { outputDevices = AudioOutputDevices.listOutputs() }
+        .onChange(of: settings.audioOutputDeviceUID) {
+            sessionManager.applyAudioOutputDeviceUID(settings.audioOutputDeviceUID)
+        }
     }
 }
 

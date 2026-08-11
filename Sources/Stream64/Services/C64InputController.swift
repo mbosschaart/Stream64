@@ -44,23 +44,23 @@ final class C64InputController: ObservableObject {
 
     func probeCapability() async {
         guard settings.transport != .legacy else {
-            settings.capability = .legacyFallback
+            settings.updateCapability(.legacyFallback)
             matrixUnavailable = true
             return
         }
-        settings.capability = .probing
+        settings.updateCapability(.probing)
         do {
             try await client.releaseAllInput()
             matrixUnavailable = false
-            settings.capability = .supported
+            settings.updateCapability(.supported)
         } catch {
             if Self.isUnsupported(error) {
                 matrixUnavailable = true
                 settings.joystickEnabled = false
-                settings.capability = .unsupported(
-                    "Firmware has no matrix input; keyboard uses legacy mode")
+                settings.updateCapability(.unsupported(
+                    "Firmware has no matrix input; keyboard uses legacy mode"))
             } else {
-                settings.capability = .failed(error.localizedDescription)
+                settings.updateCapability(.failed(error.localizedDescription))
             }
         }
     }
@@ -122,8 +122,37 @@ final class C64InputController: ObservableObject {
         pressed: Bool
     ) {
         var state = joystickSources[source] ?? []
-        if pressed { state.insert(input) } else { state.remove(input) }
+        if pressed {
+            guard state.insert(input).inserted else { return }
+        } else {
+            guard state.remove(input) != nil else { return }
+        }
         joystickSources[source] = state
+        emitMergedJoystick()
+    }
+
+    /// Replaces the directional state for one gamepad source (D-pad or
+    /// stick) in a single merge pass. No-ops when the four direction bits
+    /// are unchanged so high-rate analog callbacks don't thrash the queue.
+    func setJoystickAxes(
+        source: String,
+        left: Bool,
+        right: Bool,
+        up: Bool,
+        down: Bool
+    ) {
+        var next = Set<JoystickDirection>()
+        if left { next.insert(.left) }
+        if right { next.insert(.right) }
+        if up { next.insert(.up) }
+        if down { next.insert(.down) }
+        let previous = joystickSources[source] ?? []
+        guard previous != next else { return }
+        if next.isEmpty {
+            joystickSources.removeValue(forKey: source)
+        } else {
+            joystickSources[source] = next
+        }
         emitMergedJoystick()
     }
 
@@ -191,7 +220,7 @@ final class C64InputController: ObservableObject {
 
     private func enqueue(_ command: Command) {
         guard queue.count < maximumQueueDepth else {
-            settings.capability = .failed("Input queue is full")
+            settings.updateCapability(.failed("Input queue is full"))
             // Never silently drop a release or leave presses that are
             // already remote-active. Throw away stale work and make the
             // next operation a release-all recovery.
@@ -222,7 +251,8 @@ final class C64InputController: ObservableObject {
                 do {
                     try await client.typeKeys(bytes)
                 } catch {
-                    settings.capability = .failed(error.localizedDescription)
+                    settings.updateCapability(
+                        .failed(error.localizedDescription))
                 }
             case .releaseAll:
                 queueHead += 1
@@ -261,14 +291,17 @@ final class C64InputController: ObservableObject {
         }
         do {
             try await client.sendMachineInput(events)
-            settings.capability = .supported
+            // Probe already established support — don't republish on every
+            // successful joystick/keyboard batch (that rebuilds the viewer).
+            settings.updateCapability(.supported)
         } catch {
             if settings.transport == .auto, Self.isUnsupported(error) {
                 matrixUnavailable = true
-                settings.capability = .legacyFallback
+                settings.updateCapability(.legacyFallback)
                 if !fallback.isEmpty { try? await client.typeKeys(fallback) }
             } else {
-                settings.capability = .failed(error.localizedDescription)
+                settings.updateCapability(
+                    .failed(error.localizedDescription))
                 // The batch has already left the local queue. Its remote
                 // outcome is unknown, so individual releases are no longer
                 // reliable — force a global release before accepting more
@@ -296,9 +329,9 @@ final class C64InputController: ObservableObject {
                 return
             } catch {
                 if attempt == 2 {
-                    settings.capability = .failed(
+                    settings.updateCapability(.failed(
                         "Could not release C64 input: "
-                        + error.localizedDescription)
+                        + error.localizedDescription))
                 } else {
                     try? await Task.sleep(for: .milliseconds(
                         100 * (attempt + 1)))
