@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.110b-purple)
+![Version](https://img.shields.io/badge/version-0.111b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -298,10 +298,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.110b BUILD_NUMBER=110 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.111b BUILD_NUMBER=111 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.110b BUILD_NUMBER=110 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.111b BUILD_NUMBER=111 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -313,9 +313,12 @@ Artifacts are written to `dist/<architecture>/`:
 
 These are separate thin arm64 and x86_64 builds, not one universal binary.
 
-The bundle is ad-hoc signed and integrity-verified, but not Apple-notarized. \
-After downloading it, users must Control-click **Stream64 → Open** the first \
-time (or approve it under **System Settings → Privacy & Security**). Never \
+By default the release script **Developer ID–signs and notarizes** the app \
+and DMG using an Apple ID + app-specific password. Put credentials in a \
+gitignored `.notarize.env` in the repo root (`APPLE_ID`, \
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, optional \
+`CODESIGN_IDENTITY`), then run the build commands above. Use \
+`SIGNING=adhoc` for a local smoke build that skips notarization. Never \
 disable Gatekeeper globally.
 
 ## Quick Start
@@ -426,7 +429,7 @@ Sources/Stream64/
     └── HelpView.swift           In-app documentation window
 Tests/Stream64Tests/             AQL/CSDB, persistence, transfer, archive, stream,
                                  SID, CRT, lock, and Metal regression tests
-Scripts/build-release.sh         arm64/x86_64 ad-hoc app/ZIP/DMG packaging
+Scripts/build-release.sh         arm64/x86_64 Developer ID + notarized ZIP/DMG
 Packaging/Info.plist             macOS application-bundle metadata
 Package.swift / Package.resolved SwiftPM targets, ZIPFoundation and pinned resolution
 LICENSE / CHANGELOG.md           License and release history

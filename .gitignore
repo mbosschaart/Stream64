@@ -4,3 +4,6 @@
 .swiftpm/
 dist/
 HANDOVER.md
+# Apple ID / notarization secrets — never commit
+.notarize.env
+.notarize.env.example

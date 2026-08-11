@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.111b — 2026-08-12
+
+### Changed
+
+- **Developer ID signing and Apple notarization.** Release builds are now signed with a Developer ID Application certificate, submitted to Apple’s notary service, and stapled. Downloaded ZIP/DMG packages should open under Gatekeeper without Control-click workarounds.
+
 ## 0.110b — 2026-08-11
 
 ### Added

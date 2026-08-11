@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.110b}"
-BUILD_NUMBER="${BUILD_NUMBER:-110}"
+VERSION="${VERSION:-0.111b}"
+BUILD_NUMBER="${BUILD_NUMBER:-111}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
     arm64|x86_64) ;;
@@ -16,7 +16,20 @@ TRIPLE="$ARCH-apple-macosx14.0"
 OUTPUT_DIR="${OUTPUT_DIR:-"$ROOT_DIR/dist/$ARCH"}"
 APP_NAME="Stream64"
 
-# The app bundle is assembled and ad-hoc signed in a local scratch directory
+# Optional local secrets (never commit): APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+# APPLE_TEAM_ID, CODESIGN_IDENTITY.
+if [[ -f "$ROOT_DIR/.notarize.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$ROOT_DIR/.notarize.env"
+fi
+
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-Developer ID Application: Martijn Bosschaart (EJ77LX9A8T)}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-EJ77LX9A8T}"
+# SIGNING=adhoc skips notarization (legacy local smoke builds).
+SIGNING="${SIGNING:-developer-id}"
+ENTITLEMENTS="$ROOT_DIR/Packaging/entitlements.plist"
+
+# The app bundle is assembled and signed in a local scratch directory
 # rather than directly under OUTPUT_DIR. When OUTPUT_DIR lives inside iCloud
 # Drive (as it does for this project's dist/ folder), the iCloud file-provider
 # daemon can tag a freshly-created bundle directory with a com.apple.FinderInfo
@@ -28,19 +41,98 @@ STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/stream64-build-$ARCH.XXXXXX")"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 APP_BUNDLE="$STAGE_DIR/$APP_NAME.app"
 DMG_ROOT="$STAGE_DIR/.dmg-root"
+NOTARIZE_ZIP="$STAGE_DIR/$APP_NAME-notarize.zip"
 
 ZIP_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macos-$ARCH.zip"
 DMG_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macos-$ARCH.dmg"
 CHECKSUM_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macos-$ARCH-SHA256.txt"
 
-echo "Building $APP_NAME $VERSION ($BUILD_NUMBER) for macOS $ARCH..."
+require_notarize_credentials() {
+    local missing=()
+    [[ -n "${APPLE_ID:-}" ]] || missing+=("APPLE_ID")
+    [[ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]] || missing+=("APPLE_APP_SPECIFIC_PASSWORD")
+    [[ -n "${APPLE_TEAM_ID:-}" ]] || missing+=("APPLE_TEAM_ID")
+    if ((${#missing[@]} > 0)); then
+        echo "Missing notarization credentials: ${missing[*]}" >&2
+        echo "Create a gitignored .notarize.env with APPLE_ID," >&2
+        echo "APPLE_APP_SPECIFIC_PASSWORD, and APPLE_TEAM_ID," >&2
+        echo "or export those variables in your shell." >&2
+        exit 4
+    fi
+}
+
+sign_app_developer_id() {
+    echo "Signing with $CODESIGN_IDENTITY..."
+    chmod -R u+w "$APP_BUNDLE"
+    xattr -cr "$APP_BUNDLE"
+    xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+
+    # Sign the executable first, then the bundle (Apple's preferred nesting order).
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$CODESIGN_IDENTITY" \
+        "$APP_BUNDLE/Contents/MacOS/Stream64"
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$CODESIGN_IDENTITY" \
+        "$APP_BUNDLE"
+    codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+}
+
+sign_app_adhoc() {
+    echo "Applying ad-hoc signature (SIGNING=adhoc)..."
+    chmod -R u+w "$APP_BUNDLE"
+    xattr -cr "$APP_BUNDLE"
+    xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+    codesign --force --deep --sign - "$APP_BUNDLE"
+    codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+}
+
+notarize_and_staple_app() {
+    require_notarize_credentials
+    echo "Submitting app zip for notarization (Apple ID)..."
+    rm -f "$NOTARIZE_ZIP"
+    ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$NOTARIZE_ZIP"
+    xcrun notarytool submit "$NOTARIZE_ZIP" \
+        --apple-id "$APPLE_ID" \
+        --team-id "$APPLE_TEAM_ID" \
+        --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+        --wait
+    echo "Stapling notarization ticket to app..."
+    xcrun stapler staple "$APP_BUNDLE"
+    xcrun stapler validate "$APP_BUNDLE"
+    spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
+}
+
+notarize_and_staple_dmg() {
+    require_notarize_credentials
+    echo "Submitting DMG for notarization (Apple ID)..."
+    xcrun notarytool submit "$DMG_PATH" \
+        --apple-id "$APPLE_ID" \
+        --team-id "$APPLE_TEAM_ID" \
+        --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+        --wait
+    echo "Stapling notarization ticket to DMG..."
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+    spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" \
+        || true
+}
+
+echo "Building $APP_NAME $VERSION ($BUILD_NUMBER) for macOS $ARCH ($SIGNING)..."
 swift build --package-path "$ROOT_DIR" -c release --triple "$TRIPLE"
 BIN_DIR="$(swift build --package-path "$ROOT_DIR" -c release \
     --triple "$TRIPLE" --show-bin-path)"
 
 mkdir -p "$OUTPUT_DIR"
 rm -rf "$APP_BUNDLE" "$DMG_ROOT"
-rm -f "$ZIP_PATH" "$DMG_PATH" "$CHECKSUM_PATH"
+rm -f "$ZIP_PATH" "$DMG_PATH" "$CHECKSUM_PATH" "$NOTARIZE_ZIP"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 
 install -m 755 "$BIN_DIR/Stream64" "$APP_BUNDLE/Contents/MacOS/Stream64"
@@ -76,12 +168,19 @@ if [[ "$ACTUAL_ARCH" != "$ARCH" ]]; then
     exit 3
 fi
 
-echo "Applying ad-hoc signature..."
-chmod -R u+w "$APP_BUNDLE"
-xattr -cr "$APP_BUNDLE"
-xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
-codesign --force --deep --sign - "$APP_BUNDLE"
-codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+case "$SIGNING" in
+    developer-id)
+        sign_app_developer_id
+        notarize_and_staple_app
+        ;;
+    adhoc)
+        sign_app_adhoc
+        ;;
+    *)
+        echo "Unsupported SIGNING='$SIGNING' (expected developer-id or adhoc)." >&2
+        exit 2
+        ;;
+esac
 
 echo "Creating ZIP..."
 ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
@@ -96,8 +195,21 @@ hdiutil create \
     -ov \
     -format UDZO \
     "$DMG_PATH"
-codesign --force --sign - "$DMG_PATH"
-codesign --verify --verbose=2 "$DMG_PATH"
+
+if [[ "$SIGNING" == "developer-id" ]]; then
+    echo "Signing DMG with $CODESIGN_IDENTITY..."
+    codesign \
+        --force \
+        --timestamp \
+        --sign "$CODESIGN_IDENTITY" \
+        "$DMG_PATH"
+    codesign --verify --verbose=2 "$DMG_PATH"
+    notarize_and_staple_dmg
+else
+    codesign --force --sign - "$DMG_PATH"
+    codesign --verify --verbose=2 "$DMG_PATH"
+fi
+
 hdiutil verify "$DMG_PATH"
 rm -rf "$DMG_ROOT"
 
@@ -123,5 +235,9 @@ echo "  ZIP: $ZIP_PATH"
 echo "  DMG: $DMG_PATH"
 echo "  SHA: $CHECKSUM_PATH"
 echo
-echo "This is ad-hoc signed, not notarized. Downloaded copies still require"
-echo "Control-click -> Open (or approval in Privacy & Security) on first launch."
+if [[ "$SIGNING" == "developer-id" ]]; then
+    echo "Signed with Developer ID and notarized (stapled)."
+else
+    echo "This is ad-hoc signed, not notarized. Downloaded copies still require"
+    echo "Control-click -> Open (or approval in Privacy & Security) on first launch."
+fi
