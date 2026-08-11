@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.111b-purple)
+![Version](https://img.shields.io/badge/version-0.112b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -16,12 +16,12 @@ Designed by Martijn Bosschaart, 2026.
 
 - **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
 - **Automatic device discovery** — bounded, cancellable Ethernet/Wi-Fi subnet scanning finds Ultimate REST endpoints, shows product/firmware details, and prefills setup with collision-free local stream ports; manual addressing remains available
-- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, and long analog Amber afterglow sourced from the C64's indexed 16-color history
+- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel)
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **App-wide AirPlay audio** — one global toolbar route picker sends whichever C64 is currently selected to an AirPlay receiver without changing the Mac's system output; once selected, the route remains locked until explicitly stopped, including during view/C64 switching, resets, and transient transport gaps (AirPlay adds roughly 1–3 seconds of buffering)
-- **Update checking** — optionally checks the latest stable GitHub release at startup, with a manual **Check for Updates…** command and a direct link to the GitHub release page for downloading
+- **In-app updates** — optionally checks the latest stable GitHub release at startup, downloads the architecture-matched ZIP, verifies SHA-256 and Developer ID Team ID, then replaces the app and relaunches (with a GitHub release-page fallback)
 - **File loading** — drag a `.prg`, `.sid`, `.crt`, or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
 - **Audio output device picker** — choose which Mac speaker/headphones Stream64 uses locally (independent of the system default and of AirPlay)
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
@@ -298,10 +298,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.111b BUILD_NUMBER=111 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.112b BUILD_NUMBER=112 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.111b BUILD_NUMBER=111 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.112b BUILD_NUMBER=112 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -383,7 +383,7 @@ Sources/Stream64/
 │   ├── DebugStreamReceiver.swift UDP bus-trace receiver and observers
 │   ├── AirPlayOutputController.swift, LiveAirPlayEncoder.swift
 │   │                            Persistent app-wide AirPlay and AAC/HLS pipeline
-│   ├── UpdateService.swift      GitHub stable-release lookup and release-page link
+│   ├── UpdateService.swift      GitHub stable-release check, download, verify, install
 │   ├── LiveHLSServer.swift      Authenticated temporary LAN HLS origin
 │   ├── UltimateTelnetClient.swift  Telnet transport for the Ultimate Menu
 │   ├── C64InputController.swift, GameControllerManager.swift

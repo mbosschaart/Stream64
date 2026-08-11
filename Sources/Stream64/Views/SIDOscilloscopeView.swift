@@ -390,7 +390,9 @@ private struct SIDOscilloscopeContent: View {
         case .lissajous:
             SIDLissajousView(points: model.lissajousPoints, glow: model.phosphorGlowEnabled)
         case .spectrogram:
-            SIDSpectrogramView(history: model.spectrogramHistory)
+            SIDSpectrogramView(
+                history: model.spectrogramHistory,
+                videoGPUBehind: model.session.isVideoGPUBehind)
         case .waterfall3D:
             SIDWaterfallSpectrumView(history: model.spectrogramHistory)
         case .barField3D:

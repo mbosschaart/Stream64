@@ -129,10 +129,14 @@ struct VideoView: NSViewRepresentable {
             context.coordinator.appliedBezelSurfaceMode = bezelSurfaceMode
             needsRedraw = true
         }
-        // PictureControls is a live reference the renderer reads every frame;
-        // only bind it once — knob drags must not force SwiftUI/Metal churn.
+        // Picture/optics controls are live references the renderer reads
+        // every frame; only bind once — knob drags must not force
+        // SwiftUI/Metal churn.
         if renderer.picture !== display.picture {
             renderer.picture = display.picture
+        }
+        if renderer.optics !== display.optics {
+            renderer.optics = display.optics
         }
         if context.coordinator.appliedPalette != display.palette {
             renderer.setPalette(C64Palette.palette(for: display.palette))

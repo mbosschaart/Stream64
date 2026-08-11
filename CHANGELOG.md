@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.112b — 2026-08-12
+
+### Added
+
+- **CRT optics knobs** in Picture Controls — scanlines, bloom, phosphor mask, and barrel distortion, each neutral at center (previous hardcoded look) and wired live into the Metal CRT shaders.
+- **Spectrogram scrolling texture path** — FFT stays on the CPU; the heatmap is drawn as a reusable RGBA column texture on an AppKit layer instead of thousands of SwiftUI Canvas fills, and yields while the live video GPU path is behind.
+
+### Changed
+
+- **In-app updates download and install again.** Because Stream64 is Developer ID signed and notarized, Check for Updates verifies the ZIP checksum and Team ID, replaces the app, and relaunches (GitHub release page remains as a fallback).
+
 ## 0.111b — 2026-08-12
 
 ### Changed

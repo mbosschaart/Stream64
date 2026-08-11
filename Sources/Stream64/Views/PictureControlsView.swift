@@ -10,6 +10,10 @@ struct PictureControlsView: View {
     @State private var color: Double
     @State private var tint: Double
     @State private var contrast: Double
+    @State private var scanlineStrength: Double
+    @State private var bloomAmount: Double
+    @State private var maskIntensity: Double
+    @State private var barrelDistortion: Double
 
     init(
         display: DisplaySettings,
@@ -21,6 +25,10 @@ struct PictureControlsView: View {
         _color = State(initialValue: display.monColor)
         _tint = State(initialValue: display.monTint)
         _contrast = State(initialValue: display.monContrast)
+        _scanlineStrength = State(initialValue: display.crtScanlineStrength)
+        _bloomAmount = State(initialValue: display.crtBloomAmount)
+        _maskIntensity = State(initialValue: display.crtMaskIntensity)
+        _barrelDistortion = State(initialValue: display.crtBarrelDistortion)
     }
 
     var body: some View {
@@ -40,6 +48,21 @@ struct PictureControlsView: View {
                             + "overdrive."
                     )
                 }
+
+                Section {
+                    control("Scanlines", value: $scanlineStrength)
+                    control("Bloom", value: $bloomAmount)
+                    control("Phosphor Mask", value: $maskIntensity)
+                    control("Barrel Distortion", value: $barrelDistortion)
+                } header: {
+                    Text("CRT Optics")
+                } footer: {
+                    Text(
+                        "Center is the previous hardcoded CRT look. Lower "
+                            + "values soften the effect; higher values "
+                            + "intensify it."
+                    )
+                }
             }
             .formStyle(.grouped)
 
@@ -51,6 +74,10 @@ struct PictureControlsView: View {
                     color = 0.5
                     tint = 0.5
                     contrast = 0.5
+                    scanlineStrength = 0.5
+                    bloomAmount = 0.5
+                    maskIntensity = 0.5
+                    barrelDistortion = 0.5
                 }
                 Spacer()
                 Button("Done") { onDone() }
@@ -58,7 +85,7 @@ struct PictureControlsView: View {
             }
             .padding()
         }
-        .frame(width: 440, height: 390)
+        .frame(width: 440, height: 620)
         .navigationTitle("Picture Controls")
         .onChange(of: brightness) {
             display.picture.brightness = Float(brightness)
@@ -72,11 +99,27 @@ struct PictureControlsView: View {
         .onChange(of: contrast) {
             display.picture.contrast = Float(contrast)
         }
+        .onChange(of: scanlineStrength) {
+            display.optics.scanlineStrength = Float(scanlineStrength)
+        }
+        .onChange(of: bloomAmount) {
+            display.optics.bloomAmount = Float(bloomAmount)
+        }
+        .onChange(of: maskIntensity) {
+            display.optics.maskIntensity = Float(maskIntensity)
+        }
+        .onChange(of: barrelDistortion) {
+            display.optics.barrelDistortion = Float(barrelDistortion)
+        }
         .onDisappear {
             display.monBrightness = brightness
             display.monColor = color
             display.monTint = tint
             display.monContrast = contrast
+            display.crtScanlineStrength = scanlineStrength
+            display.crtBloomAmount = bloomAmount
+            display.crtMaskIntensity = maskIntensity
+            display.crtBarrelDistortion = barrelDistortion
         }
     }
 
@@ -129,7 +172,7 @@ final class PictureControlsPanelController:
     private init(display: DisplaySettings) {
         deviceID = display.deviceID
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
             styleMask: [.titled, .closable, .utilityWindow],
             backing: .buffered,
             defer: false

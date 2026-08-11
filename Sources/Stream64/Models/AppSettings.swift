@@ -91,6 +91,15 @@ final class PictureControls {
     var tint: Float = 0.5
 }
 
+/// Live CRT optics knobs (scanlines / bloom / phosphor mask / barrel).
+/// Neutral `0.5` reproduces the previous hardcoded shader look.
+final class CRTOpticsControls {
+    var scanlineStrength: Float = 0.5
+    var bloomAmount: Float = 0.5
+    var maskIntensity: Float = 0.5
+    var barrelDistortion: Float = 0.5
+}
+
 /// User preferences, backed by UserDefaults via @AppStorage.
 @MainActor
 final class AppSettings: ObservableObject {

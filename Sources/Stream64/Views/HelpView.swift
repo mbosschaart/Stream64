@@ -252,14 +252,16 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Palette** — Pepto (default), Colodore, or VICE color tables.
 
     **Picture controls** — when a CRT filter is active, use the toolbar sliders \
-    button or right-click → **Picture Controls…** to open the \
-    same brightness, color, tint, and contrast controls in a movable floating \
-    window. The viewer stays bright and interactive while it is open. This is \
-    also available from the right-click menu in fullscreen and grid views. \
-    These work like the real monitor's pots — color at zero gives a \
-    black-and-white picture, tint rotates hues, contrast crushes or flattens. \
-    BRIGHT has extended highlight headroom; COLOR rises to extreme 4× chroma \
-    at its end stop for intentionally overdriven CRT color.
+    button or right-click → **Picture Controls…** to open brightness, color, \
+    tint, and contrast plus CRT optics knobs (scanlines, bloom, phosphor mask, \
+    barrel distortion) in a movable floating window. The viewer stays bright \
+    and interactive while it is open. This is also available from the \
+    right-click menu in fullscreen and grid views. Picture pots behave like a \
+    real monitor — color at zero gives a black-and-white picture, tint rotates \
+    hues, contrast crushes or flattens. BRIGHT has extended highlight headroom; \
+    COLOR rises to extreme 4× chroma at its end stop for intentionally \
+    overdriven CRT color. Optics knobs are neutral at center (the previous \
+    hardcoded CRT look); lower softens and higher intensifies each effect.
     """
 
     private static let keyboardText = """

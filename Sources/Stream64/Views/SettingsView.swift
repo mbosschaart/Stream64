@@ -233,7 +233,11 @@ struct GeneralSettingsTab: View {
                     updateService.check(force: true)
                 }
             } footer: {
-                Text("Stable releases are checked through the Stream64 GitHub repository.")
+                Text(
+                    "Stable releases are downloaded from the Stream64 GitHub "
+                        + "repository, checksum-verified, signature-checked, "
+                        + "then installed and relaunched automatically."
+                )
                     .foregroundStyle(.secondary)
             }
         }

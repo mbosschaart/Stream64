@@ -84,6 +84,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// Live picture controls, read every frame (bypasses SwiftUI updates
     /// so knob drags adjust the picture without re-rendering views).
     var picture: PictureControls?
+    /// CRT optics knobs (scanlines/bloom/mask/barrel), same live-bypass pattern.
+    var optics: CRTOpticsControls?
 
     struct Uniforms {
         var scale: SIMD2<Float>
@@ -102,7 +104,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         var historyPhase: Float
         var powerOff: Float
         var bezelSurfaceMode: Float
-        var padding: Float = 0
+        var scanlineStrength: Float
+        var bloomAmount: Float
+        var maskIntensity: Float
+        var barrelDistortion: Float
     }
 
     private static let shaderSource = """
@@ -140,7 +145,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float historyPhase;
         float powerOff;
         float bezelSurfaceMode;
-        float padding;
+        float scanlineStrength;
+        float bloomAmount;
+        float maskIntensity;
+        float barrelDistortion;
     };
 
     // Monitor picture controls, all neutral at 0.5. Saturation and tint
@@ -634,7 +642,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                            float signal, float time, float phosphorColor,
                            float brightness, float maskPitch,
                            float historyHead, float historyValidCount,
-                           float historyPhase) {
+                           float historyPhase,
+                           float scanlineAmount, float bloomAmount,
+                           float maskIntensity) {
         uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
         float3 color;
         if (signal > 0.5) {
@@ -679,19 +689,21 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             color += float3(max(0.0, persistentLuma - filteredLuma));
         }
 
-        // Soft horizontal bloom: neighbours bleed slightly.
+        // Soft horizontal bloom: neighbours bleed slightly. Knob 0.5 keeps
+        // the historical hardcoded strength (0.25 color / 0.38 mono).
         float2 texel = 1.0 / float2(size);
         float3 blur = sampleBilinear(uv + float2(texel.x, 0), indexTex, paletteTex).rgb
                     + sampleBilinear(uv - float2(texel.x, 0), indexTex, paletteTex).rgb;
-        float bloomAmount = phosphorColor > 0.5 && phosphorColor < 2.5
-                          ? 0.38 : 0.25;
-        color = mix(color, blur * 0.5, bloomAmount);
+        float bloomBase = phosphorColor > 0.5 && phosphorColor < 2.5
+                        ? 0.38 : 0.25;
+        float bloom = bloomBase * (bloomAmount * 2.0);
+        color = mix(color, blur * 0.5, bloom);
 
         // Scanlines: darken between source rows, gently, luminance-dependent.
         float row = uv.y * float(size.y);
         float scan = sin(row * 3.14159265 * 2.0) * 0.5 + 0.5;   // 1 at row centers
         float lum = dot(color, float3(0.299, 0.587, 0.114));
-        float scanStrength = mix(0.35, 0.15, lum);              // bright areas mask lines
+        float scanStrength = mix(0.35, 0.15, lum) * (scanlineAmount * 2.0);
         // Near the top of the brightness control, amber/green tubes emulate
         // beam-current bloom: phosphor light spills vertically into the dark
         // gap and the scanline structure starts glowing together. Keep the
@@ -719,7 +731,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float3 mask = channel == 0 ? float3(1.06, 0.95, 0.95)
                     : channel == 1 ? float3(0.95, 1.06, 0.95)
                                    : float3(0.95, 0.95, 1.06);
-        color *= mask * dotAperture;
+        float maskMix = saturate(maskIntensity * 2.0);
+        color *= mix(float3(1.0), mask * dotAperture, maskMix);
 
         return color;
     }
@@ -738,7 +751,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                 uniforms.phosphorColor, uniforms.brightness,
                                 uniforms.maskPitch, uniforms.historyHead,
                                 uniforms.historyValidCount,
-                                uniforms.historyPhase);
+                                uniforms.historyPhase,
+                                uniforms.scanlineStrength,
+                                uniforms.bloomAmount,
+                                uniforms.maskIntensity);
         color = applyPhosphorColor(applyPicture(color, uniforms), uniforms);
         color = applyDirtyGlass(color, in.texCoord, in.position.xy,
                                 uniforms, dirtTex);
@@ -779,7 +795,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float horizontalScale = mix(1.0, 0.004, horizontalCollapse);
 
         // Barrel distortion: push samples outward toward the edges.
-        float2 curved = cc * (1.0 + 0.028 * dot(cc, cc));
+        // Knob 0.5 keeps the historical 0.028 coefficient.
+        float barrel = 0.028 * (uniforms.barrelDistortion * 2.0);
+        float2 curved = cc * (1.0 + barrel * dot(cc, cc));
 
         const float radius = 0.08;
         float sd = faceSDF(curved, radius);
@@ -915,8 +933,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         // Squeeze the complete last frame into the shrinking beam region.
         float2 contentCC = cc / float2(horizontalScale, verticalScale);
+        float contentBarrel = 0.028 * (uniforms.barrelDistortion * 2.0);
         float2 contentCurved = contentCC
-            * (1.0 + 0.028 * dot(contentCC, contentCC));
+            * (1.0 + contentBarrel * dot(contentCC, contentCC));
         float2 uv = clamp(contentCurved * 0.5 + 0.5, 0.0, 1.0);
         // Dirt/refraction stays fixed to physical glass while content moves.
         float2 glassWarp = dirtyGlassUV(glassUV, uniforms) - glassUV;
@@ -929,7 +948,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                   uniforms.phosphorColor, uniforms.brightness,
                                   uniforms.maskPitch, uniforms.historyHead,
                                   uniforms.historyValidCount,
-                                  uniforms.historyPhase),
+                                  uniforms.historyPhase,
+                                  uniforms.scanlineStrength,
+                                  uniforms.bloomAmount,
+                                  uniforms.maskIntensity),
                          uniforms),
             uniforms);
 
@@ -1487,7 +1509,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                 historyValidCount: Float(historyValidCount),
                                 historyPhase: historyPhase,
                                 powerOff: powerOffProgress,
-                                bezelSurfaceMode: bezelSurfaceMode)
+                                bezelSurfaceMode: bezelSurfaceMode,
+                                scanlineStrength: optics?.scanlineStrength ?? 0.5,
+                                bloomAmount: optics?.bloomAmount ?? 0.5,
+                                maskIntensity: optics?.maskIntensity ?? 0.5,
+                                barrelDistortion: optics?.barrelDistortion ?? 0.5)
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)

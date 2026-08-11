@@ -34,9 +34,23 @@ final class DisplaySettings: ObservableObject {
     @Published var monContrast: Double { didSet { picture.contrast = Float(monContrast); save() } }
     @Published var monColor: Double { didSet { picture.saturation = Float(monColor); save() } }
     @Published var monTint: Double { didSet { picture.tint = Float(monTint); save() } }
+    // CRT optics knobs, 0...1, neutral 0.5 (= previous hardcoded look).
+    @Published var crtScanlineStrength: Double {
+        didSet { optics.scanlineStrength = Float(crtScanlineStrength); save() }
+    }
+    @Published var crtBloomAmount: Double {
+        didSet { optics.bloomAmount = Float(crtBloomAmount); save() }
+    }
+    @Published var crtMaskIntensity: Double {
+        didSet { optics.maskIntensity = Float(crtMaskIntensity); save() }
+    }
+    @Published var crtBarrelDistortion: Double {
+        didSet { optics.barrelDistortion = Float(crtBarrelDistortion); save() }
+    }
 
     /// Live conduit to the renderer (read every frame, bypasses SwiftUI).
     let picture = PictureControls()
+    let optics = CRTOpticsControls()
 
     private struct Snapshot: Codable {
         var scalingMode: ScalingMode
@@ -54,6 +68,10 @@ final class DisplaySettings: ObservableObject {
         var monContrast: Double
         var monColor: Double
         var monTint: Double
+        var crtScanlineStrength: Double?
+        var crtBloomAmount: Double?
+        var crtMaskIntensity: Double?
+        var crtBarrelDistortion: Double?
     }
 
     private var storageKey: String { "displaySettings.\(deviceID.uuidString)" }
@@ -79,6 +97,10 @@ final class DisplaySettings: ObservableObject {
             monContrast = data.monContrast
             monColor = data.monColor
             monTint = data.monTint
+            crtScanlineStrength = data.crtScanlineStrength ?? 0.5
+            crtBloomAmount = data.crtBloomAmount ?? 0.5
+            crtMaskIntensity = data.crtMaskIntensity ?? 0.5
+            crtBarrelDistortion = data.crtBarrelDistortion ?? 0.5
         } else {
             // First run for this device: seed from the legacy global keys so
             // existing users keep the look they had before settings became
@@ -99,12 +121,20 @@ final class DisplaySettings: ObservableObject {
             monContrast = defaults.object(forKey: "monContrast") as? Double ?? 0.5
             monColor = defaults.object(forKey: "monColor") as? Double ?? 0.5
             monTint = defaults.object(forKey: "monTint") as? Double ?? 0.5
+            crtScanlineStrength = 0.5
+            crtBloomAmount = 0.5
+            crtMaskIntensity = 0.5
+            crtBarrelDistortion = 0.5
         }
 
         picture.brightness = Float(monBrightness)
         picture.contrast = Float(monContrast)
         picture.saturation = Float(monColor)
         picture.tint = Float(monTint)
+        optics.scanlineStrength = Float(crtScanlineStrength)
+        optics.bloomAmount = Float(crtBloomAmount)
+        optics.maskIntensity = Float(crtMaskIntensity)
+        optics.barrelDistortion = Float(crtBarrelDistortion)
         loaded = true
     }
 
@@ -118,7 +148,11 @@ final class DisplaySettings: ObservableObject {
             showFPS: showFPS, showBezel: showBezel,
             bezelStyle: bezelStyle, bezelReflection: bezelReflection,
             monBrightness: monBrightness, monContrast: monContrast,
-            monColor: monColor, monTint: monTint)
+            monColor: monColor, monTint: monTint,
+            crtScanlineStrength: crtScanlineStrength,
+            crtBloomAmount: crtBloomAmount,
+            crtMaskIntensity: crtMaskIntensity,
+            crtBarrelDistortion: crtBarrelDistortion)
         if let raw = try? JSONEncoder().encode(data) {
             UserDefaults.standard.set(raw, forKey: storageKey)
         }
