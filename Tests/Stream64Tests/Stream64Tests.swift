@@ -409,6 +409,62 @@ final class Assembly64FeatureTests: XCTestCase {
         XCTAssertEqual(frames.count, 1)
     }
 
+    func testVideoReceiverPublishesCompleteNTSCFrames() {
+        func packet(
+            sequence: UInt16,
+            frame: UInt16,
+            startLine: Int,
+            lines: Int,
+            value: UInt8,
+            last: Bool
+        ) -> Data {
+            var data = Data(repeating: 0, count: 12 + 384 * lines / 2)
+            data[0] = UInt8(sequence & 0xFF)
+            data[1] = UInt8(sequence >> 8)
+            data[2] = UInt8(frame & 0xFF)
+            data[3] = UInt8(frame >> 8)
+            let lineField = UInt16(startLine) | (last ? 0x8000 : 0)
+            data[4] = UInt8(lineField & 0xFF)
+            data[5] = UInt8(lineField >> 8)
+            data[6] = 0x80
+            data[7] = 0x01
+            data[8] = UInt8(lines)
+            data[9] = 4
+            for index in 12..<data.count {
+                data[index] = value | (value << 4)
+            }
+            return data
+        }
+
+        let receiver = VideoReceiver()
+        var frames: [Data] = []
+        receiver.onFrame = { frames.append($0) }
+
+        // Ultimate NTSC: 60 × 4-line packets → 384×240. Publishing must not
+        // wait for the unused PAL lines 240…271.
+        var sequence: UInt16 = 1
+        for start in stride(from: 0, to: 240, by: 4) {
+            let last = start + 4 >= 240
+            receiver.ingest(packet(
+                sequence: sequence, frame: 7, startLine: start, lines: 4,
+                value: 0x3, last: last))
+            sequence &+= 1
+        }
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames[0].count, VideoReceiver.width * VideoReceiver.ntscHeight)
+        XCTAssertEqual(Set(frames[0]), Set([0x3]))
+
+        // Incomplete NTSC (missing early rows) must not publish.
+        receiver.ingest(packet(
+            sequence: sequence, frame: 8, startLine: 120, lines: 4,
+            value: 0x4, last: false))
+        sequence &+= 1
+        receiver.ingest(packet(
+            sequence: sequence, frame: 8, startLine: 236, lines: 4,
+            value: 0x4, last: true))
+        XCTAssertEqual(frames.count, 1)
+    }
+
     func testAudioReceiverCombinesSelectionAndAirPlayMuteGates() {
         let receiver = AudioReceiver()
         receiver.volume = 0.65

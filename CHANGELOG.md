@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.118b — 2026-08-12
+
+### Fixed
+
+- **NTSC (60 Hz) video streams work.** The receiver used to require all 272 PAL lines before publishing a frame, so Ultimate NTSC’s 384×240 stream never produced a picture. Frame height is now inferred from the last packet (240 or 272); textures, integer scaling, content clock, and RF mains hum follow the active standard. PAL still motion-blends on 60 Hz panels; NTSC does not.
+
 ## 0.117b — 2026-08-12
 
 ### Changed

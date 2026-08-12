@@ -7,16 +7,16 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.117b-purple)
+![Version](https://img.shields.io/badge/version-0.118b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
 
 ## Features
 
-- **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL) and SID audio (47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
+- **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL or 384×240 @ ~60 fps NTSC) and SID audio (~47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
 - **Automatic device discovery** — bounded, cancellable Ethernet/Wi-Fi subnet scanning finds Ultimate REST endpoints, shows product/firmware details, and prefills setup with collision-free local stream ports; manual addressing remains available
-- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays
+- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays (NTSC skips the blend)
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
@@ -299,10 +299,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.117b BUILD_NUMBER=117 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.118b BUILD_NUMBER=118 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.117b BUILD_NUMBER=117 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.118b BUILD_NUMBER=118 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -440,11 +440,11 @@ LICENSE / CHANGELOG.md           License and release history
 
 ### Video
 
-The Ultimate sends the VIC frame as UDP packets: a 12-byte header (sequence, frame number, line number with a last-packet flag, pixels-per-line, lines-per-packet, bits-per-pixel) followed by 4-bit palette indices. `VideoReceiver` assembles lines into a 384×272 byte buffer and hands completed frames to the renderer.
+The Ultimate sends the VIC frame as UDP packets: a 12-byte header (sequence, frame number, line number with a last-packet flag, pixels-per-line, lines-per-packet, bits-per-pixel) followed by 4-bit palette indices. `VideoReceiver` assembles lines into a complete frame — **384×272 for PAL** or **384×240 for NTSC** — inferred from the last packet’s end line, and hands it to the renderer.
 
 `MetalFrameRenderer` uploads each frame into a **ring of three `r8Uint` textures** (never writing a texture the GPU may still be reading — a CPU `replace()` during a slow fragment shader pass tears the picture) and draws a fullscreen quad. The fragment shader does palette lookup on the GPU from a 16×1 palette texture, so the CPU never touches RGB.
 
-The scaling math targets a **4:3 display aspect** (the C64's pixels are not square; 384×272 ≈ 1.41:1 as raw pixels but a real C64 fills a 4:3 tube). Fit letterboxes; Integer steps in whole multiples of the source height, and falls back to Fit when the largest whole-pixel scale would leave most of the window empty (common in awkward fullscreen sizes).
+The scaling math targets a **4:3 display aspect** (the C64's pixels are not square; raw stream aspect differs for PAL vs NTSC, but a real C64 fills a 4:3 tube). Fit letterboxes; Integer steps in whole multiples of the live source height, and falls back to Fit when the largest whole-pixel scale would leave most of the window empty (common in awkward fullscreen sizes).
 
 ### Audio
 
@@ -507,7 +507,8 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 - **Context-menu hosts must not observe high-frequency session/SID state.** `ViewerPane` / `ViewerTile` / `SIDOscilloscopeView` keep `.contextMenu` on a non-observing shell; live chrome lives in child views. Menu content (`StreamContextMenu`, `SIDVisualizationMenuContent`) snapshots state instead of observing it.
 - **`VideoView` observes `DisplaySettings` only — not `DeviceSession`.** The renderer receives settings in `updateNSView`; session fps ticks must not force `updateNSView` or rebuild parents that own context menus.
 - **Prefer the live CRT present path under secondary viz load.** SID ticks and 3D Memory Map rebuilds are cheaper / off-main / yielding when presents slow down; the frame-rate overlay shows `stream / display` when the two diverge.
-- **Motion-blended presents while streaming.** Hard-cutting ~50 Hz PAL onto a 60 Hz panel always judders (3:2 pulldown). Live mode runs the display link at panel refresh and blends consecutive PAL frames with a 1-frame delay (`motionBlend`). FPS overlay state lives on `VideoFrameStats` so 1 Hz ticks cannot rebuild the video host; idle viewers pause the link.
+- **Motion-blended presents while streaming PAL.** Hard-cutting ~50 Hz PAL onto a 60 Hz panel always judders (3:2 pulldown). Live mode runs the display link at panel refresh and blends consecutive PAL frames with a 1-frame delay (`motionBlend`). NTSC (~60 Hz) matches typical panels, so blending is skipped. FPS overlay state lives on `VideoFrameStats` so 1 Hz ticks cannot rebuild the video host; idle viewers pause the link.
+- **NTSC video streams.** Completeness is judged against the last packet’s height (240), not a hardcoded 272-line PAL buffer — otherwise NTSC packets arrive forever but no frame ever publishes.
 - **Stream pickup compares lifetime-counter baselines.** Receiver packet totals survive listener restarts; comparing them with zero skipped `stream:start` after reconnect. Each connect now requires post-baseline packet growth.
 - **Stop, settle, then start.** C64 Ultimate 1.1.0 can report "Network Host Resolve Error" if start immediately follows stop. The app stops requested streams, waits one second, then starts them; persistent failure retains Reboot & Retry.
 - **REST errors can arrive inside HTTP 2xx.** Non-empty device `errors` arrays are treated as failures instead of trusting status code alone.

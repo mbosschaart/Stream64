@@ -130,8 +130,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     for example, when the API is password-protected — manually enter the \
     address and optional password, then click **Test Connection** and **Add**.
 
-    The app asks the Ultimate to stream video (a 384×272 pixel, ~50 fps PAL \
-    picture) and audio (47983 Hz stereo) to your Mac, then renders it with Metal.
+    The app asks the Ultimate to stream video (384×272 ~50 fps PAL, or \
+    384×240 ~60 fps NTSC) and audio (~47983 Hz stereo) to your Mac, then \
+    renders it with Metal.
 
     **The toolbar** holds everything for the current stream: connect/disconnect, \
     machine controls (reset, reboot, pause, menu, power), display settings \
@@ -206,13 +207,14 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     as cursor keys when only one device is configured.)
 
     **Frame rate overlay** — enable per device via right-click → Show Frame \
-    Rate. Shows the live UDP stream receive rate (~50 fps for PAL). When the \
-    display path falls behind under heavy SID / Debug Trace load, a second \
-    number appears (`stream / display`) for content presents per second. \
-    While streaming, Stream64 presents at the display refresh rate and \
-    blends consecutive PAL frames (about one frame of delay) so 50 Hz \
-    scrolltext stays smooth on 60 Hz monitors; idle viewers pause the \
-    display link to save GPU.
+    Rate. Shows the live UDP stream receive rate (~50 fps PAL / ~60 fps \
+    NTSC). When the display path falls behind under heavy SID / Debug Trace \
+    load, a second number appears (`stream / display`) for content presents \
+    per second. While streaming PAL, Stream64 presents at the display \
+    refresh rate and blends consecutive frames (about one frame of delay) \
+    so 50 Hz scrolltext stays smooth on 60 Hz monitors; NTSC content already \
+    matches typical panels and is shown without that blend. Idle viewers \
+    pause the display link to save GPU.
 
     **Screenshot** — the toolbar camera, right-click → Save Screenshot…, or \
     ⇧⌘S saves the actual filtered Metal output as PNG, including signal \

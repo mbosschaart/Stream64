@@ -24,11 +24,14 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     private var currentTextureIndex = 0
     private static let historyFrameCount = 12
     /// Indexed source-frame history for amber phosphor persistence
-    /// (~240 ms at the PAL stream's 50 fps).
-    private let historyTexture: MTLTexture
+    /// (~240 ms at PAL 50 fps / NTSC 60 fps).
+    private var historyTexture: MTLTexture
     private var historyHead = 0
     private var historyValidCount = 0
     private var historyLastUploadUptime: UInt64 = 0
+    /// Live stream height in pixels (272 PAL / 240 NTSC). Textures resize
+    /// when the Ultimate switches video standard.
+    private var sourceFrameHeight = VideoReceiver.palHeight
     /// 16-entry RGBA palette texture.
     private var paletteTexture: MTLTexture
     /// Photographic RGBA dirt/lint mask generated for the neglected-glass
@@ -42,23 +45,31 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// stalls for more than three frames.
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
     private var palettePendingBytes: [UInt8]?
-    /// Ordered PAL frames waiting for the present queue. A single slot was
+    /// Ordered source frames waiting for the present queue. A single slot was
     /// overwriting mid-scroll frames (visible jumps); keep a few in order.
     private var pendingFrames: [Data] = []
     private static let maxPendingFrames = 3
     private var resetHistoryOnNextFrame = false
     private var lastFrameSubmission: DispatchTime?
     /// While UDP frames are arriving, run the MTKView display link at the
-    /// panel rate and temporally blend consecutive PAL frames (1-frame
-    /// delay). Hard-cutting 50 Hz frames on a 60 Hz Studio Display always
-    /// judders — blending is what makes scrolltext look continuous.
+    /// panel rate. For PAL (~50 Hz) onto a 60 Hz panel, temporally blend
+    /// consecutive frames (1-frame delay) so scrolltext stays continuous.
+    /// NTSC (~60 Hz) matches typical panels — hard cuts, no blend.
     private var isLivePresentMode = false
     /// Leave live mode shortly after the stream goes quiet so idle viewers
     /// do not keep burning CRT shaders at refresh rate.
     private static let livePresentIdleSeconds: Double = 0.18
-    /// Nominal PAL stream interval; also the motion-blend display delay.
-    private static let streamPresentInterval: Double = 1.0 / 50.0
-    /// Arrival times (uptime ns) of the previous and current PAL frames.
+    /// Nominal content interval from the active video standard.
+    private var streamPresentInterval: Double {
+        1.0 / contentFrameRate
+    }
+    private var contentFrameRate: Double {
+        sourceFrameHeight <= VideoReceiver.ntscHeight ? 60.0 : 50.0
+    }
+    private var isNTSCContent: Bool {
+        sourceFrameHeight <= VideoReceiver.ntscHeight
+    }
+    /// Arrival times (uptime ns) of the previous and current source frames.
     private var previousFrameArrivalNs: UInt64 = 0
     private var currentFrameArrivalNs: UInt64 = 0
     /// Ensures a semaphore miss still gets one follow-up draw once the GPU
@@ -1175,35 +1186,17 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         self.linearSampler = linear
 
         // Index textures: one byte per pixel, triple-buffered so uploads
-        // never touch a texture the GPU is reading.
-        let indexDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Uint,
-            width: VideoReceiver.width,
-            height: VideoReceiver.height,
-            mipmapped: false)
-        indexDesc.usage = [.shaderRead]
-        var textures: [MTLTexture] = []
-        for _ in 0..<3 {
-            guard let tex = device.makeTexture(descriptor: indexDesc) else { return nil }
-            textures.append(tex)
-        }
-        self.indexTextures = textures
-
-        let historyDesc = MTLTextureDescriptor()
-        historyDesc.textureType = .type2DArray
-        historyDesc.pixelFormat = .r8Uint
-        historyDesc.width = VideoReceiver.width
-        historyDesc.height = VideoReceiver.height
-        historyDesc.depth = 1
-        historyDesc.mipmapLevelCount = 1
-        historyDesc.arrayLength = Self.historyFrameCount
-        historyDesc.sampleCount = 1
-        historyDesc.storageMode = .shared
-        historyDesc.usage = [.shaderRead]
-        guard let history = device.makeTexture(descriptor: historyDesc) else {
+        // never touch a texture the GPU is reading. Start at PAL height;
+        // NTSC (240) recreates them on the first frame.
+        guard let textures = Self.makeIndexTextures(
+            device: device, height: VideoReceiver.palHeight),
+              let history = Self.makeHistoryTexture(
+                device: device, height: VideoReceiver.palHeight) else {
             return nil
         }
+        self.indexTextures = textures
         self.historyTexture = history
+        self.sourceFrameHeight = VideoReceiver.palHeight
 
         // Palette texture: 16x1 RGBA.
         let paletteDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -1370,13 +1363,15 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    /// 1-frame-delayed blend factor between previous and current PAL frames.
+    /// 1-frame-delayed blend factor between previous and current source frames.
+    /// Disabled for NTSC: content already matches typical 60 Hz panels.
     private func motionBlendFactor(nowNs: UInt64) -> Float {
-        guard historyValidCount >= 2,
+        guard !isNTSCContent,
+              historyValidCount >= 2,
               currentFrameArrivalNs > previousFrameArrivalNs else {
             return 1
         }
-        let delayNs = UInt64(Self.streamPresentInterval * 1_000_000_000)
+        let delayNs = UInt64(streamPresentInterval * 1_000_000_000)
         let contentTime = nowNs > delayNs ? nowNs - delayNs : 0
         if contentTime <= previousFrameArrivalNs { return 0 }
         if contentTime >= currentFrameArrivalNs { return 1 }
@@ -1394,7 +1389,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         let elapsedSinceSourceFrame = historyLastUploadUptime == 0
             ? 0
             : Float(now - historyLastUploadUptime) / 1_000_000_000
-        let historyPhase = min(elapsedSinceSourceFrame * 50.0, 100.0)
+        let historyPhase = min(
+            elapsedSinceSourceFrame * Float(contentFrameRate), 100.0)
         let powerOffProgress: Float
         if let powerOffEffectStartedAt {
             let elapsed = Float(now - powerOffEffectStartedAt)
@@ -1476,8 +1472,19 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     }
 
     private func uploadFrameData(_ frame: Data, resetHistory: Bool) {
+        let height = frame.count / VideoReceiver.width
+        guard height > 0,
+              frame.count == VideoReceiver.width * height,
+              VideoReceiver.isSupportedFrameHeight(height) else {
+            return
+        }
+        var heightChanged = false
+        if height != sourceFrameHeight {
+            guard ensureSourceTextures(height: height) else { return }
+            heightChanged = true
+        }
         currentTextureIndex = (currentTextureIndex + 1) % indexTextures.count
-        if resetHistory {
+        if resetHistory || heightChanged {
             historyHead = 0
             historyValidCount = 0
             previousFrameArrivalNs = 0
@@ -1494,19 +1501,71 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         frameIndex &+= 1
         frame.withUnsafeBytes { raw in
             indexTextures[currentTextureIndex].replace(
-                region: MTLRegionMake2D(0, 0, VideoReceiver.width, VideoReceiver.height),
+                region: MTLRegionMake2D(0, 0, VideoReceiver.width, height),
                 mipmapLevel: 0,
                 withBytes: raw.baseAddress!,
                 bytesPerRow: VideoReceiver.width)
             historyTexture.replace(
                 region: MTLRegionMake2D(
-                    0, 0, VideoReceiver.width, VideoReceiver.height),
+                    0, 0, VideoReceiver.width, height),
                 mipmapLevel: 0,
                 slice: historyHead,
                 withBytes: raw.baseAddress!,
                 bytesPerRow: VideoReceiver.width,
-                bytesPerImage: VideoReceiver.width * VideoReceiver.height)
+                bytesPerImage: VideoReceiver.width * height)
         }
+    }
+
+    /// Recreate index/history textures when the stream switches PAL ↔ NTSC.
+    @discardableResult
+    private func ensureSourceTextures(height: Int) -> Bool {
+        guard let textures = Self.makeIndexTextures(
+            device: device, height: height),
+              let history = Self.makeHistoryTexture(
+                device: device, height: height) else {
+            return false
+        }
+        indexTextures = textures
+        historyTexture = history
+        currentTextureIndex = 0
+        sourceFrameHeight = height
+        return true
+    }
+
+    private static func makeIndexTextures(
+        device: MTLDevice, height: Int
+    ) -> [MTLTexture]? {
+        let indexDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Uint,
+            width: VideoReceiver.width,
+            height: height,
+            mipmapped: false)
+        indexDesc.usage = [.shaderRead]
+        var textures: [MTLTexture] = []
+        for _ in 0..<3 {
+            guard let tex = device.makeTexture(descriptor: indexDesc) else {
+                return nil
+            }
+            textures.append(tex)
+        }
+        return textures
+    }
+
+    private static func makeHistoryTexture(
+        device: MTLDevice, height: Int
+    ) -> MTLTexture? {
+        let historyDesc = MTLTextureDescriptor()
+        historyDesc.textureType = .type2DArray
+        historyDesc.pixelFormat = .r8Uint
+        historyDesc.width = VideoReceiver.width
+        historyDesc.height = height
+        historyDesc.depth = 1
+        historyDesc.mipmapLevelCount = 1
+        historyDesc.arrayLength = historyFrameCount
+        historyDesc.sampleCount = 1
+        historyDesc.storageMode = .shared
+        historyDesc.usage = [.shaderRead]
+        return device.makeTexture(descriptor: historyDesc)
     }
 
     /// Updates the RF animation timer. Returns whether the enabled state
@@ -1785,7 +1844,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         textureLock.unlock()
 
         // Drain UDP frames into history in order so motion blend sees every
-        // PAL step; shade once from the latest pair this vsync.
+        // content step; shade once from the latest pair this vsync.
         var uploadedContentFrame = false
         if let palette,
            let replacement = Self.makePaletteTexture(
@@ -1853,11 +1912,14 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     }
 
     private func computeScale(drawableSize: CGSize) -> SIMD2<Float> {
-        // A C64 on a real TV displays at 4:3 — the 384×272 frame's pixels
-        // are not square, so scaling targets the display aspect. Integer
-        // mode falls back to Fit when the largest whole-pixel scale would
-        // leave most of the window empty (see `VideoScaling`).
-        VideoScaling.scaleFactors(mode: scalingMode, drawableSize: drawableSize)
+        // A C64 on a real TV displays at 4:3 — stream pixels are not square
+        // (384×272 PAL or 384×240 NTSC), so scaling targets the display
+        // aspect. Integer mode falls back to Fit when the largest
+        // whole-pixel scale would leave most of the window empty.
+        VideoScaling.scaleFactors(
+            mode: scalingMode,
+            drawableSize: drawableSize,
+            frameHeight: Float(sourceFrameHeight))
     }
 }
 

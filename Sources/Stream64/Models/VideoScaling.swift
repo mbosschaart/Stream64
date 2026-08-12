@@ -4,8 +4,9 @@ import simd
 /// Pure scaling math for the live VIC frame. Kept free of Metal so unit
 /// tests can cover the integer-mode utilization fallback without a GPU.
 enum VideoScaling {
-    /// PAL VIC stream height in pixels.
-    static let frameHeight: Float = 272
+    /// Default VIC stream height (PAL). NTSC streams are 240; callers pass
+    /// the live height into `scaleFactors` / `integerScaleFactor`.
+    static let frameHeight: Float = Float(VideoReceiver.palHeight)
     /// Authentic television aspect (C64 pixels are not square).
     static let displayAspect: Float = 4.0 / 3.0
     /// If the largest whole-pixel scale uses less than this fraction of the
@@ -16,7 +17,8 @@ enum VideoScaling {
     /// Drawable → shader scale factors for the given mode.
     static func scaleFactors(
         mode: ScalingMode,
-        drawableSize: CGSize
+        drawableSize: CGSize,
+        frameHeight: Float = frameHeight
     ) -> SIMD2<Float> {
         guard drawableSize.width > 0, drawableSize.height > 0 else {
             return .one
@@ -31,7 +33,7 @@ enum VideoScaling {
             return aspectFitFactors(viewWidth: viewW, viewHeight: viewH)
         case .integer:
             if let scale = integerScaleFactor(
-                viewWidth: viewW, viewHeight: viewH)
+                viewWidth: viewW, viewHeight: viewH, frameHeight: frameHeight)
             {
                 let outH = frameHeight * scale
                 return SIMD2<Float>(

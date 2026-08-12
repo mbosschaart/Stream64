@@ -7,12 +7,22 @@ import Network
 ///   u16 sequence, u16 frame, u16 line (bit 15 = last packet of frame),
 ///   u16 pixelsPerLine, u8 linesPerPacket, u8 bitsPerPixel, u16 encoding,
 ///   followed by pixel data (4bpp packed, low nibble = left pixel).
+///
+/// Frame size follows the machine's video standard:
+///   • PAL  — 384×272 (~50 Hz)
+///   • NTSC — 384×240 (~60 Hz)
 final class VideoReceiver {
     static let width = 384
-    static let height = 272
+    /// Largest stream height the Ultimate emits (PAL). Used for buffer sizing
+    /// and packet range checks; published frames may be shorter (NTSC).
+    static let maxHeight = 272
+    static let palHeight = 272
+    static let ntscHeight = 240
+    /// Backward-compatible alias for callers that mean “max buffer height”.
+    static let height = maxHeight
 
     /// Called with a fully assembled frame: one byte per pixel (palette index 0-15),
-    /// row-major, width*height bytes.
+    /// row-major, `width * frameHeight` bytes (272 PAL or 240 NTSC).
     var onFrame: ((Data) -> Void)?
     var onStats: ((_ fps: Double) -> Void)?
 
@@ -28,8 +38,8 @@ final class VideoReceiver {
     private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
 
     // Frame assembly state (accessed only on `queue`).
-    private var frameBuffer = [UInt8](repeating: 0, count: width * height)
-    private var receivedLines = [Bool](repeating: false, count: height)
+    private var frameBuffer = [UInt8](repeating: 0, count: width * maxHeight)
+    private var receivedLines = [Bool](repeating: false, count: maxHeight)
     private var assemblingFrameID: UInt16?
     private var assemblingSequence: UInt16?
     private var frameCount = 0
@@ -121,8 +131,13 @@ final class VideoReceiver {
                 && encoding == 0
                 && data.count >= 12
                     + pixelsPerLine * linesPerPacket / 2
-                && startLine + linesPerPacket <= Self.height
+                && startLine + linesPerPacket <= Self.maxHeight
         }
+    }
+
+    /// True for the Ultimate's documented stream heights (PAL / NTSC).
+    static func isSupportedFrameHeight(_ height: Int) -> Bool {
+        height == palHeight || height == ntscHeight
     }
 
     /// Internal for deterministic packet-assembly tests. Production callers
@@ -179,13 +194,15 @@ final class VideoReceiver {
             }
 
             if lastPacket {
-                // The last flag identifies the end of a source frame, not
-                // proof every datagram arrived. Publishing a partial buffer
-                // would combine stale rows from a previous frame with fresh
-                // rows from this one, so discard and wait for the next ID.
-                if receivedLines.allSatisfy({ $0 }) {
+                // Height is implied by the last packet's end line. PAL ends
+                // at 272; NTSC at 240. Require every line in that range —
+                // not the full 272-slot buffer — or NTSC never publishes.
+                let frameHeight = startLine + linesPerPacket
+                let complete = Self.isSupportedFrameHeight(frameHeight)
+                    && (0..<frameHeight).allSatisfy({ receivedLines[$0] })
+                if complete {
                     if Self.debug { dbgFrames += 1 }
-                    publishFrame()
+                    publishFrame(height: frameHeight)
                 } else if Self.debug {
                     dbgRejected += 1
                 }
@@ -214,8 +231,9 @@ final class VideoReceiver {
         return delta == 0 || delta < 0x8000
     }
 
-    private func publishFrame() {
-        let frame = Data(frameBuffer)
+    private func publishFrame(height: Int) {
+        let byteCount = Self.width * height
+        let frame = Data(frameBuffer[0..<byteCount])
         onFrame?(frame)
 
         frameCount += 1

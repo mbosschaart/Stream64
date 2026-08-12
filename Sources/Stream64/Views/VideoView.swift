@@ -56,7 +56,14 @@ struct VideoView: NSViewRepresentable {
                 context.coordinator.session.input.releaseAll()
             }
         }
-        context.coordinator.session.videoReceiver.onFrame = { [weak renderer] frame in
+        context.coordinator.session.videoReceiver.onFrame = {
+            [weak renderer, weak session = context.coordinator.session] frame in
+            let height = frame.count / VideoReceiver.width
+            if VideoReceiver.isSupportedFrameHeight(height) {
+                // RF hum follows the machine's video standard (PAL 50 / NTSC 60).
+                session?.audioReceiver.mainsHumFrequencyHz =
+                    height <= VideoReceiver.ntscHeight ? 60 : 50
+            }
             renderer?.submitFrame(frame)
         }
         context.coordinator.session.captureFrame = { [weak renderer] completion in
@@ -234,7 +241,9 @@ final class KeyCapturingMTKView: MTKView {
     /// at the stream rate so frames keep presenting.
     private func startBackgroundDriving() {
         guard backgroundTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 50.0, repeats: true) { [weak self] _ in
+        // Drive slightly above PAL and at NTSC content rate so occluded
+        // viewers keep presenting for either video standard.
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.draw()
         }
         RunLoop.main.add(timer, forMode: .common)

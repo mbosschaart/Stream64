@@ -8,7 +8,9 @@ import os
 private let logger = Logger(subsystem: "net.bosschaart.Stream64", category: "AudioReceiver")
 
 /// Receives the Ultimate audio stream (16-bit signed stereo, little endian,
-/// 47983 Hz on a PAL Ultimate 64) over UDP and plays it through AVAudioEngine.
+/// ~47983 Hz PAL / ~47940 Hz NTSC) over UDP and plays it through AVAudioEngine.
+/// Playback uses the PAL rate; the NTSC offset is ~0.09% and inaudible as
+/// pitch error, while RF mains hum follows `mainsHumFrequencyHz`.
 ///
 /// Playback uses a pull model: an AVAudioSourceNode pulls samples from a ring
 /// buffer in real time. This keeps latency bounded — network hiccups produce a
@@ -31,8 +33,10 @@ final class AudioReceiver: @unchecked Sendable {
     private var sourceNode: AVAudioSourceNode?
     private let renderFormat: AVAudioFormat
 
-    /// Sample rate of the Ultimate audio stream.
+    /// Sample rate used for the local engine (Ultimate PAL-derived rate).
     private static let sampleRate: Double = 47983.0
+    /// RF antenna simulation mains hum. Set to 60 for NTSC machines.
+    var mainsHumFrequencyHz: Double = 50.0
 
     var volume: Float {
         get { storedVolume }
@@ -574,12 +578,13 @@ final class AudioReceiver: @unchecked Sendable {
     /// - mono (the RF modulator carries one channel)
     /// - ~330 Hz high-pass, double pole (small TV speaker has very little bass)
     /// - ~3 kHz low-pass, double pole (narrow broadcast audio + paper cone)
-    /// - constant hiss bed + faint 50 Hz hum
+    /// - constant hiss bed + faint mains hum (50 Hz PAL / 60 Hz NTSC)
     private func applyRFFilter(left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frames: Int) {
         // One-pole coefficients for the fixed stream rate.
         let lpAlpha: Float = 0.30   // ~3.3 kHz per pole at 47983 Hz
         let hpAlpha: Float = 0.958  // ~330 Hz high-pass per pole
-        let humStep = Float(2 * Double.pi * 50.0 / Self.sampleRate)
+        let humHz = mainsHumFrequencyHz > 0 ? mainsHumFrequencyHz : 50.0
+        let humStep = Float(2 * Double.pi * humHz / Self.sampleRate)
 
         for i in 0..<frames {
             // Mono fold.
