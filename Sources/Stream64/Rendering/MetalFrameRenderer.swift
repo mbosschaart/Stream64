@@ -1334,13 +1334,34 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         livePresentIdleTimer = timer
     }
 
+    /// Seconds between two uptime stamps. Never traps: a “future” earlier
+    /// (clock weirdness, torn cross-thread Optional) yields 0.
+    private static func secondsElapsed(
+        since earlierNs: UInt64,
+        now nowNs: UInt64
+    ) -> Double {
+        guard nowNs >= earlierNs else { return 0 }
+        return Double(nowNs - earlierNs) / 1_000_000_000
+    }
+
+    private static func secondsElapsed(
+        since earlier: DispatchTime,
+        now: DispatchTime = .now()
+    ) -> Double {
+        secondsElapsed(
+            since: earlier.uptimeNanoseconds,
+            now: now.uptimeNanoseconds)
+    }
+
     /// Pause the display link once the stream is quiet.
     private func leaveLivePresentModeIfIdle() {
         assert(Thread.isMainThread)
         guard isLivePresentMode else { return }
-        let recentlyFed = lastFrameSubmission.map {
-            Double(DispatchTime.now().uptimeNanoseconds - $0.uptimeNanoseconds)
-                / 1_000_000_000 < Self.livePresentIdleSeconds
+        textureLock.lock()
+        let lastSubmission = lastFrameSubmission
+        textureLock.unlock()
+        let recentlyFed = lastSubmission.map {
+            Self.secondsElapsed(since: $0) < Self.livePresentIdleSeconds
         } ?? false
         guard !recentlyFed else { return }
         isLivePresentMode = false
@@ -1388,13 +1409,14 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         let now = DispatchTime.now().uptimeNanoseconds
         let elapsedSinceSourceFrame = historyLastUploadUptime == 0
             ? 0
-            : Float(now - historyLastUploadUptime) / 1_000_000_000
+            : Float(Self.secondsElapsed(
+                since: historyLastUploadUptime, now: now))
         let historyPhase = min(
             elapsedSinceSourceFrame * Float(contentFrameRate), 100.0)
         let powerOffProgress: Float
         if let powerOffEffectStartedAt {
-            let elapsed = Float(now - powerOffEffectStartedAt)
-                / 1_000_000_000
+            let elapsed = Float(Self.secondsElapsed(
+                since: powerOffEffectStartedAt, now: now))
             powerOffProgress = min(elapsed / 0.9, 1.0)
         } else {
             powerOffProgress = 0
@@ -1719,8 +1741,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         textureLock.lock()
         let now = DispatchTime.now()
         if let lastFrameSubmission,
-           now.uptimeNanoseconds - lastFrameSubmission.uptimeNanoseconds
-                > 500_000_000 {
+           Self.secondsElapsed(since: lastFrameSubmission, now: now) > 0.5 {
             resetHistoryOnNextFrame = true
         }
         lastFrameSubmission = now
@@ -1762,12 +1783,16 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             recentSemaphoreMisses -= 1
         }
         let now = DispatchTime.now()
+        // lastFrameSubmission is written on the UDP receive thread under
+        // textureLock — never read the Optional unlocked (torn tag/value
+        // can invent a “future” timestamp and trap on UInt64 subtract).
+        textureLock.lock()
+        let lastSubmission = lastFrameSubmission
+        textureLock.unlock()
         if let last = lastSuccessfulPresentTime {
-            let gap = Double(now.uptimeNanoseconds - last.uptimeNanoseconds)
-                / 1_000_000_000
-            let recentlyFed = lastFrameSubmission.map {
-                Double(now.uptimeNanoseconds - $0.uptimeNanoseconds)
-                    / 1_000_000_000 < 0.15
+            let gap = Self.secondsElapsed(since: last, now: now)
+            let recentlyFed = lastSubmission.map {
+                Self.secondsElapsed(since: $0, now: now) < 0.15
             } ?? false
             // Live presents follow panel vsync (~16.7 ms on 60 Hz).
             if recentlyFed, gap > (1.0 / 45.0), gap < 0.25 {
@@ -1784,8 +1809,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         if contentFrame {
             presentCount += 1
         }
-        let elapsed = Double(now.uptimeNanoseconds - lastPresentStatsTime.uptimeNanoseconds)
-            / 1_000_000_000
+        let elapsed = Self.secondsElapsed(since: lastPresentStatsTime, now: now)
         guard elapsed >= 1.0 else { return }
         let fps = Double(presentCount) / elapsed
         presentCount = 0

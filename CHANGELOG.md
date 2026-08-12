@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.119b — 2026-08-12
+
+### Fixed
+
+- **Crash while idle / background-driving the stream.** Present-timing code subtracted `DispatchTime` uptimes without overflow checks and read `lastFrameSubmission` (written on the UDP thread) unlocked from the main thread. A torn Optional could invent a “future” timestamp and trap with `Swift runtime failure: arithmetic overflow` in `noteSuccessfulPresent`.
+
 ## 0.118b — 2026-08-12
 
 ### Fixed
