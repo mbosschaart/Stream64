@@ -235,7 +235,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **CRT** — scanlines, phosphor mask, and bloom on a flat screen.
     • **CRT Tube** — everything CRT has, plus curved glass, rounded corners, \
     vignette, and a live reflection of the picture on the black mask around \
-    the tube face.
+    the tube face. Glass reflection and phosphor pitch (Commodore 1702 vs \
+    1084S shadow-mask spacing) are adjustable in Settings → Display or \
+    Picture Controls.
 
     **Input signal** (CRT filters only, right-click → Input Signal)
 

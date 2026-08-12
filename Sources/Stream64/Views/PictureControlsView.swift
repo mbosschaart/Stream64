@@ -14,6 +14,8 @@ struct PictureControlsView: View {
     @State private var bloomAmount: Double
     @State private var maskIntensity: Double
     @State private var barrelDistortion: Double
+    @State private var reflection: Bool
+    @State private var bezelStyle: BezelChoice
 
     init(
         display: DisplaySettings,
@@ -29,6 +31,8 @@ struct PictureControlsView: View {
         _bloomAmount = State(initialValue: display.crtBloomAmount)
         _maskIntensity = State(initialValue: display.crtMaskIntensity)
         _barrelDistortion = State(initialValue: display.crtBarrelDistortion)
+        _reflection = State(initialValue: display.bezelReflection)
+        _bezelStyle = State(initialValue: display.bezelStyle)
     }
 
     var body: some View {
@@ -54,13 +58,23 @@ struct PictureControlsView: View {
                     control("Bloom", value: $bloomAmount)
                     control("Phosphor Mask", value: $maskIntensity)
                     control("Barrel Distortion", value: $barrelDistortion)
+                    Toggle("Glass reflection", isOn: $reflection)
+                        .disabled(!isCRTTube)
+                    Picker("Phosphor pitch", selection: $bezelStyle) {
+                        ForEach(BezelChoice.allCases) { choice in
+                            Text(choice.rawValue).tag(choice)
+                        }
+                    }
+                    .disabled(!isCRTTube)
                 } header: {
                     Text("CRT Optics")
                 } footer: {
                     Text(
                         "Center is the previous hardcoded CRT look. Lower "
                             + "values soften the effect; the right half "
-                            + "ramps up to about 4× that strength."
+                            + "ramps up to about 4× that strength. Glass "
+                            + "reflection and phosphor pitch apply in CRT "
+                            + "Tube mode."
                     )
                 }
             }
@@ -85,7 +99,7 @@ struct PictureControlsView: View {
             }
             .padding()
         }
-        .frame(width: 440, height: 620)
+        .frame(width: 440, height: 700)
         .navigationTitle("Picture Controls")
         .onChange(of: brightness) {
             display.picture.brightness = Float(brightness)
@@ -111,6 +125,12 @@ struct PictureControlsView: View {
         .onChange(of: barrelDistortion) {
             display.optics.barrelDistortion = Float(barrelDistortion)
         }
+        .onChange(of: reflection) {
+            display.bezelReflection = reflection
+        }
+        .onChange(of: bezelStyle) {
+            display.bezelStyle = bezelStyle
+        }
         .onDisappear {
             display.monBrightness = brightness
             display.monColor = color
@@ -120,7 +140,13 @@ struct PictureControlsView: View {
             display.crtBloomAmount = bloomAmount
             display.crtMaskIntensity = maskIntensity
             display.crtBarrelDistortion = barrelDistortion
+            display.bezelReflection = reflection
+            display.bezelStyle = bezelStyle
         }
+    }
+
+    private var isCRTTube: Bool {
+        display.filterMode == .crtTube
     }
 
     private func control(

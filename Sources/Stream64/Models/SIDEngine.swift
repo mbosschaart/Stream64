@@ -149,6 +149,11 @@ final class SIDEngine: ObservableObject {
         return created
     }
 
+    /// Living engine for `deviceID`, if any open SID window still holds it.
+    static func existing(for deviceID: UUID) -> SIDEngine? {
+        instances[deviceID]
+    }
+
     struct SubscriberToken: Hashable {
         fileprivate let id = UUID()
     }
@@ -407,6 +412,12 @@ final class SIDEngine: ObservableObject {
             self.debugTraceLease = nil
             Task { await session.releaseDebugTrace(debugTraceLease) }
         }
+        clearRegisterWriteObservers()
+    }
+
+    /// Drop debug observers/pending writes without releasing a lease.
+    /// Used when `DeviceSession` already wiped consumers during disconnect.
+    private func clearRegisterWriteObservers() {
         if let entriesObserverID {
             session.debugStreamReceiver.removeEntriesObserver(entriesObserverID)
             self.entriesObserverID = nil
@@ -434,6 +445,28 @@ final class SIDEngine: ObservableObject {
         audioLock.lock()
         pendingAudioSamples.removeAll(keepingCapacity: true)
         audioLock.unlock()
+    }
+
+    /// Session is tearing down local UDP/debug receivers. Clear sticky
+    /// enable flags and observers so a later reconnect can re-acquire;
+    /// keep subscribers (open SID windows) alive.
+    func suspendForSessionTeardown() {
+        registerWritesEnabled = false
+        debugTraceLease = nil
+        clearRegisterWriteObservers()
+        disableAudioTap()
+    }
+
+    /// Session is connected again with open SID windows still subscribed.
+    /// Re-attach debug/audio taps based on current aggregate needs.
+    func resumeAfterSessionConnect() {
+        guard !subscribers.isEmpty else { return }
+        if aggregateNeeds.needsRegisterWrites {
+            Task { await enableRegisterWrites() }
+        }
+        if aggregateNeeds.needsAudioTap {
+            enableAudioTap()
+        }
     }
 
     /// Called when the user explicitly resets/reboots/powers off the

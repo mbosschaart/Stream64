@@ -1,9 +1,12 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// Developer peek/poke console over `readmem` / `writemem`.
 struct MemoryConsoleView: View {
     @ObservedObject var model: MemoryConsoleViewModel
+
+    private var isConnected: Bool { model.session.isConnected }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -35,7 +38,7 @@ struct MemoryConsoleView: View {
                 }
                 .fixedSize()
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.busy || !model.session.isConnected)
+                .disabled(model.busy || !isConnected)
             }
 
             ScrollView {
@@ -58,7 +61,7 @@ struct MemoryConsoleView: View {
                         Task { await model.writeMemory() }
                     }
                     .fixedSize()
-                    .disabled(model.busy || !model.session.isConnected)
+                    .disabled(model.busy || !isConnected)
                 }
                 Text("Writes at the address above. Separate bytes with spaces or commas.")
                     .font(.caption2)
@@ -79,9 +82,13 @@ final class MemoryConsoleViewModel: ObservableObject {
     @Published private(set) var hexDump = ""
     @Published private(set) var statusMessage: String?
     @Published private(set) var busy = false
+    private var sessionObserver: AnyCancellable?
 
     init(session: DeviceSession) {
         self.session = session
+        sessionObserver = session.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     func readMemory() async {

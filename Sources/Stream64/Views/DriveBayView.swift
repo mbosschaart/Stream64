@@ -1,10 +1,13 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Combine
 
 /// Per-device Drive Bay: power, mode, mount/unmount, and blank-disk create.
 struct DriveBayView: View {
     @ObservedObject var model: DriveBayViewModel
+
+    private var isConnected: Bool { model.session.isConnected }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -18,7 +21,7 @@ struct DriveBayView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .fixedSize()
-                .disabled(!model.session.isConnected || model.busy)
+                .disabled(!isConnected || model.busy)
             }
 
             if let status = model.statusMessage {
@@ -33,7 +36,7 @@ struct DriveBayView: View {
                     "No drives reported",
                     systemImage: "externaldrive",
                     description: Text(
-                        model.session.isConnected
+                        isConnected
                             ? "Refresh after the Ultimate finishes booting."
                             : "Connect to the device first."))
             } else {
@@ -75,7 +78,7 @@ struct DriveBayView: View {
                             Task { await model.createBlankDisk() }
                         }
                         .fixedSize()
-                        .disabled(!model.session.isConnected || model.busy)
+                        .disabled(!isConnected || model.busy)
                     }
                     Text("Example path: /Temp/blank.d64 — then mount from Drive A/B.")
                         .font(.caption2)
@@ -93,6 +96,9 @@ struct DriveBayView: View {
 private struct DriveBayRow: View {
     let drive: UltimateAPIClient.DriveInfo
     @ObservedObject var model: DriveBayViewModel
+    @AppStorage("confirmDestructiveActions") private var confirmDestructiveActions = true
+    @State private var confirmPowerOff = false
+    @State private var confirmUnmount = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -125,13 +131,17 @@ private struct DriveBayRow: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Button(drive.enabled ? "Power Off" : "Power On") {
-                        Task {
-                            await model.setPower(
-                                drive: drive.letter, on: !drive.enabled)
+                        if drive.enabled, confirmDestructiveActions {
+                            confirmPowerOff = true
+                        } else {
+                            Task {
+                                await model.setPower(
+                                    drive: drive.letter, on: !drive.enabled)
+                            }
                         }
                     }
                     .fixedSize()
-                    .disabled(model.busy)
+                    .disabled(model.busy || !model.session.isConnected)
 
                     Picker(
                         "Mode",
@@ -150,26 +160,55 @@ private struct DriveBayRow: View {
                     }
                     .pickerStyle(.menu)
                     .fixedSize()
-                    .disabled(model.busy)
+                    .disabled(model.busy || !model.session.isConnected)
                     .accessibilityLabel("Drive mode")
 
                     Button("Mount…") {
                         model.chooseAndMount(drive: drive.letter)
                     }
                     .fixedSize()
-                    .disabled(model.busy)
+                    .disabled(model.busy || !model.session.isConnected)
 
                     Button("Unmount") {
-                        Task { await model.unmount(drive: drive.letter) }
+                        if confirmDestructiveActions {
+                            confirmUnmount = true
+                        } else {
+                            Task { await model.unmount(drive: drive.letter) }
+                        }
                     }
                     .fixedSize()
                     .disabled(
                         model.busy
+                            || !model.session.isConnected
                             || (drive.imageFile == nil && drive.partition == nil))
                 }
             }
         }
         .padding(.vertical, 4)
+        .confirmationDialog(
+            "Power off drive \(drive.letter.uppercased())?",
+            isPresented: $confirmPowerOff
+        ) {
+            Button("Power Off", role: .destructive) {
+                Task {
+                    await model.setPower(drive: drive.letter, on: false)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The drive will go offline until powered on again.")
+        }
+        .confirmationDialog(
+            "Unmount drive \(drive.letter.uppercased())?",
+            isPresented: $confirmUnmount
+        ) {
+            Button("Unmount", role: .destructive) {
+                Task { await model.unmount(drive: drive.letter) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The mounted disk image will be ejected from this drive.")
+        }
     }
 
     private var mountedLabel: String {
@@ -193,9 +232,25 @@ final class DriveBayViewModel: ObservableObject {
     @Published var createKind: UltimateAPIClient.BlankDiskKind = .d64
     @Published var createTracks = 35
     @Published var createDiskName = ""
+    private var sessionObserver: AnyCancellable?
 
     init(session: DeviceSession) {
         self.session = session
+        sessionObserver = session.$state.sink { [weak self] state in
+            guard let self else { return }
+            self.objectWillChange.send()
+            switch state {
+            case .connected:
+                Task { await self.refresh() }
+            case .disconnected, .unreachable, .error:
+                self.drives = []
+                if !self.busy {
+                    self.statusMessage = "Not connected."
+                }
+            case .connecting:
+                break
+            }
+        }
     }
 
     func refresh() async {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.121b — 2026-08-12
+
+### Fixed
+
+- **SID register visualizations recover after Disconnect → Connect.** Session teardown now suspends living `SIDEngine` observers and clears sticky enable flags so reconnect re-acquires the debug stream instead of staying blank.
+- **`disconnect` no longer double-bumps connection generation** when SessionManager already called `prepareForEviction`.
+- **Drive Bay / Ultimate Config / Memory Console** refresh enablement when the session connects or disconnects.
+
+### Improved
+
+- **Visualization auto-follow retargets windows in place** (keeps frames, modes, phosphor glow) instead of close/reopen.
+- **CRT Tube glass reflection and phosphor pitch (1702 / 1084S)** are editable again in Settings → Display and Picture Controls.
+- **Save to Flash** and Drive Bay **Power Off / Unmount** respect the destructive-actions confirmation setting.
+
 ## 0.120b — 2026-08-12
 
 ### Added

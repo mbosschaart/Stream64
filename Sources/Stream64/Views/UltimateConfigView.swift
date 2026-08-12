@@ -1,9 +1,14 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// Browse and edit Ultimate flash configuration categories over REST.
 struct UltimateConfigView: View {
     @ObservedObject var model: UltimateConfigViewModel
+    @AppStorage("confirmDestructiveActions") private var confirmDestructiveActions = true
+    @State private var confirmSaveToFlash = false
+
+    private var isConnected: Bool { model.session.isConnected }
 
     var body: some View {
         HSplitView {
@@ -43,7 +48,7 @@ struct UltimateConfigView: View {
                                 Task { await model.apply(itemKey: item.key) }
                             }
                             .fixedSize()
-                            .disabled(model.busy || !model.session.isConnected)
+                            .disabled(model.busy || !isConnected)
                         }
                         .width(min: 52, ideal: 56)
                     }
@@ -54,6 +59,17 @@ struct UltimateConfigView: View {
         .padding(10)
         .frame(minWidth: 720, minHeight: 420)
         .task { await model.loadCategories() }
+        .confirmationDialog(
+            "Save configuration to flash?",
+            isPresented: $confirmSaveToFlash
+        ) {
+            Button("Save to Flash", role: .destructive) {
+                Task { await model.saveToFlash() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This writes the current Ultimate configuration into flash memory on the device.")
+        }
     }
 
     private var toolbar: some View {
@@ -82,12 +98,16 @@ struct UltimateConfigView: View {
                         Task { await model.loadFromFlash() }
                     }
                     .fixedSize()
-                    .disabled(model.busy || !model.session.isConnected)
+                    .disabled(model.busy || !isConnected)
                     Button("Save to Flash") {
-                        Task { await model.saveToFlash() }
+                        if confirmDestructiveActions {
+                            confirmSaveToFlash = true
+                        } else {
+                            Task { await model.saveToFlash() }
+                        }
                     }
                     .fixedSize()
-                    .disabled(model.busy || !model.session.isConnected)
+                    .disabled(model.busy || !isConnected)
                 }
             }
         }
@@ -115,9 +135,13 @@ final class UltimateConfigViewModel: ObservableObject {
     @Published var draftValues: [String: String] = [:]
     @Published private(set) var statusMessage: String?
     @Published private(set) var busy = false
+    private var sessionObserver: AnyCancellable?
 
     init(session: DeviceSession) {
         self.session = session
+        sessionObserver = session.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     func loadCategories() async {

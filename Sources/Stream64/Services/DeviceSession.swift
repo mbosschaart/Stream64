@@ -458,6 +458,9 @@ final class DeviceSession: ObservableObject {
             }
             watchForSilentStream()
             probeDebugCapability()
+            // SID windows may still be open from before disconnect — re-arm
+            // register-write / audio-tap paths that suspendForSessionTeardown cleared.
+            SIDEngine.existing(for: device.id)?.resumeAfterSessionConnect()
         } catch {
             guard isCurrentConnection(generation) else {
                 abandonStaleConnectionAttempt()
@@ -739,9 +742,8 @@ final class DeviceSession: ObservableObject {
         /// (SessionManager uses it so a replacement session is not killed).
         stillOwnsRemote: (() -> Bool)? = nil
     ) async {
-        connectionGeneration &+= 1
-        streamingOp?.cancel()
-        streamingOp = nil
+        // Single teardown path — do not bump generation here; prepareForEviction
+        // owns that (and is idempotent when SessionManager already called it).
         prepareForEviction()
         if waitForInputRelease {
             await input.cancelAndRelease()
@@ -766,9 +768,17 @@ final class DeviceSession: ObservableObject {
     /// Synchronous half of disconnect used by SessionManager eviction.
     /// Releases local ports and cancels lifecycle tasks before a replacement
     /// DeviceSession can be constructed; remote stop requests finish in the
-    /// asynchronous `disconnect()` tail.
+    /// asynchronous `disconnect()` tail. Idempotent: a second call after
+    /// locals are already down does not bump `connectionGeneration` again.
     func prepareForEviction() {
-        connectionGeneration &+= 1
+        let needsInvalidate = state != .disconnected
+            || streamingOp != nil
+            || reconnectTask != nil
+            || healthMonitor != nil
+            || stalenessMonitor != nil
+        if needsInvalidate {
+            connectionGeneration &+= 1
+        }
         streamingOp?.cancel()
         streamingOp = nil
         reconnectTask?.cancel()
@@ -778,6 +788,9 @@ final class DeviceSession: ObservableObject {
         stalenessMonitor?.cancel()
         stalenessMonitor = nil
         cancelStreamLifecycleTasks()
+        // Suspend open SID engines before stopping receivers so sticky
+        // `registerWritesEnabled` cannot block re-acquire after reconnect.
+        SIDEngine.existing(for: device.id)?.suspendForSessionTeardown()
         videoReceiver.stop()
         audioReceiver.stop()
         debugStreamReceiver.stop()

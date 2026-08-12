@@ -227,7 +227,8 @@ struct GeneralSettingsTab: View {
             } footer: {
                 Text(
                     "Destructive actions include power off, file deletion, "
-                        + "replacement, and non-atomic moves. When "
+                        + "replacement, non-atomic moves, Save to Flash, and "
+                        + "Drive Bay power-off / unmount. When "
                         + "auto-follow is on, open SID and Memory Map / "
                         + "Debug Trace windows switch to the newly selected "
                         + "machine. Sound always follows selection."
@@ -387,7 +388,7 @@ private struct DeviceVideoSettings: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Rendering") {
+            Section {
                 Picker("Filtering", selection: $display.filterMode) {
                     ForEach(FilterMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -414,6 +415,23 @@ private struct DeviceVideoSettings: View {
                 Toggle("Years of dirt and grime on the CRT glass",
                        isOn: $display.crtDirtyGlass)
                     .disabled(!isCRTFilter)
+                Toggle("Glass reflection", isOn: $display.bezelReflection)
+                    .disabled(!isCRTTube)
+                Picker("Phosphor pitch", selection: $display.bezelStyle) {
+                    ForEach(BezelChoice.allCases) { choice in
+                        Text(choice.rawValue).tag(choice)
+                    }
+                }
+                .disabled(!isCRTTube)
+            } header: {
+                Text("Rendering")
+            } footer: {
+                Text(
+                    "Phosphor pitch matches Commodore 1702 (0.64 mm) or "
+                        + "1084S (0.42 mm) shadow-mask spacing. Glass "
+                        + "reflection and pitch apply in CRT Tube mode."
+                )
+                .foregroundStyle(.secondary)
             }
 
             Section("Overlay") {
@@ -425,6 +443,10 @@ private struct DeviceVideoSettings: View {
 
     private var isCRTFilter: Bool {
         display.filterMode == .crt || display.filterMode == .crtTube
+    }
+
+    private var isCRTTube: Bool {
+        display.filterMode == .crtTube
     }
 }
 

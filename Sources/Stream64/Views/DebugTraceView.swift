@@ -635,8 +635,8 @@ private final class MemoryMapDecayNSView: NSView {
 final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
     private static var windows: [UUID: DebugTraceWindowController] = [:]
 
-    private let deviceID: UUID
-    private let model: DebugTraceViewModel
+    private var deviceID: UUID
+    private var model: DebugTraceViewModel
 
     /// UI state preserved when auto-follow retargets the window to another
     /// machine (frame + display/visualization pickers).
@@ -657,9 +657,9 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         present(session: session, restoring: nil)
     }
 
-    /// Retarget any open Debug Trace / Memory Map window to `session`.
-    /// Keeps the source window's mode/frame when moving. No-op when none
-    /// are open or the only open window is already on that device.
+    /// Retarget any open Debug Trace / Memory Map window to `session` in
+    /// place. Extra windows on other devices are closed; the kept window
+    /// keeps its frame and visualization pickers.
     static func followSelectedSession(_ session: DeviceSession) {
         let open = Array(windows.values)
         guard !open.isEmpty else { return }
@@ -668,11 +668,11 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         let source = open.first { $0.deviceID == session.device.id }
             ?? open.first { $0.window?.isKeyWindow == true }
             ?? open[0]
-        let snapshot = source.followSnapshot()
-        for controller in open {
+        for controller in open where controller !== source {
             controller.window?.close()
         }
-        present(session: session, restoring: snapshot)
+        if source.deviceID == session.device.id { return }
+        source.retarget(to: session)
     }
 
     private static func present(
@@ -733,6 +733,27 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         if let frame = snapshot.frame {
             window?.setFrame(frame, display: false)
         }
+    }
+
+    private func retarget(to session: DeviceSession) {
+        let snapshot = followSnapshot()
+        let previousModel = model
+        previousModel.stop()
+        Task { await previousModel.stopTrace() }
+        Self.windows.removeValue(forKey: deviceID)
+
+        let newModel = DebugTraceViewModel(session: session)
+        model = newModel
+        deviceID = session.device.id
+        window?.title = "\(session.device.name) Debug Trace"
+        window?.contentViewController = NSHostingController(
+            rootView: DebugTraceView(model: newModel, session: session))
+        applyFollowSnapshot(snapshot)
+        Self.windows[session.device.id] = self
+        newModel.start()
+        Task { await newModel.startTraceIfNeeded() }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {

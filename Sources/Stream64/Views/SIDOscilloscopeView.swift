@@ -703,9 +703,9 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     private static var windows: [UUID: SIDOscilloscopeWindowController] = [:]
 
     private let windowID = UUID()
-    private let deviceID: UUID
-    private let deviceName: String
-    private let model: SIDOscilloscopeViewModel
+    private var deviceID: UUID
+    private var deviceName: String
+    private var model: SIDOscilloscopeViewModel
     private var startupTask: Task<Void, Never>?
 
     /// Always opens a brand-new, independent window already set to
@@ -802,16 +802,6 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             }
     }
 
-    /// Layout of every open SID window across all devices (for auto-follow).
-    static func currentLayoutAllDevices() -> [SIDWindowLayoutEntry] {
-        windows.values.compactMap { controller -> SIDWindowLayoutEntry? in
-            guard let frame = controller.window?.frame else { return nil }
-            return SIDWindowLayoutEntry(
-                mode: controller.model.visualizationMode.rawValue,
-                frame: frame)
-        }
-    }
-
     /// Closes every currently open SID Oscilloscope window for
     /// `deviceID`. Snapshots the matching controllers into a plain array
     /// first — closing a window synchronously fires `windowWillClose`,
@@ -833,18 +823,49 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         }
     }
 
-    /// Retarget every open SID visualization to `session`, keeping modes and
-    /// frames. No-op when nothing is open or everything already follows
-    /// that device. Used by Settings → General auto-follow.
+    /// Retarget every open SID visualization to `session` in place — keep
+    /// the NSWindow, frame, mode, and phosphor-glow toggle; swap only the
+    /// view model / engine binding. Avoids close/reopen flicker and the
+    /// HTTP burst from recreating every window.
     static func followSelectedSession(_ session: DeviceSession) {
-        let entries = currentLayoutAllDevices()
-        guard !entries.isEmpty else { return }
-        let alreadyOnTarget = windows.values.allSatisfy {
+        let controllers = Array(windows.values)
+        guard !controllers.isEmpty else { return }
+        let alreadyOnTarget = controllers.allSatisfy {
             $0.deviceID == session.device.id
         }
         guard !alreadyOnTarget else { return }
-        closeAll()
-        restoreLayout(entries, session: session)
+        for (index, controller) in controllers.enumerated() {
+            controller.retarget(to: session, startDelay: Double(index) * 0.25)
+        }
+    }
+
+    /// Rebind this window to another device's session without closing it.
+    private func retarget(to session: DeviceSession, startDelay: TimeInterval) {
+        guard deviceID != session.device.id else { return }
+        let previousDeviceID = deviceID
+        startupTask?.cancel()
+        startupTask = nil
+        model.stop()
+        let mode = model.visualizationMode
+        let glow = model.phosphorGlowEnabled
+        let newModel = SIDOscilloscopeViewModel(session: session)
+        newModel.visualizationMode = mode
+        newModel.phosphorGlowEnabled = glow
+        model = newModel
+        deviceID = session.device.id
+        deviceName = session.device.name
+        window?.contentViewController = NSHostingController(
+            rootView: SIDOscilloscopeView(model: newModel, session: session))
+        updateTitle()
+        Self.reconcileUIActivity(for: previousDeviceID)
+        startupTask = Task { [weak self] in
+            if startDelay > 0 {
+                try? await Task.sleep(for: .seconds(startDelay))
+            }
+            guard !Task.isCancelled, let self, self.window != nil else { return }
+            self.model.start()
+            Self.reconcileUIActivity(for: self.deviceID)
+        }
     }
 
     /// Re-opens one window per saved entry at its saved frame and mode,

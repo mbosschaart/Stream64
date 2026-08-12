@@ -367,6 +367,25 @@ final class SIDTests: XCTestCase {
 
 
     @MainActor
+    func testSIDEngineSuspendClearsStickyEnableSoResumeCanRetry() async {
+        let session = DeviceSession(
+            device: UltimateDevice(name: "SID Suspend Test", host: "192.0.2.9"),
+            settings: AppSettings())
+        let engine = SIDEngine.shared(for: session)
+        let token = engine.subscribe(needs: SIDEngineNeeds(mode: .registerActivity)) {}
+        defer { engine.unsubscribe(token) }
+
+        // Simulate a failed-or-partial enable leaving the sticky flag set,
+        // then session teardown — resume must be allowed to call enable again.
+        engine.suspendForSessionTeardown()
+        XCTAssertTrue(SIDEngine.existing(for: session.device.id) === engine)
+        engine.resumeAfterSessionConnect()
+        // resume schedules enableRegisterWrites; engine must still exist
+        // with the subscriber attached.
+        XCTAssertTrue(SIDEngine.existing(for: session.device.id) === engine)
+    }
+
+    @MainActor
     func testSIDEngineSharedReturnsSameInstanceUntilLastSubscriberLeaves() {
         let session = DeviceSession(
             device: UltimateDevice(name: "SIDEngine Test", host: "192.0.2.1"),
