@@ -194,9 +194,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Full screen**
 
     Press ⌃⌘F (or the toolbar button). All interface chrome disappears — pure \
-    picture on black. Move the pointer to the top of the screen for the menu \
-    bar, or press ⌃⌘F again to exit. The pointer hides after five seconds \
-    without mouse movement and appears immediately when you move the mouse.
+    picture on black. Press **Escape** or ⌃⌘F again to return to the previous \
+    windowed layout. Move the pointer to the top of the screen for the menu \
+    bar. The pointer hides after five seconds without mouse movement and \
+    appears immediately when you move the mouse. While fullscreen, Escape \
+    exits the viewer instead of sending RUN/STOP to the C64 — use the \
+    on-screen keyboard or leave fullscreen for RUN/STOP.
 
     With multiple devices configured, **← and → switch between streams** in \
     full screen, like changing channels. (The arrows pass through to the C64 \
@@ -530,12 +533,13 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     configured. Pick any mode from **SID Visualizations** to open it in its \
     own window; any number of modes can be open side by side, or use \
     **Open All in Grid** to open every mode at once, automatically tiled to \
-    fit the screen. However your windows end up arranged, **Save Window \
-    Layout** remembers it per device (overwriting any previously saved \
-    arrangement), so **Restore Window Layout** can bring it back later — \
-    even after quitting and relaunching the app. Both are also on the \
-    right-click menu, so restoring works even with no SID windows currently \
-    open.
+    fit the screen. **Close All Visualizations** dismisses every open SID \
+    window for that device in one step. However your windows end up \
+    arranged, **Save Window Layout** remembers it per device (overwriting \
+    any previously saved arrangement), so **Restore Window Layout** can \
+    bring it back later — even after quitting and relaunching the app. \
+    Those layout actions are also on the right-click menu, so restoring \
+    works even with no SID windows currently open.
 
     A window's mode is fixed once it's open — picking a different mode from \
     either menu always opens a *new* window rather than switching the \

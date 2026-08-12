@@ -931,6 +931,11 @@ final class DeviceSession: ObservableObject {
         SIDOscilloscopeWindowController.showAllInGrid(session: self)
     }
 
+    /// Closes every open SID visualization window for this device.
+    func closeAllSIDVisualizations() {
+        SIDOscilloscopeWindowController.closeAll(for: device.id)
+    }
+
     /// Saves the current arrangement (mode, position, size) of every
     /// open SID Oscilloscope window for this device, so it can be
     /// restored later with `restoreWindowLayout()` — even after quitting

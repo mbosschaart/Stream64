@@ -455,6 +455,12 @@ struct SIDVisualizationMenuContent: View {
         } label: {
             Label("Open All in Grid", systemImage: "square.grid.3x3")
         }
+        Button {
+            session.closeAllSIDVisualizations()
+        } label: {
+            Label("Close All Visualizations", systemImage: "xmark.circle")
+        }
+        .disabled(!session.hasOpenSIDWindows)
         Divider()
         // Always available: saving overwrites any existing per-device
         // snapshot. Grouped separately from Restore so a disabled

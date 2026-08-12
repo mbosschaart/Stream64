@@ -223,18 +223,29 @@ struct ContentView: View {
 
     // MARK: - Fullscreen stream switching
 
-    /// In fullscreen with multiple devices, ←/→ switch to the previous/next
-    /// stream. The monitor intercepts the keys before the video view would
-    /// forward them to the C64 as cursor keys; all other keys pass through.
+    /// In fullscreen: Escape exits to the previous windowed state, and with
+    /// multiple devices ←/→ switch streams. The monitor runs before the
+    /// video view can forward those keys to the C64.
     private func installArrowKeyMonitor() {
         guard arrowKeyMonitor == nil else { return }
         arrowKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection(
+                [.command, .option, .control, .shift])
+
+            // Escape always leaves fullscreen (standard viewer behavior).
+            // Consumed here so keyboard capture cannot treat it as RUN/STOP.
+            if event.keyCode == 53, modifiers.isEmpty {
+                let window = mainViewerWindow ?? NSApp.keyWindow
+                if let window, window.styleMask.contains(.fullScreen) {
+                    window.toggleFullScreen(nil)
+                    return nil
+                }
+            }
+
             guard deviceStore.devices.count > 1,
                   event.keyCode == 123 || event.keyCode == 124 else {
                 return event
             }
-            let modifiers = event.modifierFlags.intersection(
-                [.command, .option, .control, .shift])
             let joystickMode = deviceStore.selectedDevice.map {
                 InputSettings.shared(for: $0.id).joystickEnabled
             } ?? false
@@ -1307,7 +1318,7 @@ private struct ViewerPaneSessionContent: View {
             } label: {
                 Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
             }
-            .help("Enter full screen (move the pointer to the top to exit)")
+            .help("Enter full screen (Escape or ⌃⌘F to exit)")
         }
     }
 }

@@ -132,6 +132,10 @@ struct StreamContextMenu: View {
                 Button("Open All in Grid", systemImage: "square.grid.3x3") {
                     session.openAllSIDVisualizations()
                 }
+                Button("Close All Visualizations", systemImage: "xmark.circle") {
+                    session.closeAllSIDVisualizations()
+                }
+                .disabled(!session.hasOpenSIDWindows)
                 Divider()
                 // Save stays enabled even when a layout is already stored —
                 // `saveWindowLayout()` overwrites that snapshot. It also

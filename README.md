@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.114b-purple)
+![Version](https://img.shields.io/badge/version-0.115b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -230,10 +230,11 @@ same "pick a mode, get a new window" list (plus a Phosphor Glow toggle for a \
 CRT-bloom overlay) for convenience without having to go back to the stream's \
 menu. "Open All in Grid" (in both menus) opens every mode at once, each in \
 its own window at its minimum usable size, automatically tiled into a grid \
-centered on screen. However the windows end up arranged — from "Open All in \
-Grid" or hand-picked and nudged into place — "Save Window Layout" (also in \
-both menus) remembers every open window's mode, position, and size per \
-device, so "Restore Window Layout" can bring back that exact arrangement \
+centered on screen; "Close All Visualizations" dismisses every open SID \
+window for that device. However the windows end up arranged — from "Open \
+All in Grid" or hand-picked and nudged into place — "Save Window Layout" \
+(also in both menus) remembers every open window's mode, position, and size \
+per device, so "Restore Window Layout" can bring back that exact arrangement \
 later, even after quitting and relaunching the app (Save overwrites whatever \
 was stored for that device); both are on the stream's menu too so restoring \
 works even with no SID windows currently open.
@@ -298,10 +299,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.114b BUILD_NUMBER=114 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.115b BUILD_NUMBER=115 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.114b BUILD_NUMBER=114 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.115b BUILD_NUMBER=115 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

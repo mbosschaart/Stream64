@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.115b — 2026-08-12
+
+### Added
+
+- **Escape exits fullscreen** and restores the previous windowed layout (instead of sending RUN/STOP to the C64 while fullscreen).
+- **Close All Visualizations** in the SID Visualizations menus — dismisses every open SID window for that device in one step.
+
 ## 0.114b — 2026-08-12
 
 ### Fixed
