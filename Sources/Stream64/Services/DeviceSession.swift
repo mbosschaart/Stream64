@@ -5,6 +5,15 @@ import AppKit
 import CoreGraphics
 import UniformTypeIdentifiers
 
+/// Stream / present rates for the FPS overlay. Kept off `DeviceSession`'s
+/// `objectWillChange` so 1 Hz ticks cannot rebuild `VideoView` hosts and
+/// stall the 50 Hz present pump (visible as a once-per-second scroll hitch).
+@MainActor
+final class VideoFrameStats: ObservableObject {
+    @Published var streamFPS: Double = 0
+    @Published var presentFPS: Double = 0
+}
+
 /// Manages the live connection to one Ultimate device: REST control,
 /// video/audio stream lifecycle, and connection state.
 @MainActor
@@ -21,9 +30,12 @@ final class DeviceSession: ObservableObject {
 
     @Published private(set) var state: ConnectionState = .disconnected
     /// Assembled UDP frames per second (receive path) — not Metal presents.
-    @Published private(set) var fps: Double = 0
+    /// Not `@Published`: UI reads `videoFrameStats` instead (see that type).
+    private(set) var fps: Double = 0
     /// Completed Metal presents per second for the live viewer (display path).
-    @Published private(set) var presentFPS: Double = 0
+    private(set) var presentFPS: Double = 0
+    /// Observable FPS overlay source — only FPS labels should observe this.
+    let videoFrameStats = VideoFrameStats()
     @Published private(set) var isPaused = false
     /// True while video packets are actually arriving (measured, not
     /// assumed from API acknowledgements).
@@ -115,6 +127,7 @@ final class DeviceSession: ObservableObject {
                 // menu attached to those views.
                 if abs(fps - self.fps) >= 0.5 {
                     self.fps = fps
+                    self.videoFrameStats.streamFPS = fps
                 }
                 self.lastStatsAt = Date()
                 let streaming = fps >= 1
@@ -132,6 +145,7 @@ final class DeviceSession: ObservableObject {
     func reportVideoRenderLoad(presentFPS: Double, gpuBehind: Bool) {
         if abs(presentFPS - self.presentFPS) >= 0.5 {
             self.presentFPS = presentFPS
+            videoFrameStats.presentFPS = presentFPS
         }
         isVideoGPUBehind = gpuBehind
     }
@@ -154,8 +168,7 @@ final class DeviceSession: ObservableObject {
                 guard let self else { return }
                 if self.isStreaming, Date().timeIntervalSince(self.lastStatsAt) > 3 {
                     self.isStreaming = false
-                    self.fps = 0
-                    self.presentFPS = 0
+                    self.resetFrameStats()
                     self.isVideoGPUBehind = false
                     self.recoverStaleStreams()
                 }
@@ -657,8 +670,7 @@ final class DeviceSession: ObservableObject {
         cancelStreamLifecycleTasks()
         try? await client.stopVideoStream()
         try? await client.stopAudioStream()
-        fps = 0
-        presentFPS = 0
+        resetFrameStats()
         isVideoGPUBehind = false
         isStreaming = false
     }
@@ -700,11 +712,17 @@ final class DeviceSession: ObservableObject {
         debugStreamReceiver.stop()
         debugTraceConsumers.removeAll()
         debugTraceState = .inactive
-        fps = 0
-        presentFPS = 0
+        resetFrameStats()
         isVideoGPUBehind = false
         isPaused = false
         state = .disconnected
+    }
+
+    private func resetFrameStats() {
+        fps = 0
+        presentFPS = 0
+        videoFrameStats.streamFPS = 0
+        videoFrameStats.presentFPS = 0
     }
 
     // MARK: - Debug bus-trace stream (U64/U64 Elite only)
@@ -1111,13 +1129,7 @@ final class DeviceSession: ObservableObject {
             case "d64", "g64", "d71", "g71", "d81":
                 try await client.mountDisk(path: path, type: ext)
                 if mountBehavior == .mountAndRun {
-                    await flushPendingKeys()
-                    try await client.reset()
-                    try await Task.sleep(for: .seconds(3))
-                    await input.typeAndWait(
-                        PETSCII.encode("load\"*\",8,1\r"))
-                    try await Task.sleep(for: .seconds(1))
-                    await input.typeAndWait(PETSCII.encode("run\r"))
+                    try await bootMountedDisk()
                     transferStatus = .done("Booting \(filename)")
                 } else {
                     transferStatus = .done("Mounted \(filename) in drive A")
@@ -1176,14 +1188,7 @@ final class DeviceSession: ObservableObject {
             case "d64", "g64", "d71", "g71", "d81":
                 try await client.mountDisk(data: data, filename: filename, type: ext)
                 if mountBehavior == .mountAndRun {
-                    await flushPendingKeys()
-                    try await client.reset()
-                    // Give BASIC time to come up before typing.
-                    try await Task.sleep(for: .seconds(3))
-                    await input.typeAndWait(
-                        PETSCII.encode("load\"*\",8,1\r"))
-                    try await Task.sleep(for: .seconds(1))
-                    await input.typeAndWait(PETSCII.encode("run\r"))
+                    try await bootMountedDisk()
                     transferStatus = .done("Booting \(filename)")
                     outcome = .booting(filename)
                 } else {
@@ -1208,6 +1213,20 @@ final class DeviceSession: ObservableObject {
         }
         scheduleClearTransferStatus()
         return outcome
+    }
+
+    /// After a disk mount, reset and inject LOAD"*",8,1 + RUN via the KERNAL
+    /// keyboard buffer. There is no Ultimate "mount and run" REST endpoint —
+    /// only `POST /v1/drives/a:mount` — so boot is done the same way as
+    /// ultimate64: DMA-write `load"*",8,1\rrun\r` in ≤10-byte chunks so RUN
+    /// sits in the buffer while LOAD executes. Matrix typing is too easy to
+    /// lose during disk activity (Mount & Run would only LOAD).
+    private func bootMountedDisk() async throws {
+        await flushPendingKeys()
+        try await client.reset()
+        // Give BASIC time to come up before typing.
+        try await Task.sleep(for: .seconds(3))
+        try await client.typeKeys(PETSCII.encode("load\"*\",8,1\rrun\r"))
     }
 
     /// Clear the transfer banner after a few seconds, unless it has already

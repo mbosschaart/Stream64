@@ -208,7 +208,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Frame rate overlay** — enable per device via right-click → Show Frame \
     Rate. Shows the live UDP stream receive rate (~50 fps for PAL). When the \
     display path falls behind under heavy SID / Debug Trace load, a second \
-    number appears (`stream / display`) for Metal presents per second.
+    number appears (`stream / display`) for content presents per second. \
+    While streaming, Stream64 presents at the display refresh rate and \
+    blends consecutive PAL frames (about one frame of delay) so 50 Hz \
+    scrolltext stays smooth on 60 Hz monitors; idle viewers pause the \
+    display link to save GPU.
 
     **Screenshot** — the toolbar camera, right-click → Save Screenshot…, or \
     ⇧⌘S saves the actual filtered Metal output as PNG, including signal \
@@ -264,7 +268,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     hues, contrast crushes or flattens. BRIGHT has extended highlight headroom; \
     COLOR rises to extreme 4× chroma at its end stop for intentionally \
     overdriven CRT color. Optics knobs are neutral at center (the previous \
-    hardcoded CRT look); lower softens and higher intensifies each effect.
+    hardcoded CRT look); lower softens, and the right half of each knob \
+    ramps up to about 4× that strength (including a deeper phosphor mask).
     """
 
     private static let keyboardText = """
@@ -421,7 +426,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     Each file offers actions for its type:
 
     • **Disk images** (.d64/.g64/.d71/.g71/.d81) — **Mount & Run** mounts \
-    the disk, resets the C64, and auto-types `LOAD"*",8,1` + `RUN`; \
+    the disk, resets the C64, then DMA-injects `LOAD"*",8,1` + `RUN` into \
+    the KERNAL keyboard buffer so the program starts after load; \
     **Mount** just inserts the disk in drive A
     • **.prg** — **Run**: uploaded and started immediately
     • **.sid** — **Play**: sent to the Ultimate's built-in SID player

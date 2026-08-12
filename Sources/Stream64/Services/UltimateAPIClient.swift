@@ -238,13 +238,9 @@ struct UltimateAPIClient {
             try await writeMemory(address: 0x0091, bytes: [0])
             try await writeMemory(address: 0x0277, bytes: chunk)
             try await writeMemory(address: 0x00C6, bytes: [UInt8(chunk.count)])
-            if let verification = try? await readMemory(
-                address: 0x00C6, length: 1
-            ), let count = verification.first,
-               count != 0 && count != UInt8(chunk.count) {
-                throw APIError.httpError(
-                    409, "Keyboard buffer verification failed")
-            }
+            // Do not re-read $C6 to "verify": BASIC often drains the buffer
+            // between the write and a follow-up readmem, so a partial count
+            // looks like failure even when injection succeeded (Mount & Run).
             index += chunk.count
         }
     }

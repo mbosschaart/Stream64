@@ -59,8 +59,8 @@ struct PictureControlsView: View {
                 } footer: {
                     Text(
                         "Center is the previous hardcoded CRT look. Lower "
-                            + "values soften the effect; higher values "
-                            + "intensify it."
+                            + "values soften the effect; the right half "
+                            + "ramps up to about 4× that strength."
                     )
                 }
             }

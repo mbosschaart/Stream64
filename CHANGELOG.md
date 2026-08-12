@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+## 0.117b — 2026-08-12
+
+### Changed
+
+- **CRT Optics knobs have more headroom above center.** Neutral (50%) is still the previous hardcoded look; the right half of each knob now ramps up to about 4× that strength. Phosphor Mask above center actually deepens the triad (it previously saturated at the midpoint).
+
+### Fixed
+
+- **Assembly64 / browser Mount & Run now RUNs after LOAD.** Mount still uses `POST /v1/drives/a:mount` (there is no mount-and-run endpoint). Boot now DMA-injects `LOAD"*",8,1` + `RUN` into the KERNAL keyboard buffer so `RUN` is queued during the load, instead of a separate matrix type that was easy to lose. Also dropped the post-inject `$C6` check that raced BASIC draining the buffer and showed a false “Keyboard buffer verification failed” banner.
+- **Smoother horizontal scrolling on 60 Hz displays.** UDP from the Ultimate is a rock-solid ~20 ms, but a 60 Hz Studio Display can only show hard-cut 50 Hz frames with 3:2 pulldown judder. Live mode now presents on the panel’s vsync and temporally blends consecutive PAL frames (1-frame delay) so scrolltext moves continuously. FPS overlay state lives on `VideoFrameStats` so 1 Hz labels cannot rebuild the video host.
+
 ## 0.116b — 2026-08-12
 
 ### Fixed

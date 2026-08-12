@@ -514,6 +514,18 @@ private func fpsOverlayText(stream: Double, present: Double) -> String {
     return String(format: "%.0f / %.0f fps", stream, present)
 }
 
+/// Observes only `VideoFrameStats` so 1 Hz FPS ticks do not rebuild the
+/// video host (`ViewerPaneSessionContent` / `ViewerTileContent`).
+private struct FPSOverlayLabel: View {
+    @ObservedObject var stats: VideoFrameStats
+
+    var body: some View {
+        Text(fpsOverlayText(stream: stats.streamFPS, present: stats.presentFPS))
+            .font(.caption.monospacedDigit())
+            .help("Stream receive rate / display present rate")
+    }
+}
+
 /// One live device tile in the grid: video, connection state, name banner.
 ///
 /// Does **not** observe `DeviceSession` itself — fps / presentFPS ticks would
@@ -586,14 +598,10 @@ private struct ViewerTileContent: View {
                         .shadow(color: .black.opacity(0.8), radius: 1)
                     Spacer()
                     if session.display.showFPS, session.isConnected {
-                        Text(fpsOverlayText(
-                            stream: session.fps,
-                            present: session.presentFPS))
-                            .font(.caption.monospacedDigit())
+                        FPSOverlayLabel(stats: session.videoFrameStats)
                             .foregroundStyle(.green)
                             .shadow(color: .black, radius: 2)
                             .shadow(color: .black.opacity(0.8), radius: 1)
-                            .help("Stream receive rate / display present rate")
                     }
                 }
                 .padding(8)
@@ -1053,14 +1061,10 @@ private struct ViewerPaneSessionContent: View {
                 VStack {
                     HStack {
                         Spacer()
-                        Text(fpsOverlayText(
-                            stream: session.fps,
-                            present: session.presentFPS))
-                            .font(.caption.monospacedDigit())
+                        FPSOverlayLabel(stats: session.videoFrameStats)
                             .padding(6)
                             .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
                             .foregroundStyle(.green)
-                            .help("Stream receive rate / display present rate")
                             .padding(8)
                     }
                     Spacer()

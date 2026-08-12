@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import MetalKit
+import QuartzCore
 import CoreGraphics
 import simd
 
@@ -41,9 +42,25 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// stalls for more than three frames.
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
     private var palettePendingBytes: [UInt8]?
-    private var pendingFrame: Data?
+    /// Ordered PAL frames waiting for the present queue. A single slot was
+    /// overwriting mid-scroll frames (visible jumps); keep a few in order.
+    private var pendingFrames: [Data] = []
+    private static let maxPendingFrames = 3
     private var resetHistoryOnNextFrame = false
     private var lastFrameSubmission: DispatchTime?
+    /// While UDP frames are arriving, run the MTKView display link at the
+    /// panel rate and temporally blend consecutive PAL frames (1-frame
+    /// delay). Hard-cutting 50 Hz frames on a 60 Hz Studio Display always
+    /// judders — blending is what makes scrolltext look continuous.
+    private var isLivePresentMode = false
+    /// Leave live mode shortly after the stream goes quiet so idle viewers
+    /// do not keep burning CRT shaders at refresh rate.
+    private static let livePresentIdleSeconds: Double = 0.18
+    /// Nominal PAL stream interval; also the motion-blend display delay.
+    private static let streamPresentInterval: Double = 1.0 / 50.0
+    /// Arrival times (uptime ns) of the previous and current PAL frames.
+    private var previousFrameArrivalNs: UInt64 = 0
+    private var currentFrameArrivalNs: UInt64 = 0
     /// Ensures a semaphore miss still gets one follow-up draw once the GPU
     /// catches up (demand-driven path would otherwise stall until the next
     /// UDP frame / RF timer tick).
@@ -61,10 +78,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// Main-thread callback with present FPS and display-behind state (~1 Hz,
     /// plus immediate flips of the behind flag).
     var onLoadStats: ((_ presentFPS: Double, _ gpuBehind: Bool) -> Void)?
-    /// Set by `requestFilteredScreenshot`, consumed on the next `draw(in:)`.
-    /// Both are only ever touched on the main thread (MTKView's display
-    /// link — and the occlusion-fallback timer — always call draw() there),
-    /// so no locking is needed, unlike `pendingFrame` above.
+    /// Set by `requestFilteredScreenshot`, consumed on the next present.
+    /// Taken under `textureLock` when the present queue is live.
     private var pendingScreenshotCompletion: ((CGImage?) -> Void)?
     // Render settings, updated from the UI.
     var scalingMode: ScalingMode = .aspectFit
@@ -79,6 +94,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     var bezelSurfaceMode: Float = 0
     private var powerOffEffectStartedAt: UInt64?
     private var animationTimer: Timer?
+    /// Fires after the stream goes quiet so live mode can pause the link.
+    private var livePresentIdleTimer: Timer?
+    /// Drawable size mirrored from MTKView.
+    private var cachedDrawableSize: CGSize = .zero
     /// Frame counter driving RF noise animation.
     private var frameIndex: UInt32 = 0
     /// Live picture controls, read every frame (bypasses SwiftUI updates
@@ -108,6 +127,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         var bloomAmount: Float
         var maskIntensity: Float
         var barrelDistortion: Float
+        /// 0…1 mix from previous PAL frame → current, for 50→60 display
+        /// resampling (1-frame delayed). 1 = current only.
+        var motionBlend: Float
     }
 
     private static let shaderSource = """
@@ -149,6 +171,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float bloomAmount;
         float maskIntensity;
         float barrelDistortion;
+        float motionBlend;
     };
 
     // Monitor picture controls, all neutral at 0.5. Saturation and tint
@@ -252,44 +275,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return out;
     }
 
-    fragment float4 fragmentMain(VertexOut in [[stage_in]],
-                                 constant Uniforms &uniforms [[buffer(0)]],
-                                 texture2d<uint> indexTex [[texture(0)]],
-                                 texture2d<float> paletteTex [[texture(1)]],
-                                 sampler smp [[sampler(0)]]) {
-        constexpr sampler pointSmp(coord::normalized, filter::nearest);
-        uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
-        uint2 coord = uint2(in.texCoord * float2(size));
-        coord = min(coord, size - 1);
-        uint index = indexTex.read(coord).r;
-        float4 c = paletteTex.read(uint2(index, 0));
-        return float4(applyPicture(c.rgb, uniforms), 1.0);
-    }
-
-    // Smooth variant: sample palette-expanded neighbors with manual bilinear blend.
-    fragment float4 fragmentSmooth(VertexOut in [[stage_in]],
-                                   constant Uniforms &uniforms [[buffer(0)]],
-                                   texture2d<uint> indexTex [[texture(0)]],
-                                   texture2d<float> paletteTex [[texture(1)]],
-                                   sampler smp [[sampler(0)]]) {
-        uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
-        float2 pos = in.texCoord * float2(size) - 0.5;
-        float2 f = fract(pos);
-        int2 base = int2(floor(pos));
-        float4 c[4];
-        for (int i = 0; i < 4; i++) {
-            int2 offset = int2(i & 1, i >> 1);
-            uint2 coord = uint2(clamp(base + offset, int2(0), int2(size) - 1));
-            uint index = indexTex.read(coord).r;
-            c[i] = paletteTex.read(uint2(index, 0));
-        }
-        float4 top = mix(c[0], c[1], f.x);
-        float4 bottom = mix(c[2], c[3], f.x);
-        float4 blended = mix(top, bottom, f.y);
-        return float4(applyPicture(blended.rgb, uniforms), 1.0);
-    }
-
-    // ---- CRT helpers ----
+    // ---- Sampling helpers (shared by sharp / smooth / CRT) ----
 
     static float4 sampleBilinear(float2 uv,
                                  texture2d<uint> indexTex,
@@ -321,6 +307,29 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return paletteTex.read(uint2(index, 0)).rgb;
     }
 
+    // Same bilinear kernel as sampleBilinear, but from a history slice —
+    // required so 50→60 motion blend does not mix nearest into bilinear
+    // (that mismatch flickered CRT bloom/scanlines every blend step).
+    static float4 sampleHistoryBilinear(
+        float2 uv, uint slice,
+        texture2d_array<uint> historyTex,
+        texture2d<float> paletteTex) {
+        uint2 size = uint2(historyTex.get_width(), historyTex.get_height());
+        float2 pos = uv * float2(size) - 0.5;
+        float2 f = fract(pos);
+        int2 base = int2(floor(pos));
+        float4 c[4];
+        for (int i = 0; i < 4; i++) {
+            int2 offset = int2(i & 1, i >> 1);
+            uint2 coord = uint2(clamp(base + offset, int2(0), int2(size) - 1));
+            uint index = historyTex.read(coord, slice).r;
+            c[i] = paletteTex.read(uint2(index, 0));
+        }
+        float4 top = mix(c[0], c[1], f.x);
+        float4 bottom = mix(c[2], c[3], f.x);
+        return mix(top, bottom, f.y);
+    }
+
     static float3 sampleIndexedColorNearest(
         float2 uv, texture2d<uint> indexTex,
         texture2d<float> paletteTex) {
@@ -330,6 +339,76 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         uint index = indexTex.read(coord).r;
         return paletteTex.read(uint2(index, 0)).rgb;
     }
+
+    // Previous PAL history slice for 50→60 motion resampling.
+    static uint previousHistorySlice(constant Uniforms &u) {
+        int slice = int(u.historyHead) - 1;
+        if (slice < 0) {
+            slice += 12;
+        }
+        return uint(slice);
+    }
+
+    static float3 applyMotionBlendNearest(
+        float3 current, float2 uv,
+        texture2d_array<uint> historyTex,
+        texture2d<float> paletteTex,
+        constant Uniforms &u) {
+        if (u.motionBlend >= 0.999 || u.historyValidCount < 2.0) {
+            return current;
+        }
+        float3 previous = sampleHistoryColor(
+            uv, previousHistorySlice(u), historyTex, paletteTex);
+        return mix(previous, current, u.motionBlend);
+    }
+
+    static float3 applyMotionBlendBilinear(
+        float3 current, float2 uv,
+        texture2d_array<uint> historyTex,
+        texture2d<float> paletteTex,
+        constant Uniforms &u) {
+        if (u.motionBlend >= 0.999 || u.historyValidCount < 2.0) {
+            return current;
+        }
+        float3 previous = sampleHistoryBilinear(
+            uv, previousHistorySlice(u), historyTex, paletteTex).rgb;
+        return mix(previous, current, u.motionBlend);
+    }
+
+    fragment float4 fragmentMain(VertexOut in [[stage_in]],
+                                 constant Uniforms &uniforms [[buffer(0)]],
+                                 texture2d<uint> indexTex [[texture(0)]],
+                                 texture2d<float> paletteTex [[texture(1)]],
+                                 texture2d<float> dirtTex [[texture(2)]],
+                                 texture2d_array<uint> historyTex [[texture(3)]],
+                                 sampler smp [[sampler(0)]]) {
+        (void)dirtTex;
+        uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
+        uint2 coord = uint2(in.texCoord * float2(size));
+        coord = min(coord, size - 1);
+        uint index = indexTex.read(coord).r;
+        float3 rgb = paletteTex.read(uint2(index, 0)).rgb;
+        rgb = applyMotionBlendNearest(
+            rgb, in.texCoord, historyTex, paletteTex, uniforms);
+        return float4(applyPicture(rgb, uniforms), 1.0);
+    }
+
+    // Smooth variant: sample palette-expanded neighbors with manual bilinear blend.
+    fragment float4 fragmentSmooth(VertexOut in [[stage_in]],
+                                   constant Uniforms &uniforms [[buffer(0)]],
+                                   texture2d<uint> indexTex [[texture(0)]],
+                                   texture2d<float> paletteTex [[texture(1)]],
+                                   texture2d<float> dirtTex [[texture(2)]],
+                                   texture2d_array<uint> historyTex [[texture(3)]],
+                                   sampler smp [[sampler(0)]]) {
+        (void)dirtTex;
+        float3 rgb = sampleBilinear(in.texCoord, indexTex, paletteTex).rgb;
+        rgb = applyMotionBlendBilinear(
+            rgb, in.texCoord, historyTex, paletteTex, uniforms);
+        return float4(applyPicture(rgb, uniforms), 1.0);
+    }
+
+    // ---- CRT helpers ----
 
     static float3 roughReflectionSample(
         float2 uv, float2 tangentOffset,
@@ -633,12 +712,21 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return clamp(fromYIQ(float3(y, iq)), 0.0, 1.0);
     }
 
+    // CRT optics knobs are 0...1 with neutral at 0.5 (= 1× historical look).
+    // Below center scales 0...1×; above center ramps to maxGain× so the
+    // right half of each Pro knob has useful headroom.
+    static float opticsGain(float knob, float maxGain) {
+        float t = saturate(knob) * 2.0;
+        return t <= 1.0 ? t : mix(1.0, maxGain, t - 1.0);
+    }
+
     // Scanlines + phosphor triads + subtle bloom, applied to a flat image.
     // signal: 0 = S-Video (clean), 1 = composite, 2 = RF (composite + noise).
     static float3 crtShade(float2 uv, float2 pixelPos,
                            texture2d<uint> indexTex,
                            texture2d<float> paletteTex,
                            texture2d_array<uint> historyTex,
+                           constant Uniforms &u,
                            float signal, float time, float phosphorColor,
                            float brightness, float maskPitch,
                            float historyHead, float historyValidCount,
@@ -646,12 +734,23 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                            float scanlineAmount, float bloomAmount,
                            float maskIntensity) {
         uint2 size = uint2(indexTex.get_width(), indexTex.get_height());
+        uint prevSlice = previousHistorySlice(u);
+        float blend = (u.historyValidCount >= 2.0) ? u.motionBlend : 1.0;
         float3 color;
         if (signal > 0.5) {
+            // Composite/RF noise is current-frame only; blending strobes snow.
             color = compositeSample(uv, pixelPos, indexTex, paletteTex,
                                     signal > 1.5 ? 1.0 : 0.0, time);
+            blend = 1.0;
         } else {
-            color = sampleBilinear(uv, indexTex, paletteTex).rgb;
+            float3 current = sampleBilinear(uv, indexTex, paletteTex).rgb;
+            if (blend < 0.999) {
+                float3 previous = sampleHistoryBilinear(
+                    uv, prevSlice, historyTex, paletteTex).rgb;
+                color = mix(previous, current, blend);
+            } else {
+                color = current;
+            }
         }
 
         // Long-persistence amber phosphor: retain bright luminance from the
@@ -665,6 +764,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             // interpolation or invented digital shade.
             float3 indexedCurrent = sampleIndexedColorNearest(
                 uv, indexTex, paletteTex);
+            if (blend < 0.999) {
+                indexedCurrent = mix(
+                    sampleHistoryColor(uv, prevSlice, historyTex, paletteTex),
+                    indexedCurrent, blend);
+            }
             float currentEmission = dot(
                 indexedCurrent, float3(0.299, 0.587, 0.114));
             float persistentLuma = currentEmission;
@@ -690,20 +794,35 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
 
         // Soft horizontal bloom: neighbours bleed slightly. Knob 0.5 keeps
-        // the historical hardcoded strength (0.25 color / 0.38 mono).
+        // the historical hardcoded strength (0.25 color / 0.38 mono);
+        // above center can push up to 4× that blend (plus a little add).
         float2 texel = 1.0 / float2(size);
         float3 blur = sampleBilinear(uv + float2(texel.x, 0), indexTex, paletteTex).rgb
                     + sampleBilinear(uv - float2(texel.x, 0), indexTex, paletteTex).rgb;
+        if (blend < 0.999) {
+            float3 blurPrev =
+                sampleHistoryBilinear(uv + float2(texel.x, 0), prevSlice,
+                                      historyTex, paletteTex).rgb
+              + sampleHistoryBilinear(uv - float2(texel.x, 0), prevSlice,
+                                      historyTex, paletteTex).rgb;
+            blur = mix(blurPrev, blur, blend);
+        }
         float bloomBase = phosphorColor > 0.5 && phosphorColor < 2.5
                         ? 0.38 : 0.25;
-        float bloom = bloomBase * (bloomAmount * 2.0);
+        float bloomGain = opticsGain(bloomAmount, 4.0);
+        float bloom = saturate(bloomBase * bloomGain);
         color = mix(color, blur * 0.5, bloom);
+        if (bloomGain > 1.0) {
+            color += blur * 0.5 * bloomBase * (bloomGain - 1.0) * 0.28;
+        }
 
         // Scanlines: darken between source rows, gently, luminance-dependent.
         float row = uv.y * float(size.y);
         float scan = sin(row * 3.14159265 * 2.0) * 0.5 + 0.5;   // 1 at row centers
         float lum = dot(color, float3(0.299, 0.587, 0.114));
-        float scanStrength = mix(0.35, 0.15, lum) * (scanlineAmount * 2.0);
+        float scanStrength = mix(0.35, 0.15, lum)
+                           * opticsGain(scanlineAmount, 4.0);
+        scanStrength = min(scanStrength, 0.95);
         // Near the top of the brightness control, amber/green tubes emulate
         // beam-current bloom: phosphor light spills vertically into the dark
         // gap and the scanline structure starts glowing together. Keep the
@@ -731,8 +850,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float3 mask = channel == 0 ? float3(1.06, 0.95, 0.95)
                     : channel == 1 ? float3(0.95, 1.06, 0.95)
                                    : float3(0.95, 0.95, 1.06);
-        float maskMix = saturate(maskIntensity * 2.0);
-        color *= mix(float3(1.0), mask * dotAperture, maskMix);
+        // Gain multiplies triad deviation so values above center actually
+        // deepen the mask (the old *2 saturate made 0.5...1.0 identical).
+        float maskGain = opticsGain(maskIntensity, 4.0);
+        float3 maskColor = mask * dotAperture;
+        color *= float3(1.0) + (maskColor - float3(1.0)) * maskGain;
 
         return color;
     }
@@ -746,7 +868,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                 sampler smp [[sampler(0)]]) {
         float2 sourceUV = dirtyGlassUV(in.texCoord, uniforms);
         float3 color = crtShade(sourceUV, in.position.xy, indexTex,
-                                paletteTex, historyTex,
+                                paletteTex, historyTex, uniforms,
                                 uniforms.signal, uniforms.time,
                                 uniforms.phosphorColor, uniforms.brightness,
                                 uniforms.maskPitch, uniforms.historyHead,
@@ -795,8 +917,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float horizontalScale = mix(1.0, 0.004, horizontalCollapse);
 
         // Barrel distortion: push samples outward toward the edges.
-        // Knob 0.5 keeps the historical 0.028 coefficient.
-        float barrel = 0.028 * (uniforms.barrelDistortion * 2.0);
+        // Knob 0.5 keeps the historical 0.028 coefficient; max ~4×.
+        float barrel = 0.028
+                     * opticsGain(uniforms.barrelDistortion, 4.0);
         float2 curved = cc * (1.0 + barrel * dot(cc, cc));
 
         const float radius = 0.08;
@@ -933,7 +1056,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         // Squeeze the complete last frame into the shrinking beam region.
         float2 contentCC = cc / float2(horizontalScale, verticalScale);
-        float contentBarrel = 0.028 * (uniforms.barrelDistortion * 2.0);
+        float contentBarrel = 0.028
+            * opticsGain(uniforms.barrelDistortion, 4.0);
         float2 contentCurved = contentCC
             * (1.0 + contentBarrel * dot(contentCC, contentCC));
         float2 uv = clamp(contentCurved * 0.5 + 0.5, 0.0, 1.0);
@@ -943,7 +1067,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
         float3 color = applyPhosphorColor(
             applyPicture(crtShade(sourceUV, in.position.xy, indexTex,
-                                  paletteTex, historyTex,
+                                  paletteTex, historyTex, uniforms,
                                   uniforms.signal, uniforms.time,
                                   uniforms.phosphorColor, uniforms.brightness,
                                   uniforms.maskPitch, uniforms.historyHead,
@@ -993,12 +1117,13 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         mtkView.device = device
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        // Normal video is demand-driven. RF/power-off effects opt into a
-        // small animation timer below instead of every surface rendering
-        // continuously at 60 FPS while nothing has changed.
+        // Idle / disconnected: demand-driven. While UDP frames arrive, live
+        // mode unpauses the display link at panel refresh and motion-blends
+        // consecutive PAL frames (see submitFrame / motionBlend).
         mtkView.enableSetNeedsDisplay = true
         mtkView.isPaused = true
         mtkView.preferredFramesPerSecond = 60
+        cachedDrawableSize = mtkView.drawableSize
 
         // Compile shaders.
         let library: MTLLibrary
@@ -1156,6 +1281,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     func requestRedraw() {
         let redraw = { [weak self] in
             guard let self, let renderView = self.renderView else { return }
+            if self.isLivePresentMode, !renderView.isPaused {
+                // Display link is already driving presents.
+                return
+            }
             renderView.setNeedsDisplay(renderView.bounds)
         }
         if Thread.isMainThread {
@@ -1172,6 +1301,211 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             guard let self else { return }
             self.deferredRedrawPending = false
             self.requestRedraw()
+        }
+    }
+
+    /// Unpause the display link for panel-rate presents + motion blend.
+    private func enterLivePresentMode() {
+        assert(Thread.isMainThread)
+        guard let renderView else { return }
+        if !isLivePresentMode {
+            isLivePresentMode = true
+            renderView.enableSetNeedsDisplay = false
+            renderView.isPaused = false
+            renderView.preferredFramesPerSecond = 60
+            if let metalLayer = renderView.layer as? CAMetalLayer {
+                // Stay vsync-locked: motion blend needs steady display times.
+                metalLayer.displaySyncEnabled = true
+                if Self.debug {
+                    NSLog("[render] live present: 60Hz vsync + motion blend")
+                }
+            }
+        }
+        scheduleLivePresentIdleCheck()
+    }
+
+    private func scheduleLivePresentIdleCheck() {
+        assert(Thread.isMainThread)
+        livePresentIdleTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: Self.livePresentIdleSeconds + 0.02,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.leaveLivePresentModeIfIdle()
+            if self.isLivePresentMode {
+                self.scheduleLivePresentIdleCheck()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        livePresentIdleTimer = timer
+    }
+
+    /// Pause the display link once the stream is quiet.
+    private func leaveLivePresentModeIfIdle() {
+        assert(Thread.isMainThread)
+        guard isLivePresentMode else { return }
+        let recentlyFed = lastFrameSubmission.map {
+            Double(DispatchTime.now().uptimeNanoseconds - $0.uptimeNanoseconds)
+                / 1_000_000_000 < Self.livePresentIdleSeconds
+        } ?? false
+        guard !recentlyFed else { return }
+        isLivePresentMode = false
+        livePresentIdleTimer?.invalidate()
+        livePresentIdleTimer = nil
+        guard let renderView else { return }
+        renderView.isPaused = true
+        renderView.enableSetNeedsDisplay = true
+        (renderView.layer as? CAMetalLayer)?.displaySyncEnabled = true
+    }
+
+    private var lastEncodedUniforms: Uniforms?
+
+    private func pipelineForCurrentFilter() -> MTLRenderPipelineState {
+        switch filterMode {
+        case .sharp: return sharpPipeline
+        case .smooth: return smoothPipeline
+        case .crt: return crtPipeline
+        case .crtTube: return crtTubePipeline
+        }
+    }
+
+    /// 1-frame-delayed blend factor between previous and current PAL frames.
+    private func motionBlendFactor(nowNs: UInt64) -> Float {
+        guard historyValidCount >= 2,
+              currentFrameArrivalNs > previousFrameArrivalNs else {
+            return 1
+        }
+        let delayNs = UInt64(Self.streamPresentInterval * 1_000_000_000)
+        let contentTime = nowNs > delayNs ? nowNs - delayNs : 0
+        if contentTime <= previousFrameArrivalNs { return 0 }
+        if contentTime >= currentFrameArrivalNs { return 1 }
+        let span = Double(currentFrameArrivalNs - previousFrameArrivalNs)
+        return Float(Double(contentTime - previousFrameArrivalNs) / span)
+    }
+
+    private func makeUniforms(drawableSize: CGSize) -> Uniforms {
+        let scale = computeScale(drawableSize: drawableSize)
+        let pictureWidthPixels = Float(drawableSize.width) * scale.x
+        let maskPitch = max(
+            3.0,
+            monitorDotPitchMillimeters * pictureWidthPixels / 264.2)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsedSinceSourceFrame = historyLastUploadUptime == 0
+            ? 0
+            : Float(now - historyLastUploadUptime) / 1_000_000_000
+        let historyPhase = min(elapsedSinceSourceFrame * 50.0, 100.0)
+        let powerOffProgress: Float
+        if let powerOffEffectStartedAt {
+            let elapsed = Float(now - powerOffEffectStartedAt)
+                / 1_000_000_000
+            powerOffProgress = min(elapsed / 0.9, 1.0)
+        } else {
+            powerOffProgress = 0
+        }
+        return Uniforms(scale: scale,
+                        reflection: reflectionEnabled ? 1 : 0,
+                        signal: signalLevel,
+                        time: Float(frameIndex % 3600) / 60.0,
+                        brightness: picture?.brightness ?? 0.5,
+                        contrast: picture?.contrast ?? 0.5,
+                        saturation: picture?.saturation ?? 0.5,
+                        tint: picture?.tint ?? 0.5,
+                        phosphorColor: crtScreenColor.shaderValue,
+                        dirtyGlass: crtDirtyGlass ? 1 : 0,
+                        maskPitch: maskPitch,
+                        historyHead: Float(historyHead),
+                        historyValidCount: Float(historyValidCount),
+                        historyPhase: historyPhase,
+                        powerOff: powerOffProgress,
+                        bezelSurfaceMode: bezelSurfaceMode,
+                        scanlineStrength: optics?.scanlineStrength ?? 0.5,
+                        bloomAmount: optics?.bloomAmount ?? 0.5,
+                        maskIntensity: optics?.maskIntensity ?? 0.5,
+                        barrelDistortion: optics?.barrelDistortion ?? 0.5,
+                        motionBlend: motionBlendFactor(nowNs: now))
+    }
+
+    /// Upload palette/frame and encode the fullscreen pass. Does not end the
+    /// encoder or present. Returns whether a new UDP frame was uploaded.
+    @discardableResult
+    private func encodeFrame(
+        encoder: MTLRenderCommandEncoder,
+        drawableSize: CGSize,
+        frame: Data?,
+        resetHistory: Bool,
+        palette: [UInt8]?
+    ) -> Bool {
+        if let palette,
+           let replacement = Self.makePaletteTexture(
+                device: device, bytes: palette) {
+            paletteTexture = replacement
+        }
+
+        let uploadedContentFrame: Bool
+        if let frame {
+            uploadedContentFrame = true
+            if Self.debug {
+                dbgDrawn += 1
+                if dbgDrawn % 100 == 1 {
+                    NSLog("[render] draw: uploading frame %d, drawableSize=%.0fx%.0f",
+                          dbgDrawn, drawableSize.width, drawableSize.height)
+                }
+            }
+            uploadFrameData(frame, resetHistory: resetHistory)
+        } else {
+            uploadedContentFrame = false
+        }
+
+        // Advance the shader clock only with content frames so RF/composite
+        // noise is not re-seeded on every 60 Hz vsync (visible CRT flicker).
+        var uniforms = makeUniforms(drawableSize: drawableSize)
+        lastEncodedUniforms = uniforms
+        let pipeline = pipelineForCurrentFilter()
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentTexture(indexTextures[currentTextureIndex], index: 0)
+        encoder.setFragmentTexture(paletteTexture, index: 1)
+        encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
+        encoder.setFragmentTexture(historyTexture, index: 3)
+        encoder.setFragmentSamplerState(
+            filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        return uploadedContentFrame
+    }
+
+    private func uploadFrameData(_ frame: Data, resetHistory: Bool) {
+        currentTextureIndex = (currentTextureIndex + 1) % indexTextures.count
+        if resetHistory {
+            historyHead = 0
+            historyValidCount = 0
+            previousFrameArrivalNs = 0
+            currentFrameArrivalNs = 0
+        }
+        historyHead = (historyHead + 1) % Self.historyFrameCount
+        historyValidCount = min(
+            historyValidCount + 1, Self.historyFrameCount)
+        let arrival = DispatchTime.now().uptimeNanoseconds
+        previousFrameArrivalNs = currentFrameArrivalNs == 0
+            ? arrival : currentFrameArrivalNs
+        currentFrameArrivalNs = arrival
+        historyLastUploadUptime = arrival
+        frameIndex &+= 1
+        frame.withUnsafeBytes { raw in
+            indexTextures[currentTextureIndex].replace(
+                region: MTLRegionMake2D(0, 0, VideoReceiver.width, VideoReceiver.height),
+                mipmapLevel: 0,
+                withBytes: raw.baseAddress!,
+                bytesPerRow: VideoReceiver.width)
+            historyTexture.replace(
+                region: MTLRegionMake2D(
+                    0, 0, VideoReceiver.width, VideoReceiver.height),
+                mipmapLevel: 0,
+                slice: historyHead,
+                withBytes: raw.baseAddress!,
+                bytesPerRow: VideoReceiver.width,
+                bytesPerImage: VideoReceiver.width * VideoReceiver.height)
         }
     }
 
@@ -1214,11 +1548,16 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// completion arrives one frame later, off the main thread — hop back
     /// before touching anything else.
     func requestFilteredScreenshot(completion: @escaping (CGImage?) -> Void) {
-        guard pendingScreenshotCompletion == nil else {
+        textureLock.lock()
+        let busy = pendingScreenshotCompletion != nil
+        if !busy {
+            pendingScreenshotCompletion = completion
+        }
+        textureLock.unlock()
+        guard !busy else {
             completion(nil)
             return
         }
-        pendingScreenshotCompletion = completion
         requestRedraw()
     }
 
@@ -1326,27 +1665,40 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             resetHistoryOnNextFrame = true
         }
         lastFrameSubmission = now
-        pendingFrame = frame
+        pendingFrames.append(frame)
+        if pendingFrames.count > Self.maxPendingFrames {
+            // Drop the oldest still-queued frame; keep temporal order of what
+            // remains so scrolltext does not jump backwards.
+            pendingFrames.removeFirst()
+        }
         if Self.debug {
             dbgSubmitted += 1
             if dbgSubmitted % 100 == 1 {
-                NSLog("[render] submitted=%d drawn=%d", dbgSubmitted, dbgDrawn)
+                NSLog("[render] submitted=%d drawn=%d queued=%d",
+                      dbgSubmitted, dbgDrawn, pendingFrames.count)
             }
         }
         textureLock.unlock()
-        requestRedraw()
+        DispatchQueue.main.async { [weak self] in
+            self?.enterLivePresentMode()
+        }
     }
 
     // MARK: - MTKViewDelegate
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        cachedDrawableSize = size
+    }
 
     private func noteSemaphoreMiss() {
         recentSemaphoreMisses = min(recentSemaphoreMisses + 1, 8)
         publishBehindFlagIfChanged()
     }
 
-    private func noteSuccessfulPresent() {
+    /// - Parameter contentFrame: true when this present uploaded a new UDP
+    ///   frame. Live mode presents once per content frame; only those count
+    ///   toward the overlay's present FPS so it stays near ~50 Hz when healthy.
+    private func noteSuccessfulPresent(contentFrame: Bool) {
         if recentSemaphoreMisses > 0 {
             recentSemaphoreMisses -= 1
         }
@@ -1358,18 +1710,21 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                 Double(now.uptimeNanoseconds - $0.uptimeNanoseconds)
                     / 1_000_000_000 < 0.15
             } ?? false
-            // ~50 Hz stream → 20 ms gaps. Sustained >~24 ms means the
-            // demand-driven CRT path is losing main-run-loop time to
-            // secondary visualizations even when the GPU semaphore is free.
-            if recentlyFed, gap > (1.0 / 42.0), gap < 0.25 {
+            // Live presents follow panel vsync (~16.7 ms on 60 Hz).
+            if recentlyFed, gap > (1.0 / 45.0), gap < 0.25 {
                 slowPresentStreak = min(slowPresentStreak + 1, 10)
-            } else if gap <= (1.0 / 48.0) {
+                if Self.debug {
+                    NSLog("[render] present gap %.1f ms", gap * 1000)
+                }
+            } else if gap <= (1.0 / 55.0) {
                 slowPresentStreak = max(0, slowPresentStreak - 2)
             }
         }
         lastSuccessfulPresentTime = now
         publishBehindFlagIfChanged()
-        presentCount += 1
+        if contentFrame {
+            presentCount += 1
+        }
         let elapsed = Double(now.uptimeNanoseconds - lastPresentStatsTime.uptimeNanoseconds)
             / 1_000_000_000
         guard elapsed >= 1.0 else { return }
@@ -1377,21 +1732,32 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         presentCount = 0
         lastPresentStatsTime = now
         lastReportedPresentFPS = fps
-        onLoadStats?(fps, isGPUBehind)
+        // Defer off the draw path so SwiftUI overlay updates cannot stall
+        // the next 50 Hz present tick.
+        let reportFPS = fps
+        let behind = isGPUBehind
+        DispatchQueue.main.async { [weak self] in
+            self?.onLoadStats?(reportFPS, behind)
+        }
     }
 
     private func publishBehindFlagIfChanged() {
         let behind = recentSemaphoreMisses >= 2 || slowPresentStreak >= 3
         guard behind != isGPUBehind else { return }
         isGPUBehind = behind
-        onLoadStats?(lastReportedPresentFPS, behind)
+        let reportFPS = lastReportedPresentFPS
+        DispatchQueue.main.async { [weak self] in
+            self?.onLoadStats?(reportFPS, behind)
+        }
     }
 
     func draw(in view: MTKView) {
+        cachedDrawableSize = view.drawableSize
+        if !isLivePresentMode {
+            leaveLivePresentModeIfIdle()
+        }
+
         guard inFlightSemaphore.wait(timeout: .now()) == .success else {
-            // Let the GPU catch up instead of overwriting in-flight textures,
-            // but schedule one deferred redraw so a pending frame is not stuck
-            // until the next UDP packet or RF timer tick.
             noteSemaphoreMiss()
             scheduleDeferredRedraw()
             return
@@ -1409,136 +1775,60 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             self?.inFlightSemaphore.signal()
         }
 
-        // Upload the most recent frame, if any.
         textureLock.lock()
-        let frame = pendingFrame
-        pendingFrame = nil
+        let frames = pendingFrames
+        pendingFrames.removeAll(keepingCapacity: true)
         let resetHistory = resetHistoryOnNextFrame
-        resetHistoryOnNextFrame = false
+        if !frames.isEmpty { resetHistoryOnNextFrame = false }
         let palette = palettePendingBytes
         palettePendingBytes = nil
         textureLock.unlock()
 
+        // Drain UDP frames into history in order so motion blend sees every
+        // PAL step; shade once from the latest pair this vsync.
+        var uploadedContentFrame = false
         if let palette,
            let replacement = Self.makePaletteTexture(
                 device: device, bytes: palette) {
-            // Never mutate a palette texture already referenced by an
-            // in-flight command buffer. Replacing the object keeps the old
-            // texture alive through Metal's command-buffer retention.
             paletteTexture = replacement
         }
-
-        if let frame {
-            if Self.debug {
-                dbgDrawn += 1
-                if dbgDrawn % 100 == 1 {
-                    NSLog("[render] draw: uploading frame %d, drawableSize=%.0fx%.0f", dbgDrawn, view.drawableSize.width, view.drawableSize.height)
-                }
-            }
-            // Rotate to the next texture in the ring before uploading: the
-            // previous one may still be read by an in-flight command buffer.
-            currentTextureIndex = (currentTextureIndex + 1) % indexTextures.count
-            if resetHistory {
-                historyHead = 0
-                historyValidCount = 0
-            }
-            historyHead = (historyHead + 1) % Self.historyFrameCount
-            historyValidCount = min(
-                historyValidCount + 1, Self.historyFrameCount)
-            historyLastUploadUptime = DispatchTime.now().uptimeNanoseconds
-            frame.withUnsafeBytes { raw in
-                indexTextures[currentTextureIndex].replace(
-                    region: MTLRegionMake2D(0, 0, VideoReceiver.width, VideoReceiver.height),
-                    mipmapLevel: 0,
-                    withBytes: raw.baseAddress!,
-                    bytesPerRow: VideoReceiver.width)
-                historyTexture.replace(
-                    region: MTLRegionMake2D(
-                        0, 0, VideoReceiver.width, VideoReceiver.height),
-                    mipmapLevel: 0,
-                    slice: historyHead,
-                    withBytes: raw.baseAddress!,
-                    bytesPerRow: VideoReceiver.width,
-                    bytesPerImage: VideoReceiver.width * VideoReceiver.height)
-            }
+        for (index, frame) in frames.enumerated() {
+            uploadFrameData(frame, resetHistory: resetHistory && index == 0)
+            uploadedContentFrame = true
+            if Self.debug { dbgDrawn += 1 }
         }
 
-        let pipeline: MTLRenderPipelineState
-        switch filterMode {
-        case .sharp: pipeline = sharpPipeline
-        case .smooth: pipeline = smoothPipeline
-        case .crt: pipeline = crtPipeline
-        case .crtTube: pipeline = crtTubePipeline
-        }
-
-        frameIndex &+= 1
-        let scale = computeScale(drawableSize: view.drawableSize)
-        // Both monitors use a nominal 13-inch 4:3 tube (~264.2 mm visible
-        // width). Convert physical dot pitch to destination pixels after
-        // letterboxing; clamp to one RGB triad when the view is too small to
-        // resolve the requested pitch without severe aliasing.
-        let pictureWidthPixels = Float(view.drawableSize.width) * scale.x
-        let maskPitch = max(
-            3.0,
-            monitorDotPitchMillimeters * pictureWidthPixels / 264.2)
-        let now = DispatchTime.now().uptimeNanoseconds
-        let elapsedSinceSourceFrame = historyLastUploadUptime == 0
-            ? 0
-            : Float(now - historyLastUploadUptime) / 1_000_000_000
-        let historyPhase = min(elapsedSinceSourceFrame * 50.0, 100.0)
-        let powerOffProgress: Float
-        if let powerOffEffectStartedAt {
-            let elapsed = Float(now - powerOffEffectStartedAt)
-                / 1_000_000_000
-            powerOffProgress = min(elapsed / 0.9, 1.0)
-        } else {
-            powerOffProgress = 0
-        }
-        var uniforms = Uniforms(scale: scale,
-                                reflection: reflectionEnabled ? 1 : 0,
-                                signal: signalLevel,
-                                time: Float(frameIndex % 3600) / 60.0,
-                                brightness: picture?.brightness ?? 0.5,
-                                contrast: picture?.contrast ?? 0.5,
-                                saturation: picture?.saturation ?? 0.5,
-                                tint: picture?.tint ?? 0.5,
-                                phosphorColor: crtScreenColor.shaderValue,
-                                dirtyGlass: crtDirtyGlass ? 1 : 0,
-                                maskPitch: maskPitch,
-                                historyHead: Float(historyHead),
-                                historyValidCount: Float(historyValidCount),
-                                historyPhase: historyPhase,
-                                powerOff: powerOffProgress,
-                                bezelSurfaceMode: bezelSurfaceMode,
-                                scanlineStrength: optics?.scanlineStrength ?? 0.5,
-                                bloomAmount: optics?.bloomAmount ?? 0.5,
-                                maskIntensity: optics?.maskIntensity ?? 0.5,
-                                barrelDistortion: optics?.barrelDistortion ?? 0.5)
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        encoder.setFragmentTexture(indexTextures[currentTextureIndex], index: 0)
-        encoder.setFragmentTexture(paletteTexture, index: 1)
-        encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
-        encoder.setFragmentTexture(historyTexture, index: 3)
-        encoder.setFragmentSamplerState(filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
-        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        _ = encodeFrame(
+            encoder: encoder,
+            drawableSize: view.drawableSize,
+            frame: nil,
+            resetHistory: false,
+            palette: nil)
         encoder.endEncoding()
 
-        if let shotCompletion = pendingScreenshotCompletion {
-            pendingScreenshotCompletion = nil
-            encodeScreenshotPass(commandBuffer: commandBuffer, pipeline: pipeline, uniforms: uniforms,
-                                 indexTexture: indexTextures[currentTextureIndex],
-                                 drawableSize: view.drawableSize, completion: shotCompletion)
+        textureLock.lock()
+        let shotCompletion = pendingScreenshotCompletion
+        pendingScreenshotCompletion = nil
+        textureLock.unlock()
+        if let shotCompletion {
+            let uniforms = lastEncodedUniforms ?? makeUniforms(drawableSize: view.drawableSize)
+            encodeScreenshotPass(
+                commandBuffer: commandBuffer,
+                pipeline: pipelineForCurrentFilter(),
+                uniforms: uniforms,
+                indexTexture: indexTextures[currentTextureIndex],
+                drawableSize: view.drawableSize,
+                completion: shotCompletion)
         }
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
-        noteSuccessfulPresent()
+        noteSuccessfulPresent(contentFrame: uploadedContentFrame)
     }
 
     deinit {
         animationTimer?.invalidate()
+        livePresentIdleTimer?.invalidate()
     }
 
     private static func makePaletteTexture(
