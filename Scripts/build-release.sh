@@ -112,14 +112,25 @@ notarize_and_staple_app() {
 
 notarize_and_staple_dmg() {
     require_notarize_credentials
+    # notarytool can hang forever at "Conducting pre-submission checks"
+    # when the DMG lives under iCloud Drive (this repo's dist/). Submit a
+    # local copy from /tmp, then copy the stapled file back.
+    local submit_dmg
+    submit_dmg="$(mktemp "${TMPDIR:-/tmp}/stream64-notarize-dmg.XXXXXX").dmg"
+    rm -f "$submit_dmg"
+    cp -f "$DMG_PATH" "$submit_dmg"
+    xattr -cr "$submit_dmg" 2>/dev/null || true
     echo "Submitting DMG for notarization (Apple ID)..."
-    xcrun notarytool submit "$DMG_PATH" \
+    xcrun notarytool submit "$submit_dmg" \
         --apple-id "$APPLE_ID" \
         --team-id "$APPLE_TEAM_ID" \
         --password "$APPLE_APP_SPECIFIC_PASSWORD" \
         --wait
     echo "Stapling notarization ticket to DMG..."
-    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler staple "$submit_dmg"
+    xcrun stapler validate "$submit_dmg"
+    cp -f "$submit_dmg" "$DMG_PATH"
+    rm -f "$submit_dmg"
     xcrun stapler validate "$DMG_PATH"
     spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" \
         || true
