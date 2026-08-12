@@ -2612,6 +2612,30 @@ final class Assembly64FeatureTests: XCTestCase {
             "'/tmp/O'\\''Brien/Stream64.app'")
     }
 
+    func testUpdateInstallReplacementMovesAppIntoPlace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Stream64InstallTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let current = root.appendingPathComponent("Stream64.app", isDirectory: true)
+        let replacement = root.appendingPathComponent("Stream64-new.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: current.appendingPathComponent("marker.txt"))
+        try Data("new".utf8).write(to: replacement.appendingPathComponent("marker.txt"))
+
+        try UpdateService.installReplacement(replacement, over: current)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacement.path))
+        XCTAssertEqual(
+            try String(contentsOf: current.appendingPathComponent("marker.txt"), encoding: .utf8),
+            "new")
+        let leftovers = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".Stream64-backup-") }
+        XCTAssertTrue(leftovers.isEmpty)
+    }
+
     @MainActor
     func testEmbeddedMetalShadersCompile() throws {
         guard MTLCreateSystemDefaultDevice() != nil else {

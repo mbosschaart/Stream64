@@ -372,29 +372,22 @@ final class UpdateService: ObservableObject {
 
             try Self.verifyTeamIdentifier(of: replacement)
             Self.clearQuarantine(at: replacement)
-
-            // Keep the original item's Finder/TCC-facing metadata when
-            // swapping the bundle contents. `.usingNewMetadataOnly` made
-            // each update look like a brand-new app to Local Network
-            // privacy, so discovery permission was lost after install.
-            // Delete the temporary backup immediately — leftover
-            // `.Stream64-backup-*.app` bundles also accumulate as stale
-            // Local Network entries.
-            let backupName = ".Stream64-backup-\(UUID().uuidString).app"
-            let parent = currentApp.deletingLastPathComponent()
-            let backupURL = parent.appendingPathComponent(backupName)
-            _ = try FileManager.default.replaceItemAt(
-                currentApp, withItemAt: replacement, backupItemName: backupName)
-            try? FileManager.default.removeItem(at: backupURL)
-            Self.removeStaleUpdateBackups(in: parent, keeping: backupURL)
+            try Self.installReplacement(replacement, over: currentApp)
 
             // Do NOT open the app while this process is still alive:
             // Launch Services would activate this instance, and the new
             // process would lose the SingleInstanceLock and quit itself —
             // leaving the install sheet spinning forever.
+            //
+            // Also do NOT use NSApp.terminate here: with the update sheet
+            // up, AppKit often never finishes quitting, so the spinner
+            // hangs forever. Schedule a detached waiter, stop local audio,
+            // then hard-exit so the flock drops and the waiter can relaunch.
             Self.isRelaunchingAfterUpdate = true
+            isPresented = false
             try Self.scheduleRelaunchAfterExit(of: currentApp)
-            NSApp.terminate(nil)
+            (NSApp.delegate as? AppDelegate)?.prepareForUpdateRelaunch()
+            exit(EXIT_SUCCESS)
         } catch is CancellationError {
             Self.isRelaunchingAfterUpdate = false
             state = .idle
@@ -405,25 +398,63 @@ final class UpdateService: ObservableObject {
         }
     }
 
-    /// Spawns a detached helper that waits until this PID exits (releasing
-    /// the instance flock), then opens the replacement app.
+    /// Renames the running app aside, moves the replacement into place, then
+    /// deletes the backup. More reliable than `replaceItemAt` while the
+    /// process is still executing from the bundle.
+    nonisolated static func installReplacement(
+        _ replacement: URL,
+        over currentApp: URL
+    ) throws {
+        let parent = currentApp.deletingLastPathComponent()
+        let backupURL = parent.appendingPathComponent(
+            ".Stream64-backup-\(UUID().uuidString).app")
+        removeStaleUpdateBackups(in: parent)
+        try FileManager.default.moveItem(at: currentApp, to: backupURL)
+        do {
+            try FileManager.default.moveItem(at: replacement, to: currentApp)
+        } catch {
+            try? FileManager.default.moveItem(at: backupURL, to: currentApp)
+            throw error
+        }
+        try? FileManager.default.removeItem(at: backupURL)
+        removeStaleUpdateBackups(in: parent)
+    }
+
+    /// Writes a short shell script that backgrounds a waiter, then runs it.
+    /// The waiter survives this process exiting (unlike a foreground
+    /// `Process` child, which can receive SIGHUP and die before relaunch).
     nonisolated static func scheduleRelaunchAfterExit(of appURL: URL) throws {
         let pid = ProcessInfo.processInfo.processIdentifier
         let quotedPath = shellQuote(appURL.path)
         let script = """
-        while /bin/kill -0 \(pid) 2>/dev/null; do /bin/sleep 0.05; done
-        /bin/sleep 0.2
-        exec /usr/bin/open -n \(quotedPath)
+        #!/bin/sh
+        (
+          while /bin/kill -0 \(pid) 2>/dev/null; do
+            /bin/sleep 0.05
+          done
+          /bin/sleep 0.35
+          /usr/bin/open -n \(quotedPath)
+        ) >/dev/null 2>&1 &
         """
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stream64-relaunch-\(pid).sh")
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptURL.path)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
+        process.arguments = [scriptURL.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        // Detach from this process group so AppKit teardown cannot kill the
-        // waiter before it relaunches Stream64.
         process.qualityOfService = .userInitiated
         try process.run()
+        // Outer script only forks the waiter and exits — wait for that.
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw UpdateError.relaunchHelperFailed
+        }
     }
 
     nonisolated static func shellQuote(_ value: String) -> String {
@@ -517,6 +548,7 @@ enum UpdateError: LocalizedError {
     case untrustedSignature
     case appNotWritable
     case appMissingFromArchive
+    case relaunchHelperFailed
 
     var errorDescription: String? {
         switch self {
@@ -533,6 +565,8 @@ enum UpdateError: LocalizedError {
             return "Stream64 cannot replace itself in its current location."
         case .appMissingFromArchive:
             return "The downloaded archive does not contain a Stream64 app."
+        case .relaunchHelperFailed:
+            return "Stream64 could not schedule its relaunch helper."
         }
     }
 }

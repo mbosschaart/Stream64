@@ -9,7 +9,9 @@ struct UpdateSheet: View {
                 Label("Stream64 Updates", systemImage: "arrow.down.circle")
                     .font(.title2.weight(.semibold))
                 Spacer()
-                Button("Close") { updater.dismiss() }
+                if !isInstalling {
+                    Button("Close") { updater.dismiss() }
+                }
             }
 
             content
@@ -17,6 +19,12 @@ struct UpdateSheet: View {
         }
         .padding(24)
         .frame(width: 520, height: 360)
+        .interactiveDismissDisabled(isInstalling)
+    }
+
+    private var isInstalling: Bool {
+        if case .installing = updater.state { return true }
+        return false
     }
 
     @ViewBuilder

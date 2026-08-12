@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.116b — 2026-08-12
+
+### Fixed
+
+- **Install and Relaunch actually exits and relaunches.** The update sheet could stall `NSApp.terminate` forever, and the relaunch helper was a foreground child that could die with the app. Updates now swap via rename, schedule a detached background waiter, stop local audio, and hard-exit so the new build can launch.
+
 ## 0.115b — 2026-08-12
 
 ### Added
