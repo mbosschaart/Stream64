@@ -350,7 +350,8 @@ final class SIDEngine: ObservableObject {
         let config = await UltimateAPIClient(device: session.device).fetchSIDConfiguration()
         configure(with: config)
 
-        debugTraceLease = await session.acquireDebugTrace(mode: .cpu6510Only)
+        let lease = await session.acquireDebugTrace(mode: .cpu6510Only)
+        debugTraceLease = lease
 
         // A subscriber may have dropped its need for register writes
         // again while the two awaits above were in flight (its window
@@ -361,6 +362,14 @@ final class SIDEngine: ObservableObject {
                 self.debugTraceLease = nil
                 await session.releaseDebugTrace(debugTraceLease)
             }
+            registerWritesEnabled = false
+            return
+        }
+
+        // Failed acquire used to leave `registerWritesEnabled == true` with
+        // no lease, so later opens never retried and register-driven modes
+        // stayed blank (common on Founder when debug:start needs settle).
+        guard lease != nil else {
             registerWritesEnabled = false
             return
         }

@@ -26,7 +26,8 @@ final class DisplaySettings: ObservableObject {
     @Published var crtScreenColor: CRTScreenColor { didSet { save() } }
     @Published var crtDirtyGlass: Bool { didSet { save() } }
     @Published var showFPS: Bool { didSet { save() } }
-    @Published var showBezel: Bool { didSet { save() } }
+    /// CRT Tube phosphor / shadow-mask geometry (1702 vs 1084S pitch).
+    /// Physical monitor-case chrome was removed; this only feeds shaders.
     @Published var bezelStyle: BezelChoice { didSet { save() } }
     @Published var bezelReflection: Bool { didSet { save() } }
     // Monitor picture controls (1702 front panel), 0...1, neutral 0.5.
@@ -61,7 +62,8 @@ final class DisplaySettings: ObservableObject {
         var crtScreenColor: CRTScreenColor?
         var crtDirtyGlass: Bool?
         var showFPS: Bool
-        var showBezel: Bool
+        /// Ignored; kept optional so older per-device JSON still decodes.
+        var showBezel: Bool?
         var bezelStyle: BezelChoice
         var bezelReflection: Bool
         var monBrightness: Double
@@ -90,7 +92,6 @@ final class DisplaySettings: ObservableObject {
             crtScreenColor = data.crtScreenColor ?? .color
             crtDirtyGlass = data.crtDirtyGlass ?? false
             showFPS = data.showFPS
-            showBezel = data.showBezel
             bezelStyle = data.bezelStyle
             bezelReflection = data.bezelReflection
             monBrightness = data.monBrightness
@@ -114,7 +115,6 @@ final class DisplaySettings: ObservableObject {
             crtDirtyGlass = defaults.object(
                 forKey: "crtDirtyGlass") as? Bool ?? false
             showFPS = defaults.bool(forKey: "showFPS")
-            showBezel = defaults.bool(forKey: "showBezel")
             bezelStyle = BezelChoice(rawValue: defaults.string(forKey: "bezelStyle") ?? "") ?? .c1702
             bezelReflection = defaults.object(forKey: "bezelReflection") as? Bool ?? true
             monBrightness = defaults.object(forKey: "monBrightness") as? Double ?? 0.5
@@ -145,7 +145,7 @@ final class DisplaySettings: ObservableObject {
             palette: palette, tubeInput: tubeInput,
             crtScreenColor: crtScreenColor,
             crtDirtyGlass: crtDirtyGlass,
-            showFPS: showFPS, showBezel: showBezel,
+            showFPS: showFPS, showBezel: nil,
             bezelStyle: bezelStyle, bezelReflection: bezelReflection,
             monBrightness: monBrightness, monContrast: monContrast,
             monColor: monColor, monTint: monTint,

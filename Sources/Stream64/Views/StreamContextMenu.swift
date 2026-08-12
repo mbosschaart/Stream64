@@ -103,6 +103,21 @@ struct StreamContextMenu: View {
         }
         .disabled(!session.isConnected)
 
+        Button("Drive Bay…", systemImage: "externaldrive") {
+            DriveBayWindowController.show(session: session)
+        }
+        .disabled(!session.isConnected)
+
+        Button("Ultimate Config…", systemImage: "gearshape.2") {
+            UltimateConfigWindowController.show(session: session)
+        }
+        .disabled(!session.isConnected)
+
+        Button("Memory Console…", systemImage: "memorychip") {
+            MemoryConsoleWindowController.show(session: session)
+        }
+        .disabled(!session.isConnected)
+
         if session.supportsDebugFeatures {
             Button("Debug Trace…", systemImage: "waveform.path.ecg") {
                 DebugTraceWindowController.show(session: session)

@@ -312,6 +312,10 @@ final class MemoryHeatmapNSView: NSView {
         repeating: 0,
         count: MemoryHeatmap.addressSpace * 4)
     private var timer: Timer?
+    /// Avoid a ~650 KB heatmap Array copy when nothing changed since the
+    /// last tick (fade still re-paints from the cached snapshot).
+    private var cachedHeatmapSnapshot: MemoryHeatmap.RenderSnapshot?
+    private var cachedHeatmapGeneration: UInt64 = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -438,7 +442,16 @@ final class MemoryHeatmapNSView: NSView {
         guard let heatmap, bounds.width > 0, bounds.height > 0 else { return }
 
         let now = CFAbsoluteTimeGetCurrent()
-        let snapshot = heatmap.renderSnapshot()
+        let generation = heatmap.currentGeneration()
+        let snapshot: MemoryHeatmap.RenderSnapshot
+        if generation == cachedHeatmapGeneration,
+           let cached = cachedHeatmapSnapshot {
+            snapshot = cached
+        } else {
+            snapshot = heatmap.renderSnapshot()
+            cachedHeatmapSnapshot = snapshot
+            cachedHeatmapGeneration = generation
+        }
         let lastAccess = snapshot.lastAccess
         let lastAccessWasRead = snapshot.lastAccessWasRead
         let lastValue = snapshot.lastValue

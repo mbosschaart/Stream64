@@ -318,9 +318,7 @@ struct DeviceEditSheet: View {
             do {
                 let info = try await client.fetchInfo()
                 guard !Task.isCancelled else { return }
-                let description = [info.product, info.firmwareVersion]
-                    .compactMap { $0 }
-                    .joined(separator: " · ")
+                let description = info.connectionDescription
                 testState = .success(description.isEmpty ? "Connected" : description)
             } catch {
                 guard !Task.isCancelled else { return }

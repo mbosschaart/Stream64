@@ -80,10 +80,12 @@ final class DebugTraceViewModel: ObservableObject {
                 self.missedPackets = self.session.debugStreamReceiver.missedPackets
             }
         }
+        // Fire on the main RunLoop directly — nesting `Task { @MainActor }`
+        // on every 200 ms tick can queue behind CRT presents.
         flushTimer = Timer.scheduledTimer(
             withTimeInterval: 0.2, repeats: true
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.flush() }
+            MainActor.assumeIsolated { self?.flush() }
         }
     }
 
@@ -109,8 +111,13 @@ final class DebugTraceViewModel: ObservableObject {
         guard !isPaused else { return }
         pendingLock.lock()
         let snapshot = pendingEntries
+        pendingEntries.removeAll(keepingCapacity: true)
         pendingLock.unlock()
         guard !snapshot.isEmpty else { return }
+        // Memory-map mode only needs the heatmap (updated in the entries
+        // observer) — skip allocating table rows the UI will not show.
+        guard displayMode != .memoryMap else { return }
+        if session.isVideoGPUBehind { return }
         rows = snapshot.suffix(Self.maxDisplayedRows).map { entry in
             nextRowID += 1
             return DebugTraceRow(id: nextRowID, entry: entry)
@@ -631,12 +638,51 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
     private let deviceID: UUID
     private let model: DebugTraceViewModel
 
+    /// UI state preserved when auto-follow retargets the window to another
+    /// machine (frame + display/visualization pickers).
+    private struct FollowSnapshot {
+        var frame: NSRect?
+        var selectedMode: DebugStreamMode
+        var displayMode: DebugTraceDisplayMode
+        var memoryMapVisualization: MemoryMapVisualization
+        var memoryMap3DOptions: MemoryMap3DOptions
+        var fadeDuration: TimeInterval
+    }
+
     static func show(session: DeviceSession) {
         if let existing = windows[session.device.id] {
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }
+        present(session: session, restoring: nil)
+    }
+
+    /// Retarget any open Debug Trace / Memory Map window to `session`.
+    /// Keeps the source window's mode/frame when moving. No-op when none
+    /// are open or the only open window is already on that device.
+    static func followSelectedSession(_ session: DeviceSession) {
+        let open = Array(windows.values)
+        guard !open.isEmpty else { return }
+        if open.count == 1, open[0].deviceID == session.device.id { return }
+
+        let source = open.first { $0.deviceID == session.device.id }
+            ?? open.first { $0.window?.isKeyWindow == true }
+            ?? open[0]
+        let snapshot = source.followSnapshot()
+        for controller in open {
+            controller.window?.close()
+        }
+        present(session: session, restoring: snapshot)
+    }
+
+    private static func present(
+        session: DeviceSession,
+        restoring snapshot: FollowSnapshot?
+    ) {
         let controller = DebugTraceWindowController(session: session)
+        if let snapshot {
+            controller.applyFollowSnapshot(snapshot)
+        }
         windows[session.device.id] = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
@@ -667,6 +713,27 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    private func followSnapshot() -> FollowSnapshot {
+        FollowSnapshot(
+            frame: window?.frame,
+            selectedMode: model.selectedMode,
+            displayMode: model.displayMode,
+            memoryMapVisualization: model.memoryMapVisualization,
+            memoryMap3DOptions: model.memoryMap3DOptions,
+            fadeDuration: model.memoryMapRenderSettings.fadeDuration)
+    }
+
+    private func applyFollowSnapshot(_ snapshot: FollowSnapshot) {
+        model.selectedMode = snapshot.selectedMode
+        model.displayMode = snapshot.displayMode
+        model.memoryMapVisualization = snapshot.memoryMapVisualization
+        model.memoryMap3DOptions = snapshot.memoryMap3DOptions
+        model.memoryMapRenderSettings.fadeDuration = snapshot.fadeDuration
+        if let frame = snapshot.frame {
+            window?.setFrame(frame, display: false)
+        }
+    }
 
     func windowWillClose(_ notification: Notification) {
         model.stop()

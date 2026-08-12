@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.120b — 2026-08-12
+
+### Added
+
+- **Drive Bay** panel — mount/unmount, drive power, 1541/1571/1581 mode, create blank D64/D71/D81 (toolbar + context menu).
+- **Ultimate Config** browser — edit flash config categories beyond the few Network/Debug writes Stream64 already did automatically.
+- **Memory Console** — peek/poke hex dump via `readmem` / `writemem`, dockable beside Debug Trace.
+- **Visualisations auto-follow selected C64** (Settings → General). When on, open SID and Memory Map / Debug Trace windows retarget to the newly selected machine; turn off to keep them pinned. Sound always follows selection.
+- **All Screens toolbar** targets the selected tile (with a clearer green selection border) so multi-device controls stay available without per-tile chrome.
+
+### Fixed
+
+- **C64 Ultimate Founder SID register modes / debug stream.** Founder firmware still reports `firmware_version: "3.14"` (Commodore’s old label for **1.0.0**) and rejects a bare `debug:start` with “Network Host Resolve Error”. Stream64 now shows Founder as **C64 Ultimate Founder · 1.0.0**, starts the debug stream with the same stop→settle→retry path as video, re-arms debug after video recovery, and retries SID register-write enable when the first acquire fails.
+- **Streaming start no longer races itself.** Overlapping connect / sleep / restart paths share a single-flight streaming operation and a session ownership check, so a stale disconnect cannot stop a replacement session’s streams. Debug-trace reconnect also re-checks connection after each await.
+- **Stuck keys after disconnect / focus loss.** `cancelAndRelease` now drains the cancelled matrix worker so a release-all always wins last; logical queue depth uses `count - head`.
+- **Metal upload / history under load.** Only the latest pending frame uploads per draw; phosphor history uses a GPU blit; `VideoReceiver.stop()` resets assembly state; sticky FPS ages out when packets stall; RF mains hum updates only when the video standard changes.
+- **Drive Bay / tool window labels no longer truncate with “…“.** Buttons and menus size to their full titles; tight rows scroll horizontally instead of clipping.
+
+### Improved
+
+- **CRT lite when the GPU is behind.** Amber deep history, bloom, and dirty glass drop back under GPU-behind pressure so the live picture keeps up.
+- **Fewer main-thread hops and allocations on the video path.** `submitFrame` only hops to main when entering live present; frame publish uses a buffer pool; history no longer does a second CPU texture replace.
+- **SID / Debug Trace / Memory Map flush less work.** Chronological SID sample caches, generation-gated heatmap snapshots, and Debug Trace drain/skip rules cut Canvas and table churn.
+
+### Changed
+
+- Removed dormant physical monitor-case UI (`showBezel` / `MonitorBezelView`). CRT Tube still uses 1702/1084S phosphor pitch and bezel-reflection shaders.
+- `SessionManager` lives in its own source file; XCTest suite split into Update / Input / VideoAudio / SID / Commander files.
 
 ## 0.119b — 2026-08-12
 

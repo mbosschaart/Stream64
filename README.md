@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.119b-purple)
+![Version](https://img.shields.io/badge/version-0.120b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -28,8 +28,9 @@ Designed by Martijn Bosschaart, 2026.
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
+- **Drive Bay, Ultimate Config, Memory Console** — mount/unmount and power IEC drives, switch 1541/1571/1581 mode, create blank D64/D71/D81 images; browse/edit flash config categories; DMA peek/poke hex dump via `readmem`/`writemem` (toolbar + stream context menu)
 - **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
-- **SID Oscilloscope** (Ultimate 64/Elite only) — a 19-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 19 at once, auto-tiled into a grid, via "Open All in Grid"), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
+- **SID Oscilloscope** (Ultimate 64/Elite only) — a 19-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 19 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -131,9 +132,9 @@ independent capability probing.
 Three more capability-probed windows expose facilities documented in the \
 [Ultimate data-streams](https://1541u-documentation.readthedocs.io/en/latest/data_streams.html) \
 and [API](https://1541u-documentation.readthedocs.io/en/latest/api/api_calls.html) \
-docs. All three are U64/U64 Elite only — Stream64 probes `GET /v1/machine:debugreg` \
-once connected and hides the menu entries entirely on hardware that returns an \
-error (Ultimate-II+, C64 Ultimate).
+docs. Stream64 probes `GET /v1/machine:debugreg` once connected and only shows \
+the menu entries when the register works (Ultimate 64/Elite and C64 Ultimate \
+Founder with a live debug stream; typical Ultimate-II+ stays hidden).
 
 ### Debug Trace
 
@@ -299,10 +300,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.119b BUILD_NUMBER=119 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.120b BUILD_NUMBER=120 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.119b BUILD_NUMBER=119 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.120b BUILD_NUMBER=120 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -425,11 +426,12 @@ Sources/Stream64/
     ├── UpdateSheet.swift          Update status, release notes, and install flow
     ├── PictureControlsView.swift, OnScreenKeyboardView.swift
     │                            Floating picture controls and C64 keyboard
-    ├── MonitorBezelView.swift   Retained for future 1702/1084S reintroduction
+    ├── DriveBayView.swift, UltimateConfigView.swift, MemoryConsoleView.swift
+    │                            Drive Bay, flash Config browser, Memory Console
     ├── SplashView.swift, AboutView.swift  Branded launch/About windows
     └── HelpView.swift           In-app documentation window
-Tests/Stream64Tests/             AQL/CSDB, persistence, transfer, archive, stream,
-                                 SID, CRT, lock, and Metal regression tests
+Tests/Stream64Tests/             Split by domain: Update, Input, VideoAudio, SID,
+                                 Commander (+ shared TestSupport)
 Scripts/build-release.sh         arm64/x86_64 Developer ID + notarized ZIP/DMG
 Packaging/Info.plist             macOS application-bundle metadata
 Package.swift / Package.resolved SwiftPM targets, ZIPFoundation and pinned resolution

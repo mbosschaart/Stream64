@@ -174,13 +174,14 @@ final class DeviceDiscoveryService: ObservableObject {
             return result?.isEmpty == false ? result : nil
         }
 
-        let product = cleaned(info.product)
+        let product = cleaned(info.displayProduct) ?? cleaned(info.product)
         let uniqueID = cleaned(info.uniqueId)
         guard product != nil || uniqueID != nil else { return nil }
         return DiscoveredDevice(
             host: host,
             product: product,
-            firmwareVersion: cleaned(info.firmwareVersion),
+            firmwareVersion: cleaned(info.displayFirmwareVersion)
+                ?? cleaned(info.firmwareVersion),
             hostname: cleaned(info.hostname),
             uniqueID: uniqueID
         )

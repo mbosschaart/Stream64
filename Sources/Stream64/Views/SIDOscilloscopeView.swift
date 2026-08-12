@@ -150,6 +150,9 @@ struct SIDVoiceChannel: Identifiable {
         envelopeSamples[writeIndex] = envelope
         writeIndex = (writeIndex + 1) % samples.count
         peakLevel = max(peakLevel * Self.peakDecayPerSample, abs(sample))
+        // Invalidate chronological caches (class boxes survive struct copies).
+        sampleOrderCache.index = -1
+        envelopeOrderCache.index = -1
     }
 
     /// Clears all reconstructed state back to power-on defaults —
@@ -168,6 +171,10 @@ struct SIDVoiceChannel: Identifiable {
         envelopeSamples = Array(repeating: 0, count: envelopeSamples.count)
         noteHistory = Array(repeating: (false, 0), count: noteHistory.count)
         peakLevel = 0
+        sampleOrderCache.index = -1
+        envelopeOrderCache.index = -1
+        sampleOrderCache.values = []
+        envelopeOrderCache.values = []
     }
 
     mutating func pushNoteHistory() {
@@ -175,15 +182,36 @@ struct SIDVoiceChannel: Identifiable {
         noteHistoryWriteIndex = (noteHistoryWriteIndex + 1) % noteHistory.count
     }
 
+    /// Chronological-order caches. Class boxes so a non-mutating getter can
+    /// fill them, and so `channels = workingChannels` struct copies share
+    /// the cache for the same voice.
+    private final class OrderCache {
+        var values: [Float] = []
+        var index: Int = -1
+    }
+    private var sampleOrderCache = OrderCache()
+    private var envelopeOrderCache = OrderCache()
+
     /// Samples in chronological order (oldest first) for a left-to-right
     /// scrolling trace — `writeIndex` marks the oldest slot (the next one
     /// to be overwritten).
     var orderedSamples: [Float] {
-        Array(samples[writeIndex...]) + Array(samples[..<writeIndex])
+        if sampleOrderCache.index == writeIndex { return sampleOrderCache.values }
+        sampleOrderCache.values =
+            Array(samples[writeIndex...]) + Array(samples[..<writeIndex])
+        sampleOrderCache.index = writeIndex
+        return sampleOrderCache.values
     }
 
     var orderedEnvelopeSamples: [Float] {
-        Array(envelopeSamples[writeIndex...]) + Array(envelopeSamples[..<writeIndex])
+        if envelopeOrderCache.index == writeIndex {
+            return envelopeOrderCache.values
+        }
+        envelopeOrderCache.values =
+            Array(envelopeSamples[writeIndex...])
+            + Array(envelopeSamples[..<writeIndex])
+        envelopeOrderCache.index = writeIndex
+        return envelopeOrderCache.values
     }
 
     var orderedNoteHistory: [(gate: Bool, frequencyHz: Double)] {
@@ -774,6 +802,16 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             }
     }
 
+    /// Layout of every open SID window across all devices (for auto-follow).
+    static func currentLayoutAllDevices() -> [SIDWindowLayoutEntry] {
+        windows.values.compactMap { controller -> SIDWindowLayoutEntry? in
+            guard let frame = controller.window?.frame else { return nil }
+            return SIDWindowLayoutEntry(
+                mode: controller.model.visualizationMode.rawValue,
+                frame: frame)
+        }
+    }
+
     /// Closes every currently open SID Oscilloscope window for
     /// `deviceID`. Snapshots the matching controllers into a plain array
     /// first — closing a window synchronously fires `windowWillClose`,
@@ -785,6 +823,28 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         for controller in matching {
             controller.window?.close()
         }
+    }
+
+    /// Closes every open SID Oscilloscope window, regardless of device.
+    static func closeAll() {
+        let all = Array(windows.values)
+        for controller in all {
+            controller.window?.close()
+        }
+    }
+
+    /// Retarget every open SID visualization to `session`, keeping modes and
+    /// frames. No-op when nothing is open or everything already follows
+    /// that device. Used by Settings → General auto-follow.
+    static func followSelectedSession(_ session: DeviceSession) {
+        let entries = currentLayoutAllDevices()
+        guard !entries.isEmpty else { return }
+        let alreadyOnTarget = windows.values.allSatisfy {
+            $0.deviceID == session.device.id
+        }
+        guard !alreadyOnTarget else { return }
+        closeAll()
+        restoreLayout(entries, session: session)
     }
 
     /// Re-opens one window per saved entry at its saved frame and mode,

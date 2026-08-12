@@ -1,129 +1,5 @@
 import SwiftUI
 
-/// Caches one live DeviceSession per device. Held in @StateObject so the
-/// cache survives both body re-evaluation AND recreation of the view struct
-/// (which happens whenever any observed object publishes) — a plain `let`
-/// property would silently start a second session per device, splitting the
-/// UI and the streams across different session objects.
-@MainActor
-final class SessionManager: ObservableObject {
-    private var sessions: [UUID: DeviceSession] = [:]
-    private var audibleID: UUID?
-    let airPlayOutput = AirPlayOutputController()
-
-    init() {
-        airPlayOutput.onExternalPlaybackChanged = { [weak self] active in
-            self?.applyExternalOutputSuppression(active)
-        }
-    }
-
-    func session(for device: UltimateDevice, settings: AppSettings) -> DeviceSession {
-        if let existing = sessions[device.id], existing.device == device {
-            return existing
-        }
-        if let existing = sessions.removeValue(forKey: device.id) {
-            // Defensive fallback for an update that bypassed the normal
-            // async edit flow: release local ports immediately, but do not
-            // issue delayed remote stop commands that could kill the new
-            // session's streams.
-            existing.prepareForEviction()
-            Task {
-                await existing.disconnect(stopRemoteStreams: false)
-            }
-        }
-        let session = DeviceSession(device: device, settings: settings)
-        sessions[device.id] = session
-        session.audioReceiver.muted = device.id != audibleID
-        session.audioReceiver.externalOutputSuppressed =
-            airPlayOutput.externalOutputActive && device.id == audibleID
-        if device.id == audibleID {
-            airPlayOutput.setSource(session.audioReceiver)
-        }
-        return session
-    }
-
-    /// Complete remote shutdown before removing the cache entry. The device
-    /// remains visible while this awaits, preventing remove/re-add or edit
-    /// from creating a replacement whose newly-started streams are then
-    /// stopped by the old session's delayed cleanup.
-    func removeSession(
-        id: UUID,
-        clearAudibleSelection: Bool = true
-    ) async {
-        guard let session = sessions[id] else { return }
-        session.prepareForEviction()
-        await session.disconnect()
-        guard sessions[id] === session else { return }
-        sessions.removeValue(forKey: id)
-        if clearAudibleSelection, audibleID == id {
-            audibleID = nil
-            airPlayOutput.setSource(nil)
-        }
-    }
-
-    var cachedSessionCount: Int { sessions.count }
-    func hasCachedSession(id: UUID) -> Bool { sessions[id] != nil }
-
-    /// Audio policy: exactly one device is audible — the one on screen (or
-    /// selected, in the grid). Background sessions keep streaming muted.
-    func muteAll(except audibleID: UUID?) {
-        self.audibleID = audibleID
-        for (id, session) in sessions {
-            session.audioReceiver.muted = id != audibleID
-            session.audioReceiver.externalOutputSuppressed =
-                airPlayOutput.externalOutputActive && id == audibleID
-        }
-        airPlayOutput.setSource(
-            audibleID.flatMap { sessions[$0]?.audioReceiver })
-    }
-
-    private func applyExternalOutputSuppression(_ active: Bool) {
-        for (id, session) in sessions {
-            session.audioReceiver.externalOutputSuppressed =
-                active && id == audibleID
-        }
-    }
-
-    func applyGlobalVolume(_ volume: Float) {
-        for session in sessions.values {
-            session.audioReceiver.volume = volume
-        }
-    }
-
-    func applyAudioOutputDeviceUID(_ uid: String) {
-        for session in sessions.values {
-            session.audioReceiver.preferredOutputDeviceUID = uid
-        }
-    }
-
-    /// Immediate local teardown for app quit — stops AirPlay and every
-    /// receiver/engine before any remote REST work, so music cannot keep
-    /// playing while `disconnect` awaits an unreachable Ultimate.
-    func prepareForAppTermination() {
-        airPlayOutput.stopAirPlay()
-        audibleID = nil
-        for session in sessions.values {
-            session.prepareForEviction()
-        }
-    }
-
-    func disconnectAll() async {
-        prepareForAppTermination()
-        let currentSessions = Array(sessions.values)
-        sessions.removeAll()
-        for session in currentSessions {
-            await session.disconnect(waitForInputRelease: false)
-        }
-    }
-
-    /// Multi Drop: load a file on every connected session at once.
-    func loadFileOnAllConnected(_ url: URL) {
-        for session in sessions.values where session.isConnected {
-            Task { await session.loadFile(at: url) }
-        }
-    }
-}
-
 struct ContentView: View {
     @EnvironmentObject var deviceStore: DeviceStore
     @EnvironmentObject var settings: AppSettings
@@ -168,7 +44,13 @@ struct ContentView: View {
         // the mode or selection changes; sessions created later respect it
         // via the same calls in the grid/pane task handlers.
         .onChange(of: showAllScreens) { applyAudioPolicy() }
-        .onChange(of: deviceStore.selectedDeviceID) { applyAudioPolicy() }
+        .onChange(of: deviceStore.selectedDeviceID) {
+            applyAudioPolicy()
+            applyVisualizationFollowPolicy()
+        }
+        .onChange(of: settings.visualizationsAutoFollowSelected) {
+            applyVisualizationFollowPolicy()
+        }
         .onChange(of: settings.volume) {
             sessionManager.applyGlobalVolume(Float(settings.volume))
         }
@@ -336,6 +218,16 @@ struct ContentView: View {
         sessionManager.muteAll(except: deviceStore.selectedDeviceID)
     }
 
+    /// Retarget open SID / Memory Map visualizations when the setting is on.
+    /// Sound always follows via `applyAudioPolicy` regardless of this flag.
+    private func applyVisualizationFollowPolicy() {
+        guard settings.visualizationsAutoFollowSelected,
+              let device = deviceStore.selectedDevice else { return }
+        let session = sessionManager.session(for: device, settings: settings)
+        SIDOscilloscopeWindowController.followSelectedSession(session)
+        DebugTraceWindowController.followSelectedSession(session)
+    }
+
     private var allScreensToggle: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             Toggle(isOn: $showAllScreens) {
@@ -462,46 +354,107 @@ struct MultiViewerGrid: View {
     @EnvironmentObject var deviceStore: DeviceStore
     @EnvironmentObject var settings: AppSettings
     @AppStorage("showAllScreens") private var showAllScreens = true
+    @State private var showPowerOffConfirmation = false
 
     private let columns = [GridItem(.adaptive(minimum: 420, maximum: 900), spacing: 12)]
 
+    /// Toolbar / audio / joystick target: the actively selected tile
+    /// (falls back to the first device so the bar is never empty).
+    private var activeDevice: UltimateDevice? {
+        deviceStore.selectedDevice ?? deviceStore.devices.first
+    }
+
+    private var activeSession: DeviceSession? {
+        guard let device = activeDevice else { return nil }
+        return sessionManager.session(for: device, settings: settings)
+    }
+
     var body: some View {
+        gridContent
+            .background(Color(nsColor: .windowBackgroundColor))
+            .navigationTitle("All Screens")
+            .navigationSubtitle(selectionSubtitle)
+            .toolbar { selectedDeviceToolbar }
+            .confirmationDialog(
+                "Power off \(activeDevice?.name ?? "device")?",
+                isPresented: $showPowerOffConfirmation
+            ) {
+                Button("Power Off", role: .destructive) {
+                    guard let session = activeSession else { return }
+                    Task { await session.powerOff() }
+                }
+            }
+            .onAppear(perform: ensureSelectionAndInputTarget)
+            .onChange(of: deviceStore.selectedDeviceID) {
+                if let session = activeSession {
+                    GameControllerManager.shared.setTarget(session.input)
+                }
+            }
+    }
+
+    private var selectionSubtitle: String {
+        activeDevice.map { "Selected: \($0.name)" } ?? ""
+    }
+
+    @ViewBuilder
+    private var gridContent: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(deviceStore.devices) { device in
-                    let session = sessionManager.session(for: device, settings: settings)
-                    let isSelected = deviceStore.selectedDeviceID == device.id
-                    ViewerTile(session: session,
-                               isSelected: isSelected,
-                               multiDrop: { url in
-                                   sessionManager.loadFileOnAllConnected(url)
-                               })
-                        .aspectRatio(4.0 / 3.0, contentMode: .fit)
-                        .onTapGesture(count: 2) {
-                            deviceStore.selectedDeviceID = device.id
-                            showAllScreens = false
-                        }
-                        .onTapGesture {
-                            deviceStore.selectedDeviceID = device.id
-                            GameControllerManager.shared.setTarget(
-                                session.input)
-                        }
-                        // Muting is centralized in ContentView.applyAudioPolicy;
-                        // apply here too for sessions that connect after the
-                        // policy last ran.
-                        .onAppear {
-                            sessionManager.muteAll(
-                                except: deviceStore.selectedDeviceID)
-                        }
+                    gridTile(for: device)
                 }
             }
             .padding(12)
         }
-        // No custom background: the standard window background matches the
-        // sidebar and toolbar in both appearances. The tiles carry their own
-        // black fill.
-        .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("All Screens")
+    }
+
+    @ViewBuilder
+    private func gridTile(for device: UltimateDevice) -> some View {
+        let session = sessionManager.session(for: device, settings: settings)
+        let isSelected = deviceStore.selectedDeviceID == device.id
+        ViewerTile(
+            session: session,
+            isSelected: isSelected,
+            multiDrop: { url in
+                sessionManager.loadFileOnAllConnected(url)
+            })
+            .aspectRatio(4.0 / 3.0, contentMode: .fit)
+            .onTapGesture(count: 2) {
+                deviceStore.selectedDeviceID = device.id
+                showAllScreens = false
+            }
+            .onTapGesture {
+                deviceStore.selectedDeviceID = device.id
+                GameControllerManager.shared.setTarget(session.input)
+            }
+            .onAppear {
+                sessionManager.muteAll(except: deviceStore.selectedDeviceID)
+            }
+    }
+
+    @ToolbarContentBuilder
+    private var selectedDeviceToolbar: some ToolbarContent {
+        if let session = activeSession {
+            ViewerSessionToolbar(
+                session: session,
+                showOnScreenKeyboard: nil,
+                onRequestPowerOff: {
+                    if settings.confirmDestructiveActions {
+                        showPowerOffConfirmation = true
+                    } else {
+                        Task { await session.powerOff() }
+                    }
+                })
+        }
+    }
+
+    private func ensureSelectionAndInputTarget() {
+        if deviceStore.selectedDeviceID == nil {
+            deviceStore.selectedDeviceID = deviceStore.devices.first?.id
+        }
+        if let session = activeSession {
+            GameControllerManager.shared.setTarget(session.input)
+        }
     }
 }
 
@@ -610,7 +563,7 @@ private struct ViewerTileContent: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(dropBorderColor, lineWidth: isDropTargeted || isSelected ? 2 : 1)
+                .strokeBorder(dropBorderColor, lineWidth: tileBorderWidth)
         )
         .dropDestination(for: URL.self) { urls, _ in
             let accepted = urls.filter {
@@ -634,9 +587,17 @@ private struct ViewerTileContent: View {
         }
     }
 
+    /// Thick green ring for the active tile so selection is obvious in a
+    /// crowded grid; drop-target keeps the accent highlight.
+    private var tileBorderWidth: CGFloat {
+        if isDropTargeted { return 3 }
+        if isSelected { return 4 }
+        return 1
+    }
+
     private var dropBorderColor: Color {
         if isDropTargeted { return .accentColor }
-        return isSelected ? Color.accentColor : .white.opacity(0.15)
+        return isSelected ? Color.green : .white.opacity(0.15)
     }
 
     private var dropHighlight: some View {
@@ -903,10 +864,9 @@ struct ViewerPane: View {
 }
 
 private struct ViewerPaneSessionContent: View {
-    @Environment(\.openWindow) private var openWindow
     @ObservedObject var session: DeviceSession
-    /// This device's own rendering settings — observed so toolbar pickers
-    /// and the video refresh when they change.
+    /// This device's own rendering settings — observed so the video host
+    /// refreshes when display prefs change. Toolbar observes its own copy.
     @ObservedObject var display: DisplaySettings
     /// Deliberately NOT `@ObservedObject`: joystick/matrix traffic used to
     /// republish `InputSettings` often enough to rebuild this whole host
@@ -924,12 +884,6 @@ private struct ViewerPaneSessionContent: View {
         self.display = session.display
         self.isFullscreen = isFullscreen
         self.multiDrop = multiDrop
-    }
-
-    /// Binding into the per-device display settings for toolbar controls.
-    private func displayBinding<T>(_ keyPath: ReferenceWritableKeyPath<DisplaySettings, T>) -> Binding<T> {
-        Binding(get: { display[keyPath: keyPath] },
-                set: { display[keyPath: keyPath] = $0 })
     }
 
     var body: some View {
@@ -965,7 +919,18 @@ private struct ViewerPaneSessionContent: View {
         } isTargeted: { targeted in
             isDropTargeted = targeted
         }
-        .toolbar { toolbarContent }
+        .toolbar {
+            ViewerSessionToolbar(
+                session: session,
+                showOnScreenKeyboard: $showOnScreenKeyboard,
+                onRequestPowerOff: {
+                    if settings.confirmDestructiveActions {
+                        showPowerOffConfirmation = true
+                    } else {
+                        Task { await session.powerOff() }
+                    }
+                })
+        }
         .navigationTitle(session.device.name)
         .navigationSubtitle(subtitle)
         .task {
@@ -1122,11 +1087,6 @@ private struct ViewerPaneSessionContent: View {
         .animation(.easeInOut(duration: 0.2), value: session.transferStatus)
     }
 
-    /// The input-signal modes only affect the CRT filters.
-    private var isCRTFilter: Bool {
-        display.filterMode == .crt || display.filterMode == .crtTube
-    }
-
     private var subtitle: String {
         switch session.state {
         case .connected(let info):
@@ -1138,24 +1098,61 @@ private struct ViewerPaneSessionContent: View {
         }
     }
 
+}
+
+/// Shared viewer toolbar used by single-device `ViewerPane` and the All
+/// Screens grid. Always targets one concrete `DeviceSession` — in grid
+/// mode that is the actively selected tile.
+struct ViewerSessionToolbar: ToolbarContent {
+    @ObservedObject var session: DeviceSession
+    @ObservedObject private var display: DisplaySettings
+    @EnvironmentObject private var settings: AppSettings
+    @Environment(\.openWindow) private var openWindow
+    /// When nil (All Screens grid), the on-screen keyboard toggle is omitted
+    /// — there is no below-tile chrome to host it.
+    var showOnScreenKeyboard: Binding<Bool>?
+    let onRequestPowerOff: () -> Void
+
+    init(
+        session: DeviceSession,
+        showOnScreenKeyboard: Binding<Bool>?,
+        onRequestPowerOff: @escaping () -> Void
+    ) {
+        self.session = session
+        self.display = session.display
+        self.showOnScreenKeyboard = showOnScreenKeyboard
+        self.onRequestPowerOff = onRequestPowerOff
+    }
+
+    private func displayBinding<T>(
+        _ keyPath: ReferenceWritableKeyPath<DisplaySettings, T>
+    ) -> Binding<T> {
+        Binding(
+            get: { display[keyPath: keyPath] },
+            set: { display[keyPath: keyPath] = $0 })
+    }
+
+    private var isCRTFilter: Bool {
+        display.filterMode == .crt || display.filterMode == .crtTube
+    }
+
     @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
+    var body: some ToolbarContent {
         ToolbarItemGroup {
-            // Connection toggle
             if session.isConnected {
                 Button {
                     Task { await session.disconnect() }
                 } label: {
                     Label("Disconnect", systemImage: "bolt.slash")
                 }
-                .help("Disconnect")
+                .help("Disconnect \(session.device.name)")
             } else {
                 Button {
                     Task { await session.connect() }
                 } label: {
                     Label("Connect", systemImage: "bolt")
                 }
-                .help("Connect")
+                .help("Connect \(session.device.name)")
             }
 
             Divider()
@@ -1166,7 +1163,7 @@ private struct ViewerPaneSessionContent: View {
                 } label: {
                     Label("Stop Streaming", systemImage: "stop.circle")
                 }
-                .help("Stop the video/audio streams (the connection stays up)")
+                .help("Stop video/audio for \(session.device.name)")
                 .disabled(!session.isConnected)
             } else {
                 Button {
@@ -1174,7 +1171,7 @@ private struct ViewerPaneSessionContent: View {
                 } label: {
                     Label("Start Streaming", systemImage: "dot.radiowaves.left.and.right")
                 }
-                .help("Ask the Ultimate to stream to this Mac")
+                .help("Ask \(session.device.name) to stream to this Mac")
                 .disabled(!session.isConnected)
             }
 
@@ -1183,7 +1180,7 @@ private struct ViewerPaneSessionContent: View {
             } label: {
                 Label("Reset", systemImage: "arrow.counterclockwise")
             }
-            .help("Reset the C64")
+            .help("Reset \(session.device.name)")
             .disabled(!session.isConnected)
 
             Button {
@@ -1191,7 +1188,7 @@ private struct ViewerPaneSessionContent: View {
             } label: {
                 Label("Reboot", systemImage: "power.circle")
             }
-            .help("Reboot the Ultimate")
+            .help("Reboot \(session.device.name)")
             .disabled(!session.isConnected)
 
             Button {
@@ -1200,7 +1197,9 @@ private struct ViewerPaneSessionContent: View {
                 Label(session.isPaused ? "Resume" : "Pause",
                       systemImage: session.isPaused ? "play.fill" : "pause.fill")
             }
-            .help(session.isPaused ? "Resume the machine" : "Pause the machine")
+            .help(session.isPaused
+                  ? "Resume \(session.device.name)"
+                  : "Pause \(session.device.name)")
             .disabled(!session.isConnected)
 
             Button {
@@ -1208,19 +1207,13 @@ private struct ViewerPaneSessionContent: View {
             } label: {
                 Label("Ultimate Menu", systemImage: "terminal")
             }
-            .help("Open the Ultimate Menu (remote, without interrupting the C64)")
+            .help("Open the Ultimate Menu for \(session.device.name)")
             .disabled(!session.isConnected)
 
-            Button {
-                if settings.confirmDestructiveActions {
-                    showPowerOffConfirmation = true
-                } else {
-                    Task { await session.powerOff() }
-                }
-            } label: {
+            Button(action: onRequestPowerOff) {
                 Label("Power Off", systemImage: "power")
             }
-            .help("Power off the machine")
+            .help("Power off \(session.device.name)")
             .disabled(!session.isConnected)
 
             Divider()
@@ -1232,10 +1225,12 @@ private struct ViewerPaneSessionContent: View {
                   ? "Keyboard input is sent to the C64 (click to turn off)"
                   : "Keyboard input stays on the Mac (click to send it to the C64)")
 
-            Toggle(isOn: $showOnScreenKeyboard) {
-                Label("On-Screen Keyboard", systemImage: "keyboard.badge.ellipsis")
+            if let showOnScreenKeyboard {
+                Toggle(isOn: showOnScreenKeyboard) {
+                    Label("On-Screen Keyboard", systemImage: "keyboard.badge.ellipsis")
+                }
+                .help("Show the on-screen C64 keyboard")
             }
-            .help("Show the on-screen C64 keyboard")
 
             JoystickToolbarControls(input: session.input.settings)
 
@@ -1246,14 +1241,14 @@ private struct ViewerPaneSessionContent: View {
                     Text(mode.rawValue).tag(mode)
                 }
             }
-            .help("Video scaling mode")
+            .help("Video scaling for \(session.device.name)")
 
             Picker("Filter", selection: displayBinding(\.filterMode)) {
                 ForEach(FilterMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
-            .help("Video rendering filter")
+            .help("Video filter for \(session.device.name)")
 
             Picker("Input", selection: displayBinding(\.tubeInput)) {
                 ForEach(TubeInput.allCases) { input in
@@ -1261,7 +1256,7 @@ private struct ViewerPaneSessionContent: View {
                 }
             }
             .help(isCRTFilter
-                  ? "CRT input signal (affects picture, and sound in RF mode)"
+                  ? "CRT input signal for \(session.device.name)"
                   : "CRT input signal — only applies to the CRT filters")
             .disabled(!isCRTFilter)
 
@@ -1271,7 +1266,7 @@ private struct ViewerPaneSessionContent: View {
                 }
             }
             .help(isCRTFilter
-                  ? "CRT screen phosphor color"
+                  ? "CRT screen phosphor for \(session.device.name)"
                   : "Screen color — only applies to the CRT filters")
             .disabled(!isCRTFilter)
 
@@ -1279,7 +1274,7 @@ private struct ViewerPaneSessionContent: View {
                 Label("Dirty Glass", systemImage: "aqi.medium")
             }
             .help(isCRTFilter
-                  ? "Simulate years of dust, grime, smudges and moisture on the tube"
+                  ? "Dirty glass on \(session.device.name)"
                   : "Dirty glass — only applies to the CRT filters")
             .disabled(!isCRTFilter)
 
@@ -1292,7 +1287,7 @@ private struct ViewerPaneSessionContent: View {
                         systemImage: "slider.horizontal.3"
                     )
                 }
-                .help("Adjust brightness, color, tint, and contrast")
+                .help("Picture controls for \(session.device.name)")
             }
 
             Button {
@@ -1300,7 +1295,7 @@ private struct ViewerPaneSessionContent: View {
             } label: {
                 Label("Save Screenshot", systemImage: "camera")
             }
-            .help("Save the current frame as a PNG")
+            .help("Screenshot \(session.device.name)")
             .disabled(!session.isConnected)
 
             Button {
@@ -1316,6 +1311,30 @@ private struct ViewerPaneSessionContent: View {
                 Label("File Manager", systemImage: "rectangle.split.2x1")
             }
             .help("Browse and transfer files between this Mac and the Ultimate")
+
+            Button {
+                DriveBayWindowController.show(session: session)
+            } label: {
+                Label("Drive Bay", systemImage: "externaldrive")
+            }
+            .help("Drive Bay for \(session.device.name)")
+            .disabled(!session.isConnected)
+
+            Button {
+                UltimateConfigWindowController.show(session: session)
+            } label: {
+                Label("Ultimate Config", systemImage: "gearshape.2")
+            }
+            .help("Flash config for \(session.device.name)")
+            .disabled(!session.isConnected)
+
+            Button {
+                MemoryConsoleWindowController.show(session: session)
+            } label: {
+                Label("Memory Console", systemImage: "memorychip")
+            }
+            .help("Memory Console for \(session.device.name)")
+            .disabled(!session.isConnected)
 
             Button {
                 NSApp.keyWindow?.toggleFullScreen(nil)

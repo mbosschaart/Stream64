@@ -56,6 +56,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     /// consecutive frames (1-frame delay) so scrolltext stays continuous.
     /// NTSC (~60 Hz) matches typical panels — hard cuts, no blend.
     private var isLivePresentMode = false
+    /// Mirrors live mode for the UDP thread so `submitFrame` only hops to
+    /// main when *entering* live present (not on every PAL/NTSC frame).
+    private var livePresentArmed = false
     /// Leave live mode shortly after the stream goes quiet so idle viewers
     /// do not keep burning CRT shaders at refresh rate.
     private static let livePresentIdleSeconds: Double = 0.18
@@ -1365,6 +1368,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         } ?? false
         guard !recentlyFed else { return }
         isLivePresentMode = false
+        textureLock.lock()
+        livePresentArmed = false
+        textureLock.unlock()
         livePresentIdleTimer?.invalidate()
         livePresentIdleTimer = nil
         guard let renderView else { return }
@@ -1421,6 +1427,12 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         } else {
             powerOffProgress = 0
         }
+        // When the CRT path is behind (SID / 3D / multi-viewer), drop the
+        // most expensive fragment work so presents can catch up.
+        let lite = isGPUBehind
+        let bloom = optics?.bloomAmount ?? 0.5
+        let histCount = lite
+            ? min(historyValidCount, 2) : historyValidCount
         return Uniforms(scale: scale,
                         reflection: reflectionEnabled ? 1 : 0,
                         signal: signalLevel,
@@ -1430,18 +1442,18 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                         saturation: picture?.saturation ?? 0.5,
                         tint: picture?.tint ?? 0.5,
                         phosphorColor: crtScreenColor.shaderValue,
-                        dirtyGlass: crtDirtyGlass ? 1 : 0,
+                        dirtyGlass: (crtDirtyGlass && !lite) ? 1 : 0,
                         maskPitch: maskPitch,
                         historyHead: Float(historyHead),
-                        historyValidCount: Float(historyValidCount),
+                        historyValidCount: Float(histCount),
                         historyPhase: historyPhase,
                         powerOff: powerOffProgress,
                         bezelSurfaceMode: bezelSurfaceMode,
                         scanlineStrength: optics?.scanlineStrength ?? 0.5,
-                        bloomAmount: optics?.bloomAmount ?? 0.5,
+                        bloomAmount: lite ? min(bloom, 0.35) : bloom,
                         maskIntensity: optics?.maskIntensity ?? 0.5,
                         barrelDistortion: optics?.barrelDistortion ?? 0.5,
-                        motionBlend: motionBlendFactor(nowNs: now))
+                        motionBlend: lite ? 1 : motionBlendFactor(nowNs: now))
     }
 
     /// Upload palette/frame and encode the fullscreen pass. Does not end the
@@ -1460,20 +1472,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             paletteTexture = replacement
         }
 
-        let uploadedContentFrame: Bool
-        if let frame {
-            uploadedContentFrame = true
-            if Self.debug {
-                dbgDrawn += 1
-                if dbgDrawn % 100 == 1 {
-                    NSLog("[render] draw: uploading frame %d, drawableSize=%.0fx%.0f",
-                          dbgDrawn, drawableSize.width, drawableSize.height)
-                }
-            }
-            uploadFrameData(frame, resetHistory: resetHistory)
-        } else {
-            uploadedContentFrame = false
-        }
+        // Frame uploads happen in `draw(in:)` before this render encoder so
+        // history can be filled with a blit. `frame` is unused here.
+        _ = frame
+        _ = resetHistory
+        let uploadedContentFrame = false
 
         // Advance the shader clock only with content frames so RF/composite
         // noise is not re-seeded on every 60 Hz vsync (visible CRT flicker).
@@ -1493,7 +1496,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return uploadedContentFrame
     }
 
-    private func uploadFrameData(_ frame: Data, resetHistory: Bool) {
+    private func uploadFrameData(
+        _ frame: Data,
+        resetHistory: Bool,
+        commandBuffer: MTLCommandBuffer
+    ) {
         let height = frame.count / VideoReceiver.width
         guard height > 0,
               frame.count == VideoReceiver.width * height,
@@ -1521,20 +1528,29 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         currentFrameArrivalNs = arrival
         historyLastUploadUptime = arrival
         frameIndex &+= 1
+        let indexTex = indexTextures[currentTextureIndex]
         frame.withUnsafeBytes { raw in
-            indexTextures[currentTextureIndex].replace(
+            indexTex.replace(
                 region: MTLRegionMake2D(0, 0, VideoReceiver.width, height),
                 mipmapLevel: 0,
                 withBytes: raw.baseAddress!,
                 bytesPerRow: VideoReceiver.width)
-            historyTexture.replace(
-                region: MTLRegionMake2D(
-                    0, 0, VideoReceiver.width, height),
-                mipmapLevel: 0,
-                slice: historyHead,
-                withBytes: raw.baseAddress!,
-                bytesPerRow: VideoReceiver.width,
-                bytesPerImage: VideoReceiver.width * height)
+        }
+        // GPU blit into the history array — avoids a second CPU memcpy of
+        // the full frame on every present.
+        if let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.copy(
+                from: indexTex,
+                sourceSlice: 0,
+                sourceLevel: 0,
+                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                sourceSize: MTLSize(
+                    width: VideoReceiver.width, height: height, depth: 1),
+                to: historyTexture,
+                destinationSlice: historyHead,
+                destinationLevel: 0,
+                destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+            blit.endEncoding()
         }
     }
 
@@ -1562,7 +1578,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             width: VideoReceiver.width,
             height: height,
             mipmapped: false)
+        // shaderWrite not required for CPU replace; blit source only needs read.
         indexDesc.usage = [.shaderRead]
+        indexDesc.storageMode = .shared
         var textures: [MTLTexture] = []
         for _ in 0..<3 {
             guard let tex = device.makeTexture(descriptor: indexDesc) else {
@@ -1585,8 +1603,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         historyDesc.mipmapLevelCount = 1
         historyDesc.arrayLength = historyFrameCount
         historyDesc.sampleCount = 1
-        historyDesc.storageMode = .shared
-        historyDesc.usage = [.shaderRead]
+        historyDesc.storageMode = .private
+        historyDesc.usage = [.shaderRead, .shaderWrite]
         return device.makeTexture(descriptor: historyDesc)
     }
 
@@ -1751,6 +1769,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             // remains so scrolltext does not jump backwards.
             pendingFrames.removeFirst()
         }
+        let shouldEnterLive = !livePresentArmed
+        if shouldEnterLive { livePresentArmed = true }
         if Self.debug {
             dbgSubmitted += 1
             if dbgSubmitted % 100 == 1 {
@@ -1759,8 +1779,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             }
         }
         textureLock.unlock()
-        DispatchQueue.main.async { [weak self] in
-            self?.enterLivePresentMode()
+        // Only hop to main when entering live mode — not 50/60× per second.
+        if shouldEnterLive {
+            DispatchQueue.main.async { [weak self] in
+                self?.enterLivePresentMode()
+            }
         }
     }
 
@@ -1847,9 +1870,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(
-                descriptor: descriptor) else {
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
             inFlightSemaphore.signal()
             return
         }
@@ -1867,20 +1888,39 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         palettePendingBytes = nil
         textureLock.unlock()
 
-        // Drain UDP frames into history in order so motion blend sees every
-        // content step; shade once from the latest pair this vsync.
+        // Cap to one upload per draw. Draining every pending frame while the
+        // previous command buffer still reads historyTexture races the CPU
+        // replace under CRT back-pressure. Keep the latest frame; intermediate
+        // motion-blend steps are dropped when the GPU is behind.
         var uploadedContentFrame = false
         if let palette,
            let replacement = Self.makePaletteTexture(
                 device: device, bytes: palette) {
             paletteTexture = replacement
         }
-        for (index, frame) in frames.enumerated() {
-            uploadFrameData(frame, resetHistory: resetHistory && index == 0)
+        // CPU→index replace + GPU blit into history before the render pass.
+        if let frame = frames.last {
+            uploadFrameData(
+                frame,
+                resetHistory: resetHistory || frames.count > 1,
+                commandBuffer: commandBuffer)
             uploadedContentFrame = true
-            if Self.debug { dbgDrawn += 1 }
+            if Self.debug {
+                dbgDrawn += 1
+                if frames.count > 1 {
+                    NSLog("[render] dropped %d intermediate frame(s)",
+                          frames.count - 1)
+                }
+            }
         }
 
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(
+            descriptor: descriptor) else {
+            // Blits may already be encoded — commit so the completion
+            // handler releases the in-flight slot.
+            commandBuffer.commit()
+            return
+        }
         _ = encodeFrame(
             encoder: encoder,
             drawableSize: view.drawableSize,

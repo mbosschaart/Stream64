@@ -221,10 +221,16 @@ struct GeneralSettingsTab: View {
                 Toggle("Send keyboard input to the C64 when the viewer is focused", isOn: $settings.captureKeyboardWhenFocused)
                 Toggle("Ask for confirmation before destructive actions", isOn: $settings.confirmDestructiveActions)
                 Toggle("Check for updates automatically", isOn: $settings.checkForUpdatesAutomatically)
+                Toggle(
+                    "Visualisations auto-follow selected C64",
+                    isOn: $settings.visualizationsAutoFollowSelected)
             } footer: {
                 Text(
                     "Destructive actions include power off, file deletion, "
-                        + "replacement, and non-atomic moves."
+                        + "replacement, and non-atomic moves. When "
+                        + "auto-follow is on, open SID and Memory Map / "
+                        + "Debug Trace windows switch to the newly selected "
+                        + "machine. Sound always follows selection."
                 )
                     .foregroundStyle(.secondary)
             }

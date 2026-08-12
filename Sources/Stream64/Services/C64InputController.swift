@@ -183,9 +183,15 @@ final class C64InputController: ObservableObject {
         emittedJoystick.removeAll()
         queue.removeAll()
         queueHead = 0
+        let previous = worker
         worker?.cancel()
         workerGeneration += 1
         worker = nil
+        // Wait for any in-flight matrix/legacy HTTP to finish so release-all
+        // is always the last remote op (otherwise a late batch can re-press).
+        if let previous {
+            await previous.value
+        }
         await sendReleaseAllWithRetry()
         try? await client.flushKeyboardBuffer()
     }
@@ -218,8 +224,10 @@ final class C64InputController: ObservableObject {
         emittedJoystick = merged
     }
 
+    private var logicalQueueDepth: Int { queue.count - queueHead }
+
     private func enqueue(_ command: Command) {
-        guard queue.count < maximumQueueDepth else {
+        guard logicalQueueDepth < maximumQueueDepth else {
             settings.updateCapability(.failed("Input queue is full"))
             // Never silently drop a release or leave presses that are
             // already remote-active. Throw away stale work and make the

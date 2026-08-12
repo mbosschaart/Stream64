@@ -352,6 +352,132 @@ struct UltimateAPIClient {
         try await put("/v1/drives/\(drive):mount", queryItems: items)
     }
 
+    /// Remove the mounted image from a drive (`PUT …:remove`).
+    func unmountDisk(drive: String = "a") async throws {
+        try await put("/v1/drives/\(drive):remove")
+    }
+
+    func turnDriveOn(drive: String = "a") async throws {
+        try await put("/v1/drives/\(drive):on")
+    }
+
+    func turnDriveOff(drive: String = "a") async throws {
+        try await put("/v1/drives/\(drive):off")
+    }
+
+    /// Emulation type: `1541`, `1571`, or `1581`.
+    func setDriveMode(drive: String = "a", mode: String) async throws {
+        try await put(
+            "/v1/drives/\(drive):set_mode",
+            queryItems: [URLQueryItem(name: "mode", value: mode)])
+    }
+
+    enum BlankDiskKind: String, CaseIterable, Identifiable {
+        case d64, d71, d81
+        var id: String { rawValue }
+        var apiSuffix: String {
+            switch self {
+            case .d64: return "create_d64"
+            case .d71: return "create_d71"
+            case .d81: return "create_d81"
+            }
+        }
+        var fileExtension: String { rawValue }
+        var label: String { rawValue.uppercased() }
+    }
+
+    /// Create a blank disk image on the Ultimate filesystem.
+    /// `path` is absolute from the device root (e.g. `/Temp/blank.d64`).
+    func createBlankDisk(
+        path: String,
+        kind: BlankDiskKind,
+        tracks: Int? = nil,
+        diskName: String? = nil
+    ) async throws {
+        var items: [URLQueryItem] = []
+        if let tracks { items.append(URLQueryItem(name: "tracks", value: String(tracks))) }
+        if let diskName, !diskName.isEmpty {
+            items.append(URLQueryItem(name: "diskname", value: diskName))
+        }
+        let normalized = path.hasPrefix("/") ? path : "/\(path)"
+        try await put(
+            "/v1/files\(normalized):\(kind.apiSuffix)",
+            queryItems: items)
+    }
+
+    struct DriveInfo: Equatable, Identifiable {
+        var id: String { letter }
+        let letter: String
+        let enabled: Bool
+        let busID: Int?
+        let type: String?
+        let imageFile: String?
+        let partition: String?
+    }
+
+    /// Snapshot of IEC / emulated drives (`GET /v1/drives`).
+    func fetchDrives() async throws -> [DriveInfo] {
+        let request = try makeRequest(path: "/v1/drives", method: "GET")
+        let data = try await perform(request)
+        guard let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let drives = object["drives"] as? [[String: Any]] else {
+            throw APIError.httpError(200, "drives response was malformed")
+        }
+        var result: [DriveInfo] = []
+        for entry in drives {
+            guard let (letter, payload) = entry.first(
+                where: { $0.key.count == 1 && ($0.value as? [String: Any]) != nil }
+            ),
+                  let info = payload as? [String: Any] else { continue }
+            result.append(DriveInfo(
+                letter: letter.lowercased(),
+                enabled: info["enabled"] as? Bool ?? false,
+                busID: info["bus_id"] as? Int,
+                type: info["type"] as? String,
+                imageFile: (info["image_file"] as? String)
+                    .flatMap { $0.isEmpty ? nil : $0 },
+                partition: (info["partition"] as? String)
+                    .flatMap { $0.isEmpty ? nil : $0 }))
+        }
+        return result.sorted { $0.letter < $1.letter }
+    }
+
+    /// Top-level Ultimate flash config categories (`GET /v1/configs`).
+    func fetchConfigCategories() async throws -> [String] {
+        let request = try makeRequest(path: "/v1/configs", method: "GET")
+        let data = try await perform(request)
+        guard let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let categories = object["categories"] as? [String] else {
+            throw APIError.httpError(200, "configs list was malformed")
+        }
+        return categories
+    }
+
+    /// Key/value items inside one config category.
+    func fetchConfigItems(category: String) async throws -> [(key: String, value: String)] {
+        let inner = try await fetchConfigCategory(category)
+        return inner.keys.sorted().compactMap { key in
+            guard let value = inner[key] else { return nil }
+            if let string = value as? String {
+                return (key, string)
+            }
+            if let number = value as? NSNumber {
+                return (key, number.stringValue)
+            }
+            return (key, String(describing: value))
+        }
+    }
+
+    func saveConfigToFlash() async throws {
+        try await put("/v1/configs:save_to_flash")
+    }
+
+    func loadConfigFromFlash() async throws {
+        try await put("/v1/configs:load_from_flash")
+    }
+
     // MARK: - Streams
 
     /// Start the video (VIC) stream toward `destinationHost:port`.
@@ -450,6 +576,55 @@ struct UltimateAPIClient {
             case firmwareVersion = "firmware_version"
             case hostname
             case uniqueId = "unique_id"
+        }
+
+        /// Product label for UI. Founder units often report bare
+        /// `"C64 Ultimate"` while the hostname carries `FOUNDER`.
+        var displayProduct: String? {
+            let host = hostname?.uppercased() ?? ""
+            if host.contains("FOUNDER") {
+                return "C64 Ultimate Founder"
+            }
+            return product
+        }
+
+        /// Firmware label for UI. Commodore's C64 Ultimate line briefly
+        /// shipped `/v1/info` as `firmware_version: "3.14"` and later
+        /// retroactively named that release **1.0.0** — leaving the raw
+        /// string makes a Founder look like Ultimate 64 firmware 3.14.
+        var displayFirmwareVersion: String? {
+            Self.normalizedFirmwareVersion(
+                product: product, firmwareVersion: firmwareVersion)
+        }
+
+        /// `Product · firmware` used in the viewer subtitle / discovery.
+        var connectionDescription: String {
+            [displayProduct, displayFirmwareVersion]
+                .compactMap { value in
+                    guard let value, !value.isEmpty else { return nil }
+                    return value
+                }
+                .joined(separator: " · ")
+        }
+
+        static func normalizedFirmwareVersion(
+            product: String?, firmwareVersion: String?
+        ) -> String? {
+            guard let firmwareVersion, !firmwareVersion.isEmpty else {
+                return firmwareVersion
+            }
+            let product = product ?? ""
+            guard product.localizedCaseInsensitiveContains("C64 Ultimate")
+            else {
+                return firmwareVersion
+            }
+            // Changelog: "1.0.0 (AKA v3.14.0)". Accept bare 3.14 and 3.14.x.
+            let trimmed = firmwareVersion.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            if trimmed == "3.14" || trimmed.hasPrefix("3.14.") {
+                return "1.0.0"
+            }
+            return firmwareVersion
         }
     }
 

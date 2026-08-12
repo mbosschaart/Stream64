@@ -123,6 +123,10 @@ final class AppSettings: ObservableObject {
     @AppStorage("captureKeyboardWhenFocused") var captureKeyboardWhenFocused: Bool = true
     @AppStorage("confirmDestructiveActions") var confirmDestructiveActions: Bool = true
     @AppStorage("checkForUpdatesAutomatically") var checkForUpdatesAutomatically: Bool = true
+    /// When on, open SID / Debug Trace / Memory Map windows retarget to the
+    /// newly selected C64. Sound always follows selection regardless.
+    @AppStorage("visualizationsAutoFollowSelected")
+    var visualizationsAutoFollowSelected: Bool = true
 }
 
 // Allow enums in @AppStorage via RawRepresentable String conformance (already String-backed).

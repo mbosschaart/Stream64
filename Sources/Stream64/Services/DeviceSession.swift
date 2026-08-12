@@ -88,6 +88,8 @@ final class DeviceSession: ObservableObject {
     let input: C64InputController
     private let settings: AppSettings
     private var client: UltimateAPIClient
+    /// Shared REST client for tool windows (Drive Bay, Config, Memory Console).
+    var api: UltimateAPIClient { client }
     private var displayObserver: AnyCancellable?
     /// Wired up by whichever VideoView currently owns this session's
     /// renderer (single view or a grid tile). Weakly captures the
@@ -166,11 +168,19 @@ final class DeviceSession: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self else { return }
-                if self.isStreaming, Date().timeIntervalSince(self.lastStatsAt) > 3 {
-                    self.isStreaming = false
-                    self.resetFrameStats()
-                    self.isVideoGPUBehind = false
-                    self.recoverStaleStreams()
+                if Date().timeIntervalSince(self.lastStatsAt) > 3 {
+                    // Age sticky fps so silent-stream watch (fps < 1) can
+                    // fire even when onStats simply stopped updating.
+                    if self.fps >= 1 {
+                        self.fps = 0
+                        self.videoFrameStats.streamFPS = 0
+                    }
+                    if self.isStreaming {
+                        self.isStreaming = false
+                        self.resetFrameStats()
+                        self.isVideoGPUBehind = false
+                        self.recoverStaleStreams()
+                    }
                 }
             }
         }
@@ -314,6 +324,14 @@ final class DeviceSession: ObservableObject {
     /// old attempt can resume after Disconnect and recreate receivers or set
     /// the session back to Connected.
     private var connectionGeneration: UInt64 = 0
+    /// Stable identity for SessionManager remote-stream ownership checks —
+    /// a stale `disconnect(stopRemoteStreams:)` must not stop a replacement
+    /// session's streams on the same device id.
+    let instanceID = UUID()
+    /// Single-flight gate for stop/settle/start so recover + silent-watch +
+    /// restartStreams cannot interleave host-resolve races on the Ultimate.
+    private var streamingOp: Task<Void, Error>?
+    private var streamingOpID: UInt64 = 0
 
     private func isCurrentConnection(_ generation: UInt64) -> Bool {
         connectionGeneration == generation
@@ -364,9 +382,7 @@ final class DeviceSession: ObservableObject {
             return
         }
         guard isCurrentConnection(generation) else { return }
-        let description = [info.product, info.firmwareVersion]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        let description = info.connectionDescription
         await input.prepare()
         guard isCurrentConnection(generation) else { return }
 
@@ -596,12 +612,45 @@ final class DeviceSession: ObservableObject {
     /// address. Streams stop on the device side after a reboot or when a
     /// configured stream duration expires — call this to (re)start them
     /// without tearing down the local receivers.
+    ///
+    /// Concurrent callers share one in-flight stop/settle/start; overlapping
+    /// cycles wedge C64 Ultimate 1.1.0 with "Network Host Resolve Error".
     func startStreaming(
         video: Bool = true,
         audio: Bool? = nil,
         generation: UInt64? = nil
     ) async throws {
         let generation = generation ?? connectionGeneration
+        guard isConnected || connecting, isCurrentConnection(generation) else {
+            throw CancellationError()
+        }
+        if let streamingOp {
+            try await streamingOp.value
+            guard isCurrentConnection(generation),
+                  isConnected || connecting else {
+                throw CancellationError()
+            }
+            return
+        }
+        streamingOpID &+= 1
+        let opID = streamingOpID
+        let op = Task { @MainActor [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.performStartStreaming(
+                video: video, audio: audio, generation: generation)
+        }
+        streamingOp = op
+        defer {
+            if streamingOpID == opID { streamingOp = nil }
+        }
+        try await op.value
+    }
+
+    private func performStartStreaming(
+        video: Bool,
+        audio: Bool?,
+        generation: UInt64
+    ) async throws {
         guard isConnected || connecting, isCurrentConnection(generation) else {
             throw CancellationError()
         }
@@ -651,6 +700,14 @@ final class DeviceSession: ObservableObject {
                 port: device.audioPort,
                 durationSeconds: settings.streamDurationSeconds)
         }
+        // Video stop/start can kill the debug bus-trace on some firmware
+        // (C64 Ultimate Founder / early 1.0 aka "3.14"). Re-arm it when SID
+        // / Debug Trace still hold leases so register-driven SID modes
+        // keep receiving writes.
+        if !debugTraceConsumers.isEmpty,
+           case .active(let mode) = debugTraceState {
+            await startDebugTrace(mode: mode)
+        }
     }
 
     /// startStreaming for UI call sites: failures surface in `state`.
@@ -677,9 +734,14 @@ final class DeviceSession: ObservableObject {
 
     func disconnect(
         stopRemoteStreams: Bool = true,
-        waitForInputRelease: Bool = true
+        waitForInputRelease: Bool = true,
+        /// When provided, remote stop runs only while this returns true
+        /// (SessionManager uses it so a replacement session is not killed).
+        stillOwnsRemote: (() -> Bool)? = nil
     ) async {
         connectionGeneration &+= 1
+        streamingOp?.cancel()
+        streamingOp = nil
         prepareForEviction()
         if waitForInputRelease {
             await input.cancelAndRelease()
@@ -688,9 +750,16 @@ final class DeviceSession: ObservableObject {
             Task { await input.cancelAndRelease() }
         }
         if stopRemoteStreams {
-            try? await client.stopVideoStream()
-            try? await client.stopAudioStream()
-            try? await client.stopDebugStream()
+            let owns = stillOwnsRemote?() ?? true
+            if owns {
+                try? await client.stopVideoStream()
+            }
+            if stillOwnsRemote?() ?? owns {
+                try? await client.stopAudioStream()
+            }
+            if stillOwnsRemote?() ?? owns {
+                try? await client.stopDebugStream()
+            }
         }
     }
 
@@ -700,6 +769,8 @@ final class DeviceSession: ObservableObject {
     /// asynchronous `disconnect()` tail.
     func prepareForEviction() {
         connectionGeneration &+= 1
+        streamingOp?.cancel()
+        streamingOp = nil
         reconnectTask?.cancel()
         reconnectTask = nil
         healthMonitor?.cancel()
@@ -754,6 +825,7 @@ final class DeviceSession: ObservableObject {
     /// deliberately does **not** touch the video/audio streams at all.
     func startDebugTrace(mode: DebugStreamMode) async {
         guard isConnected else { return }
+        let generation = connectionGeneration
         debugTraceState = .starting
         guard let localIP = LocalNetwork.primaryIPv4Address(reachingDevice: device.host) else {
             debugTraceState = .error("Could not determine this Mac's address on the Ultimate's network.")
@@ -770,16 +842,69 @@ final class DeviceSession: ObservableObject {
                 category: "Data Streams",
                 item: "Debug Stream Mode",
                 value: mode.rawValue)
+            guard isCurrentConnection(generation), isConnected else {
+                debugStreamReceiver.stop()
+                if isCurrentConnection(generation) {
+                    debugTraceState = .inactive
+                }
+                return
+            }
             debugStreamReceiver.source = mode.decodeSource
             try debugStreamReceiver.start(port: try validatedLocalPort(
                 device.debugPort, name: "Debug"))
-            try await client.startDebugStream(
-                destinationHost: localIP, port: device.debugPort)
+            // C64 Ultimate Founder / early 1.0 (still reported as "3.14")
+            // rejects a bare debug:start with "Network Host Resolve Error"
+            // unless the previous destination is torn down first — same
+            // stop → settle → start dance as VIC/audio on that line.
+            try await startDebugStreamWithSettle(
+                destinationHost: localIP,
+                port: device.debugPort,
+                generation: generation)
+            guard isCurrentConnection(generation), isConnected else {
+                debugStreamReceiver.stop()
+                try? await client.stopDebugStream()
+                if isCurrentConnection(generation) {
+                    debugTraceState = .inactive
+                }
+                return
+            }
             debugTraceState = .active(mode)
         } catch {
             debugStreamReceiver.stop()
-            debugTraceState = .error(error.localizedDescription)
+            if isCurrentConnection(generation) {
+                debugTraceState = .error(error.localizedDescription)
+            }
         }
+    }
+
+    /// Start the device debug stream, retrying once with stop/settle when
+    /// firmware returns the C64U-style host-resolve wedge.
+    private func startDebugStreamWithSettle(
+        destinationHost: String,
+        port: Int,
+        generation: UInt64
+    ) async throws {
+        do {
+            try await client.startDebugStream(
+                destinationHost: destinationHost, port: port)
+            return
+        } catch {
+            guard isHostResolveError(error) else { throw error }
+        }
+        guard isCurrentConnection(generation), isConnected else {
+            throw CancellationError()
+        }
+        try? await client.stopDebugStream()
+        try await Task.sleep(for: .seconds(1))
+        guard isCurrentConnection(generation), isConnected else {
+            throw CancellationError()
+        }
+        try await client.startDebugStream(
+            destinationHost: destinationHost, port: port)
+    }
+
+    private func isHostResolveError(_ error: Error) -> Bool {
+        error.localizedDescription.contains("Network Host Resolve Error")
     }
 
     /// Acquire shared ownership of the session's debug stream. Multiple
@@ -800,7 +925,11 @@ final class DeviceSession: ObservableObject {
             // else: join the already-running stream in its current mode
         case .inactive, .error:
             await startDebugTrace(mode: mode)
-        case .active, .starting:
+        case .starting:
+            // Another caller is mid start/settle — wait for it rather than
+            // returning nil and leaving SID register modes permanently quiet.
+            await waitForDebugTraceStart(generation: connectionGeneration)
+        case .active:
             break
         }
 
@@ -808,6 +937,18 @@ final class DeviceSession: ObservableObject {
         let token = UUID()
         debugTraceConsumers.insert(token)
         return token
+    }
+
+    private func waitForDebugTraceStart(generation: UInt64) async {
+        for _ in 0..<50 {
+            guard isCurrentConnection(generation), isConnected else { return }
+            switch debugTraceState {
+            case .starting:
+                try? await Task.sleep(for: .milliseconds(100))
+            case .active, .inactive, .error:
+                return
+            }
+        }
     }
 
     func releaseDebugTrace(_ token: UUID) async {

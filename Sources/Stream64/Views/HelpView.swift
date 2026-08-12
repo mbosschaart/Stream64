@@ -49,6 +49,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case assembly64
     case multiDevice
     case machineControl
+    case driveConfigMemory
     case debugAndSID
     case troubleshooting
 
@@ -66,6 +67,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .assembly64: return "Assembly64 Library"
         case .multiDevice: return "Multiple Devices"
         case .machineControl: return "Machine Control"
+        case .driveConfigMemory: return "Drive Bay, Config & Memory"
         case .debugAndSID: return "Debug Trace & SID Oscilloscope"
         case .troubleshooting: return "Troubleshooting"
         }
@@ -83,6 +85,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .assembly64: return "books.vertical"
         case .multiDevice: return "square.grid.2x2"
         case .machineControl: return "power"
+        case .driveConfigMemory: return "externaldrive"
         case .debugAndSID: return "waveform.path.ecg"
         case .troubleshooting: return "wrench.and.screwdriver"
         }
@@ -100,6 +103,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .assembly64: return Self.assembly64Text
         case .multiDevice: return Self.multiDeviceText
         case .machineControl: return Self.machineControlText
+        case .driveConfigMemory: return Self.driveConfigMemoryText
         case .debugAndSID: return Self.debugAndSIDText
         case .troubleshooting: return Self.troubleshootingText
         }
@@ -504,10 +508,34 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     than enabling local playback. Choose **This Mac** to stop AirPlay.
     """
 
+    private static let driveConfigMemoryText = """
+    Three tool windows reuse the Ultimate REST API for day-to-day device \
+    work. Open them from the viewer toolbar or the stream's right-click menu \
+    while connected.
+
+    **Drive Bay** — mount/unmount disk images, power drives on/off, switch \
+    1541/1571/1581 mode, and create blank D64/D71/D81 images on the Ultimate \
+    filesystem (for example `/Temp/blank.d64`). Mount from a Mac file uploads \
+    via multipart `POST /v1/drives/:mount`; create uses \
+    `PUT /v1/files/…:create_d64` (and D71/D81 variants).
+
+    **Ultimate Config** — browse every flash configuration category the \
+    device exposes (`GET /v1/configs`), edit item values, then **Save to \
+    Flash** or **Load from Flash**. Prefer small, intentional edits; wrong \
+    network or drive settings can make the Ultimate hard to reach until you \
+    recover them from the on-device menu.
+
+    **Memory Console** — DMA peek/poke via `readmem` / `writemem`. Enter a \
+    hex address and length (1…256), **Read** for a classic hex+ASCII dump, \
+    or **Write** a space-separated hex byte list at that address. Useful next \
+    to Debug Trace for verifying KERNAL buffers, VIC registers, and similar.
+    """
+
     private static let debugAndSIDText = """
-    Three more windows expose debug facilities specific to the **Ultimate 64 \
-    and Ultimate 64 Elite**. All three are hidden automatically on hardware \
-    that doesn't support them (Ultimate-II+, C64 Ultimate).
+    Three more windows expose debug facilities that need the Ultimate debug \
+    register / bus-trace stream (**Ultimate 64**, **Elite**, and **C64 Ultimate \
+    Founder** with a working debug stream). They stay hidden when \
+    `GET /v1/machine:debugreg` fails (typical Ultimate-II+).
 
     **Debug Trace** — stream's right-click menu → **Debug Trace…**
 
@@ -542,12 +570,16 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     own window; any number of modes can be open side by side, or use \
     **Open All in Grid** to open every mode at once, automatically tiled to \
     fit the screen. **Close All Visualizations** dismisses every open SID \
-    window for that device in one step. However your windows end up \
-    arranged, **Save Window Layout** remembers it per device (overwriting \
-    any previously saved arrangement), so **Restore Window Layout** can \
-    bring it back later — even after quitting and relaunching the app. \
-    Those layout actions are also on the right-click menu, so restoring \
-    works even with no SID windows currently open.
+    window for that device in one step. With **Visualisations auto-follow \
+    selected C64** enabled in Settings → General (default on), open SID and \
+    Memory Map / Debug Trace windows switch to whichever machine you select \
+    next; turn it off to keep visualizations pinned. Sound always follows \
+    the selection. However your windows end up arranged, **Save Window \
+    Layout** remembers it per device (overwriting any previously saved \
+    arrangement), so **Restore Window Layout** can bring it back later — \
+    even after quitting and relaunching the app. Those layout actions are \
+    also on the right-click menu, so restoring works even with no SID \
+    windows currently open.
 
     A window's mode is fixed once it's open — picking a different mode from \
     either menu always opens a *new* window rather than switching the \

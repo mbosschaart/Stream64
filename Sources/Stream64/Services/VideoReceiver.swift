@@ -44,6 +44,12 @@ final class VideoReceiver {
     private var assemblingSequence: UInt16?
     private var frameCount = 0
     private var lastStatsTime = DispatchTime.now()
+    /// Ring of publish buffers so each assembled frame does not allocate a
+    /// fresh ~100 KB `Data`. Sized above `MetalFrameRenderer.maxPendingFrames`.
+    private var publishPool: [Data] = (0..<4).map { _ in
+        Data(count: width * maxHeight)
+    }
+    private var publishPoolIndex = 0
 
     var packetsReceived: Int {
         queue.sync { packetCount }
@@ -73,6 +79,19 @@ final class VideoReceiver {
         connectionsLock.unlock()
         for connection in connections {
             connection.cancel()
+        }
+        queue.async { [weak self] in
+            self?.resetAssemblyState()
+        }
+    }
+
+    /// Drop in-progress frame state so a restart cannot publish a buffer
+    /// half-filled from the previous listener lifetime.
+    private func resetAssemblyState() {
+        assemblingFrameID = nil
+        assemblingSequence = nil
+        receivedLines.withUnsafeMutableBufferPointer {
+            $0.update(repeating: false)
         }
     }
 
@@ -233,7 +252,17 @@ final class VideoReceiver {
 
     private func publishFrame(height: Int) {
         let byteCount = Self.width * height
-        let frame = Data(frameBuffer[0..<byteCount])
+        publishPoolIndex = (publishPoolIndex + 1) % publishPool.count
+        publishPool[publishPoolIndex].withUnsafeMutableBytes { dst in
+            guard let base = dst.baseAddress else { return }
+            frameBuffer.withUnsafeBytes { src in
+                guard let srcBase = src.baseAddress else { return }
+                memcpy(base, srcBase, byteCount)
+            }
+        }
+        // Copy-out a correctly sized Data so pool reuse cannot mutate a
+        // frame still held in the renderer's pending queue.
+        let frame = Data(publishPool[publishPoolIndex].prefix(byteCount))
         onFrame?(frame)
 
         frameCount += 1

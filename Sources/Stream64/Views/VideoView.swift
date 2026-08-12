@@ -59,10 +59,13 @@ struct VideoView: NSViewRepresentable {
         context.coordinator.session.videoReceiver.onFrame = {
             [weak renderer, weak session = context.coordinator.session] frame in
             let height = frame.count / VideoReceiver.width
-            if VideoReceiver.isSupportedFrameHeight(height) {
-                // RF hum follows the machine's video standard (PAL 50 / NTSC 60).
-                session?.audioReceiver.mainsHumFrequencyHz =
-                    height <= VideoReceiver.ntscHeight ? 60 : 50
+            if VideoReceiver.isSupportedFrameHeight(height),
+               let audio = session?.audioReceiver {
+                // RF hum follows PAL 50 / NTSC 60 — only write on change.
+                let hum = height <= VideoReceiver.ntscHeight ? 60.0 : 50.0
+                if audio.mainsHumFrequencyHz != hum {
+                    audio.mainsHumFrequencyHz = hum
+                }
             }
             renderer?.submitFrame(frame)
         }
