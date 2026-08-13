@@ -325,6 +325,7 @@ final class RemoteMenuWindowController:
             rootView: RemoteMenuView(
                 model: model,
                 close: { [weak self] in self?.close() }))
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }
 
     required init?(coder: NSCoder) { nil }

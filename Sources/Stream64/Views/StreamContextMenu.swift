@@ -5,6 +5,9 @@ import SwiftUI
 /// Attached to the video surface in both single view and grid tiles, so
 /// the menu always controls the stream under the pointer.
 ///
+/// Also embedded in the macOS **Stream** menu bar dropdown via
+/// `StreamSessionCommands` (same items, selected device).
+///
 /// Hosts (`ViewerPane` / `ViewerTile`) must not observe `DeviceSession`
 /// on the same view that owns `.contextMenu` — session fps / presentFPS
 /// publishes would rebuild the host and dismiss this menu mid-selection.
@@ -103,6 +106,14 @@ struct StreamContextMenu: View {
         }
         .disabled(!session.isConnected)
 
+        Button("Assembly64…", systemImage: "books.vertical") {
+            Stream64ToolWindows.showAssembly64()
+        }
+
+        Button("File Manager…", systemImage: "rectangle.split.2x1") {
+            Stream64ToolWindows.showFileManager()
+        }
+
         Button("Drive Bay…", systemImage: "externaldrive") {
             DriveBayWindowController.show(session: session)
         }
@@ -135,38 +146,8 @@ struct StreamContextMenu: View {
             // showing (see `SIDOscilloscopeWindowController.showNewWindow`
             // and the matching in-window context menu in
             // `SIDVisualizationMenuContent`, which behaves the same way).
-            Menu("SID Visualizations", systemImage: "waveform") {
-                ForEach(SIDVisualizationMode.allCases) { mode in
-                    Button {
-                        SIDOscilloscopeWindowController.showNewWindow(session: session, mode: mode)
-                    } label: {
-                        Label(mode.rawValue, systemImage: mode.systemImage)
-                    }
-                }
-                Divider()
-                Button("Open All in Grid", systemImage: "square.grid.3x3") {
-                    session.openAllSIDVisualizations()
-                }
-                Button("Close All Visualizations", systemImage: "xmark.circle") {
-                    session.closeAllSIDVisualizations()
-                }
-                .disabled(!session.hasOpenSIDWindows)
-                Divider()
-                // Save stays enabled even when a layout is already stored —
-                // `saveWindowLayout()` overwrites that snapshot. It also
-                // stays enabled when the menu's open-window snapshot is
-                // stale: an empty capture is a no-op and will not clear a
-                // previously saved layout.
-                Button("Save Window Layout", systemImage: "square.and.arrow.down") {
-                    session.saveWindowLayout()
-                }
-
-                Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
-                    session.restoreWindowLayout()
-                }
-                .disabled(!session.hasSavedWindowLayout)
-            }
-            .disabled(!session.isConnected)
+            SIDVisualizationsMenu(session: session)
+                .disabled(!session.isConnected)
         }
 
         Divider()
@@ -272,5 +253,74 @@ struct StreamContextMenu: View {
 
     private var isCRTFilter: Bool {
         display.filterMode == .crt || display.filterMode == .crtTube
+    }
+}
+
+/// SID visualization submenu shared by the stream context menu, menu bar,
+/// and toolbar.
+struct SIDVisualizationsMenu: View {
+    let session: DeviceSession
+
+    var body: some View {
+        Menu("SID Visualizations", systemImage: "waveform") {
+            ForEach(SIDVisualizationMode.allCases) { mode in
+                Button {
+                    SIDOscilloscopeWindowController.showNewWindow(
+                        session: session, mode: mode)
+                } label: {
+                    Label(mode.rawValue, systemImage: mode.systemImage)
+                }
+            }
+            Divider()
+            Button("Open All in Grid", systemImage: "square.grid.3x3") {
+                session.openAllSIDVisualizations()
+            }
+            Button("Close All Visualizations", systemImage: "xmark.circle") {
+                session.closeAllSIDVisualizations()
+            }
+            .disabled(!session.hasOpenSIDWindows)
+            Divider()
+            Button("Save Window Layout", systemImage: "square.and.arrow.down") {
+                session.saveWindowLayout()
+            }
+            Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
+                session.restoreWindowLayout()
+            }
+            .disabled(!session.hasSavedWindowLayout)
+        }
+    }
+}
+
+/// Menu bar **Stream** dropdown — same actions as the video right-click menu,
+/// targeting `DeviceStore.selectedDevice` (not window focus). Focus-based
+/// lookup goes nil when the full-screen viewer lives on another Space and
+/// the user is back on the desktop.
+struct StreamSessionCommands: Commands {
+    @ObservedObject var deviceStore: DeviceStore
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var sessionManager: SessionManager
+
+    var body: some Commands {
+        CommandMenu("Stream") {
+            if let device = deviceStore.selectedDevice {
+                let session = sessionManager.session(
+                    for: device, settings: settings)
+                StreamContextMenu(
+                    session: session,
+                    requestPictureControls: {
+                        PictureControlsPanelController.show(
+                            display: session.display)
+                    },
+                    requestPowerOff: {
+                        NotificationCenter.default.post(
+                            name: .powerOffRequested, object: session)
+                    }
+                )
+                .environmentObject(settings)
+            } else {
+                Text("No Device Selected")
+                    .disabled(true)
+            }
+        }
     }
 }

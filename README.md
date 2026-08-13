@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.121b-purple)
+![Version](https://img.shields.io/badge/version-0.122b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -28,6 +28,8 @@ Designed by Martijn Bosschaart, 2026.
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
+- **Menu-bar Stream menu** — same per-stream controls as the video right-click menu, always targeting the sidebar-selected device (works across Mission Control Spaces)
+- **Independent full-screen Spaces** — viewer, Assembly64, File Manager, SID, Drive Bay, Config, Memory Console, Debug Trace and Help can each own a Mission Control Space instead of stacking into the viewer's fullscreen desktop
 - **Drive Bay, Ultimate Config, Memory Console** — mount/unmount and power IEC drives, switch 1541/1571/1581 mode, create blank D64/D71/D81 images; browse/edit flash config categories; DMA peek/poke hex dump via `readmem`/`writemem` (toolbar + stream context menu)
 - **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
 - **SID Oscilloscope** (Ultimate 64/Elite only) — a 19-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 19 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
@@ -300,10 +302,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.121b BUILD_NUMBER=121 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.122b BUILD_NUMBER=122 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.121b BUILD_NUMBER=121 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.122b BUILD_NUMBER=122 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -329,7 +331,7 @@ disable Gatekeeper globally.
 2. Enter the device's IP address or hostname; **Test Connection**; **Add**
 3. The viewer connects automatically: it verifies the device over REST, opens local UDP listeners, and asks the device to stream to your Mac
 
-Right-click the picture for stream, machine and display controls. The toolbar additionally provides the on-screen keyboard, Assembly64 browser, screenshots and fullscreen.
+Right-click the picture for stream, machine and display controls — the same set is also under the menu-bar **Stream** menu (follows the sidebar selection). The toolbar adds the on-screen keyboard, Assembly64, File Manager, Debug Trace, SID Visualizations, screenshots and fullscreen. Assembly64 / File Manager / tool windows can each full-screen onto their own Mission Control Space beside the viewer.
 
 ---
 
@@ -399,6 +401,8 @@ Sources/Stream64/
 │   │                            Assembly64 search, metadata, cache, and downloads
 │   ├── Assembly64ArchiveInspector.swift  Safe ZIP inspection/extraction
 │   ├── CSDBPreviewClient.swift  CSDB screenshot/source fallback
+│   ├── Stream64WindowPolicy.swift  Independent full-screen Spaces for all windows
+│   ├── Stream64ToolWindows.swift   AppKit hosts for Assembly64 / File Manager
 │   └── SingleInstanceLock.swift Process lock preventing duplicate UDP listeners
 ├── Rendering/
 │   ├── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)

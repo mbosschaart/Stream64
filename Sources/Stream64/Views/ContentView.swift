@@ -390,6 +390,15 @@ struct MultiViewerGrid: View {
                     GameControllerManager.shared.setTarget(session.input)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .powerOffRequested)) { note in
+                guard let target = note.object as? DeviceSession,
+                      target === activeSession else { return }
+                if settings.confirmDestructiveActions {
+                    showPowerOffConfirmation = true
+                } else {
+                    Task { await target.powerOff() }
+                }
+            }
     }
 
     private var selectionSubtitle: String {
@@ -960,6 +969,15 @@ private struct ViewerPaneSessionContent: View {
         .onReceive(NotificationCenter.default.publisher(for: .saveScreenshotRequested)) { _ in
             session.saveScreenshot()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .powerOffRequested)) { note in
+            guard let target = note.object as? DeviceSession,
+                  target === session else { return }
+            if settings.confirmDestructiveActions {
+                showPowerOffConfirmation = true
+            } else {
+                Task { await session.powerOff() }
+            }
+        }
         .confirmationDialog(
             "Power off \(session.device.name)?",
             isPresented: $showPowerOffConfirmation) {
@@ -1107,7 +1125,6 @@ struct ViewerSessionToolbar: ToolbarContent {
     @ObservedObject var session: DeviceSession
     @ObservedObject private var display: DisplaySettings
     @EnvironmentObject private var settings: AppSettings
-    @Environment(\.openWindow) private var openWindow
     /// When nil (All Screens grid), the on-screen keyboard toggle is omitted
     /// — there is no below-tile chrome to host it.
     var showOnScreenKeyboard: Binding<Bool>?
@@ -1299,14 +1316,14 @@ struct ViewerSessionToolbar: ToolbarContent {
             .disabled(!session.isConnected)
 
             Button {
-                openWindow(id: "assembly64")
+                Stream64ToolWindows.showAssembly64()
             } label: {
                 Label("Assembly64", systemImage: "books.vertical")
             }
             .help("Search the Assembly64 online library and load programs")
 
             Button {
-                openWindow(id: "files")
+                Stream64ToolWindows.showFileManager()
             } label: {
                 Label("File Manager", systemImage: "rectangle.split.2x1")
             }
@@ -1335,6 +1352,47 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Memory Console for \(session.device.name)")
             .disabled(!session.isConnected)
+
+            if session.supportsDebugFeatures {
+                Button {
+                    DebugTraceWindowController.show(session: session)
+                } label: {
+                    Label("Debug Trace", systemImage: "waveform.path.ecg")
+                }
+                .help("Debug Trace for \(session.device.name)")
+                .disabled(!session.isConnected)
+
+                Menu {
+                    ForEach(SIDVisualizationMode.allCases) { mode in
+                        Button {
+                            SIDOscilloscopeWindowController.showNewWindow(
+                                session: session, mode: mode)
+                        } label: {
+                            Label(mode.rawValue, systemImage: mode.systemImage)
+                        }
+                    }
+                    Divider()
+                    Button("Open All in Grid", systemImage: "square.grid.3x3") {
+                        session.openAllSIDVisualizations()
+                    }
+                    Button("Close All Visualizations", systemImage: "xmark.circle") {
+                        session.closeAllSIDVisualizations()
+                    }
+                    .disabled(!session.hasOpenSIDWindows)
+                    Divider()
+                    Button("Save Window Layout", systemImage: "square.and.arrow.down") {
+                        session.saveWindowLayout()
+                    }
+                    Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
+                        session.restoreWindowLayout()
+                    }
+                    .disabled(!session.hasSavedWindowLayout)
+                } label: {
+                    Label("SID Visualizations", systemImage: "waveform")
+                }
+                .help("SID visualizations for \(session.device.name)")
+                .disabled(!session.isConnected)
+            }
 
             Button {
                 NSApp.keyWindow?.toggleFullScreen(nil)

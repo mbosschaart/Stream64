@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.121b"
+            ?? "0.122b"
     }
 }
 
@@ -54,12 +54,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var splashWindow: NSWindow?
     private var hiddenLaunchWindows: [NSWindow] = []
     private var windowOrderObserver: NSObjectProtocol?
+    private var windowFullScreenPolicyObserver: NSObjectProtocol?
     private var isShowingSplash = false
     /// Cap remote stream-stop work during quit so an unreachable device
     /// cannot leave Stream64 as a zombie process with audio still playing.
     private static let terminationCleanupLimit: Duration = .seconds(2)
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before any window is created: own-Space full screen for every
+        // titled window (viewer, Assembly64, File Manager, SID, tools, …).
+        NSWindow.allowsAutomaticWindowTabbing = false
+        Stream64WindowPolicy.install()
         switch instanceLock.acquire() {
         case .acquired:
             prepareForSplash()
@@ -79,10 +84,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installIndependentFullScreenPolicyObserver()
         guard isShowingSplash else { return }
         showSplashWindow()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.finishSplash()
+        }
+    }
+
+    /// Secondary windows must be `fullScreenPrimary` so Assembly64 / Help /
+    /// File Manager / SID panels can each maximize onto their own Space while
+    /// the viewer stays full screen elsewhere.
+    private func installIndependentFullScreenPolicyObserver() {
+        guard windowFullScreenPolicyObserver == nil else { return }
+        let apply: (Notification) -> Void = { note in
+            guard let window = note.object as? NSWindow else { return }
+            Task { @MainActor in
+                Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+            }
+        }
+        windowFullScreenPolicyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main,
+            using: apply)
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification,
+            object: nil,
+            queue: .main,
+            using: apply)
+        // Re-assert before AppKit commits the Space transition.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willEnterFullScreenNotification,
+            object: nil,
+            queue: .main,
+            using: apply)
+        for window in NSApp.windows {
+            Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
         }
     }
 
@@ -277,14 +315,30 @@ struct Stream64App: App {
     }
 
     var body: some Scene {
+        // Keep AppKit tool-window presenters wired even before the viewer
+        // finishes appearing (menu bar Assembly64 / File Manager).
+        let _ = {
+            appDelegate.sessionManager = sessionManager
+            Stream64ToolWindows.configure(
+                deviceStore: deviceStore,
+                settings: settings,
+                sessionManager: sessionManager,
+                assembly64Library: assembly64Library)
+        }()
         WindowGroup("Stream64") {
             ContentView()
                 .environmentObject(deviceStore)
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
                 .environmentObject(updateService)
+                .independentFullScreenWindow()
                 .onAppear {
                     appDelegate.sessionManager = sessionManager
+                    Stream64ToolWindows.configure(
+                        deviceStore: deviceStore,
+                        settings: settings,
+                        sessionManager: sessionManager,
+                        assembly64Library: assembly64Library)
                 }
                 .task {
                     try? await Task.sleep(for: .seconds(2))
@@ -315,12 +369,12 @@ struct Stream64App: App {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()
                 Button("Search Assembly64…") {
-                    openWindow(id: "assembly64")
+                    Stream64ToolWindows.showAssembly64()
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 Divider()
                 Button("File Manager…") {
-                    openWindow(id: "files")
+                    Stream64ToolWindows.showFileManager()
                 }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
                 Divider()
@@ -329,6 +383,13 @@ struct Stream64App: App {
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
             }
+            // Full per-stream control set (mirrors the video right-click menu).
+            // Uses DeviceStore selection — not focusedSceneObject — so the
+            // menu still works when the full-screen viewer is on another Space.
+            StreamSessionCommands(
+                deviceStore: deviceStore,
+                settings: settings,
+                sessionManager: sessionManager)
             CommandGroup(replacing: .help) {
                 Button("Stream64 Help") {
                     openWindow(id: "help")
@@ -339,45 +400,20 @@ struct Stream64App: App {
 
         Window("Stream64 Help", id: "help") {
             HelpView()
+                .independentFullScreenWindow()
         }
         .defaultSize(width: 860, height: 600)
 
         Window("About Stream64", id: "about") {
             AboutView()
+                .independentFullScreenWindow()
         }
         .defaultSize(width: 520, height: 320)
         .windowResizability(.contentSize)
 
-        Window("Assembly64", id: "assembly64") {
-            Assembly64View { device in
-                sessionManager.session(for: device, settings: settings)
-            }
-            .environmentObject(deviceStore)
-            .environmentObject(settings)
-            .environmentObject(assembly64Library)
-        }
-        .defaultSize(width: 980, height: 680)
-        // Default resizability ties the window's size to its content's
-        // *ideal* size — so the moment the files pane grows wider (an
-        // entry row with filename/size/action buttons has a wider ideal
-        // width than the "No Item Selected" placeholder it replaces), the
-        // window snaps outward to match, and never shrinks back. Pinning
-        // to just a minimum keeps the window at whatever size it already
-        // is (or whatever the user set) as long as that's big enough —
-        // it only grows if genuinely necessary, never because a subview's
-        // ideal size changed. Paired with a wide-enough defaultSize above
-        // and minWidth in Assembly64View, the window now opens already at
-        // the size it used to only reach after your first selection.
-        .windowResizability(.contentMinSize)
-
-        Window("File Manager", id: "files") {
-            RemoteBrowserView()
-                .environmentObject(deviceStore)
-                .environmentObject(settings)
-                .environmentObject(sessionManager)
-        }
-        .defaultSize(width: 1180, height: 760)
-        .windowResizability(.contentMinSize)
+        // Assembly64 + File Manager use AppKit NSWindowControllers (see
+        // Stream64ToolWindows) so full screen gets its own Space like
+        // Ultimate Config — SwiftUI Window scenes bypass the NSWindow swizzle.
 
         Settings {
             SettingsView()
@@ -385,6 +421,7 @@ struct Stream64App: App {
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
                 .environmentObject(updateService)
+                .independentFullScreenWindow()
         }
     }
 }
@@ -392,4 +429,7 @@ struct Stream64App: App {
 extension Notification.Name {
     static let addDeviceRequested = Notification.Name("addDeviceRequested")
     static let saveScreenshotRequested = Notification.Name("saveScreenshotRequested")
+    /// Posted by the Stream menu bar / shared menu; `object` is the
+    /// `DeviceSession` to power off (host shows confirmation when needed).
+    static let powerOffRequested = Notification.Name("powerOffRequested")
 }

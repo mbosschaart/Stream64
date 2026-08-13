@@ -266,6 +266,7 @@ final class TelnetMonitorWindowController: NSWindowController, NSWindowDelegate 
             rootView: TelnetMonitorView(
                 model: model,
                 close: { [weak self] in self?.close() }))
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }
 
     required init?(coder: NSCoder) { nil }

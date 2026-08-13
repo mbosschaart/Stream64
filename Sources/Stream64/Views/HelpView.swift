@@ -140,10 +140,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **The toolbar** holds everything for the current stream: connect/disconnect, \
     machine controls (reset, reboot, pause, menu, power), display settings \
-    (scaling, filter, input signal), keyboard capture, and full screen. \
-    Right-clicking the picture provides stream, machine and display controls; \
-    the toolbar additionally provides the on-screen keyboard, Assembly64, \
-    screenshots and fullscreen.
+    (scaling, filter, input signal), keyboard capture, Assembly64, File Manager, \
+    Drive Bay / Config / Memory Console, Debug Trace, SID Visualizations, \
+    screenshots and full screen. Right-clicking the picture opens the same \
+    stream, machine and display controls. The menu-bar **Stream** menu mirrors \
+    that right-click set for the device selected in the sidebar — it stays \
+    available even when the viewer is full screen on another desktop Space.
 
     To find something to run, open the **Assembly64 browser** (⇧⌘F) and \
     search the online C64 library — results load straight onto the machine.
@@ -344,7 +346,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let fileManagerText = """
-    Open **File Manager…** from the toolbar or press ⇧⌘B. It uses a two-pane \
+    Open **File Manager…** from the toolbar, the **Stream** menu, or press \
+    ⇧⌘B. It uses a two-pane \
     Commander layout: each side can independently browse this Mac or any \
     configured Ultimate, enabling Mac-to-C64 and direct C64-to-C64 transfers.
 
@@ -406,7 +409,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     execute concurrently on every chosen connected machine.
 
     **Open the browser** — the toolbar's Assembly64 button (books icon), \
-    **File → Search Assembly64…**, or ⇧⌘F. It's a separate window, so you \
+    **File → Search Assembly64…**, the **Stream** menu, or ⇧⌘F. It's a \
+    separate AppKit window (like Drive Bay / Ultimate Config), so you \
     can browse while watching the stream.
 
     **Searching**
@@ -494,6 +498,18 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     Closing any main viewer window fully quits Stream64 and closes every \
     Assembly64, Help, Settings and additional viewer window.
+
+    **Full screen Spaces** — the viewer and other Stream64 windows \
+    (Assembly64, File Manager, SID visualizations, Drive Bay, Config, \
+    Memory Console, Debug Trace, Help, etc.) can each enter full screen on \
+    their own desktop. With the viewer already full screen, open Assembly64 \
+    (or any tool window) and use the green button — or **Window → Enter Full \
+    Screen** — so Mission Control creates a separate Space you can swipe \
+    between, instead of expanding inside the viewer's Space.
+
+    **Settings survive updates** — your device list and preferences are kept \
+    across in-app upgrades. Older `devices.json` files missing newer optional \
+    fields still load with safe defaults.
 
     **Settings → Audio** — choose the Mac output device for local playback, \
     volume, and the jitter buffer. A larger buffer \
@@ -603,6 +619,13 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let troubleshootingText = """
+    **Settings survive updates** — preferences (audio, general, CRT look), \
+    the device list, and per-device display/input settings live outside the \
+    app bundle under the stable ID `net.bosschaart.Stream64` and in \
+    Application Support. In-app updates and replacing Stream64.app in \
+    Applications keep them. Deleting the Preferences plist or removing a \
+    device (which has a unique ID) does reset that data.
+
     **Device discovery or streaming fails after an update / many Stream64 \
     entries under Local Network** — macOS Local Network privacy tracks each \
     signed build separately. Older ad-hoc builds and copies under `dist/` \

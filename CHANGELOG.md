@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+## 0.122b — 2026-08-14
+
+### Improved
+
+- **Menu bar Stream dropdown** mirrors the video right-click menu (connection, machine power, tools, display, input, SID visualizations) for the selected device. Toolbar also gains Debug Trace and the full SID Visualizations menu.
+- **Assembly64 and File Manager** use AppKit windows (same pattern as Ultimate Config / Drive Bay) so full screen creates their own Mission Control Space.
+
+### Fixed
+
+- **Device list / settings survive upgrades** when older `devices.json` omits newer fields. `UltimateDevice` decodes missing keys with defaults instead of quarantining the file as corrupt. UserDefaults are flushed before an in-app update relaunch.
+- **Secondary windows can full-screen on their own Spaces.** Titled windows force `fullScreenPrimary`, detach from the viewer’s Space before entering full screen, and SwiftUI scene-window subclasses are hooked so they cannot bypass the policy.
+- **Stream menu stays populated** when the full-screen viewer is on another Space — it follows sidebar device selection, not window focus.
+
 ## 0.121b — 2026-08-12
 
 ### Fixed

@@ -856,6 +856,9 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         deviceName = session.device.name
         window?.contentViewController = NSHostingController(
             rootView: SIDOscilloscopeView(model: newModel, session: session))
+        if let window {
+            Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        }
         updateTitle()
         Self.reconcileUIActivity(for: previousDeviceID)
         startupTask = Task { [weak self] in
@@ -922,6 +925,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         window.delegate = self
         window.contentViewController = NSHostingController(
             rootView: SIDOscilloscopeView(model: model, session: session))
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
         // The mode is fixed for this window's lifetime (see the type
         // comment on `SIDVisualizationMenuContent` — picking a different
         // mode always opens another window rather than changing this

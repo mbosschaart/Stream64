@@ -256,6 +256,7 @@ final class UltimateConfigWindowController: NSWindowController, NSWindowDelegate
         window.delegate = self
         window.contentViewController = NSHostingController(
             rootView: UltimateConfigView(model: model))
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }
 
     required init?(coder: NSCoder) { nil }

@@ -32,6 +32,65 @@ struct UltimateDevice: Identifiable, Codable, Hashable {
     var ftpPort: Int? = nil
     var ftpUsername: String? = nil
 
+    enum CodingKeys: String, CodingKey {
+        case id, name, host, apiPort, password
+        case videoPort, audioPort, debugPort
+        case autoConnect, notes, ultimateUniqueID
+        case ftpPort, ftpUsername
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        host: String,
+        apiPort: Int = 80,
+        password: String = "",
+        videoPort: Int = 11000,
+        audioPort: Int = 11001,
+        debugPort: Int = 11002,
+        autoConnect: Bool = true,
+        notes: String = "",
+        ultimateUniqueID: String? = nil,
+        ftpPort: Int? = nil,
+        ftpUsername: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.host = host
+        self.apiPort = apiPort
+        self.password = password
+        self.videoPort = videoPort
+        self.audioPort = audioPort
+        self.debugPort = debugPort
+        self.autoConnect = autoConnect
+        self.notes = notes
+        self.ultimateUniqueID = ultimateUniqueID
+        self.ftpPort = ftpPort
+        self.ftpUsername = ftpUsername
+    }
+
+    /// Tolerant decode so older `devices.json` files (missing fields added in
+    /// later releases) keep loading instead of being quarantined as corrupt
+    /// and wiping the user's device list / per-device settings after an update.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        host = try container.decode(String.self, forKey: .host)
+        apiPort = try container.decodeIfPresent(Int.self, forKey: .apiPort) ?? 80
+        password = try container.decodeIfPresent(String.self, forKey: .password) ?? ""
+        videoPort = try container.decodeIfPresent(Int.self, forKey: .videoPort) ?? 11000
+        audioPort = try container.decodeIfPresent(Int.self, forKey: .audioPort) ?? 11001
+        debugPort = try container.decodeIfPresent(Int.self, forKey: .debugPort) ?? 11002
+        autoConnect = try container.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        ultimateUniqueID = try container.decodeIfPresent(
+            String.self, forKey: .ultimateUniqueID)
+        ftpPort = try container.decodeIfPresent(Int.self, forKey: .ftpPort)
+        ftpUsername = try container.decodeIfPresent(
+            String.self, forKey: .ftpUsername)
+    }
+
     var effectiveFTPPort: Int { ftpPort ?? 21 }
     var effectiveFTPUsername: String {
         if let ftpUsername, !ftpUsername.isEmpty { return ftpUsername }

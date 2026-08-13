@@ -29,6 +29,37 @@ final class UpdateTests: XCTestCase {
     }
 
 
+    func testUltimateDeviceDecodesLegacyJSONMissingLaterFields() throws {
+        // Older installs wrote devices.json before debugPort / FTP / unique ID
+        // existed. Synthesized Codable would fail those loads and DeviceStore
+        // would quarantine the file — wiping devices and per-device settings.
+        let legacy = """
+        [
+          {
+            "id": "41414141-4141-4141-4141-414141414141",
+            "name": "Living Room",
+            "host": "192.168.1.64",
+            "apiPort": 80,
+            "password": "",
+            "videoPort": 11000,
+            "audioPort": 11001,
+            "autoConnect": true,
+            "notes": ""
+          }
+        ]
+        """.data(using: .utf8)!
+        let devices = try JSONDecoder().decode([UltimateDevice].self, from: legacy)
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices[0].name, "Living Room")
+        XCTAssertEqual(devices[0].host, "192.168.1.64")
+        XCTAssertEqual(devices[0].debugPort, 11002)
+        XCTAssertNil(devices[0].ultimateUniqueID)
+        XCTAssertNil(devices[0].ftpPort)
+        XCTAssertNil(devices[0].ftpUsername)
+        XCTAssertTrue(devices[0].autoConnect)
+    }
+
+
     func testUpdateChecksumVerificationRejectsTampering() throws {
         let archive = Data("release archive".utf8)
         let digest = SHA256.hash(data: archive)

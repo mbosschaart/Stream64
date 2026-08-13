@@ -218,6 +218,7 @@ final class MemoryConsoleWindowController: NSWindowController, NSWindowDelegate 
         window.delegate = self
         window.contentViewController = NSHostingController(
             rootView: MemoryConsoleView(model: model))
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }
 
     required init?(coder: NSCoder) { nil }

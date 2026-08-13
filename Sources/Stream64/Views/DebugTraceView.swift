@@ -710,6 +710,7 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.contentViewController = NSHostingController(
             rootView: DebugTraceView(model: model, session: session))
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -748,6 +749,9 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         window?.title = "\(session.device.name) Debug Trace"
         window?.contentViewController = NSHostingController(
             rootView: DebugTraceView(model: newModel, session: session))
+        if let window {
+            Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        }
         applyFollowSnapshot(snapshot)
         Self.windows[session.device.id] = self
         newModel.start()

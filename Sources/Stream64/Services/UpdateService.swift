@@ -372,6 +372,10 @@ final class UpdateService: ObservableObject {
 
             try Self.verifyTeamIdentifier(of: replacement)
             Self.clearQuarantine(at: replacement)
+            // Preferences live in ~/Library/Preferences under the stable
+            // bundle ID and are not inside the .app — flush anyway so any
+            // in-memory UserDefaults writes land before we hard-exit.
+            UserDefaults.standard.synchronize()
             try Self.installReplacement(replacement, over: currentApp)
 
             // Do NOT open the app while this process is still alive:
