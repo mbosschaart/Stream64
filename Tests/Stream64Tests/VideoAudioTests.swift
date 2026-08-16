@@ -796,8 +796,8 @@ final class VideoAudioTests: XCTestCase {
             VideoScaling.integerScaleFactor(viewWidth: 1920, viewHeight: 1080),
             3)
 
-        // Fill ignores aspect; Fit and Integer-with-fallback agree on a
-        // small window where integer would look tiny.
+        // Fit is continuous while preserving aspect; Integer retains its
+        // existing utilization fallback behavior on small windows.
         let tiny = CGSize(width: 640, height: 400)
         let fit = VideoScaling.scaleFactors(mode: .aspectFit, drawableSize: tiny)
         let smartInteger = VideoScaling.scaleFactors(

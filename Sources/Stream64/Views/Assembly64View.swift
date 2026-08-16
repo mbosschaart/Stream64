@@ -907,20 +907,23 @@ struct Assembly64View: View {
                 let cacheQuery = list.chartType.map { "chart:\($0)" } ?? query
                 let cacheKey = Self.searchCacheKey(
                     query: cacheQuery, offset: 0, limit: 200)
-                let found: [Assembly64Client.SearchResult]
+                let rawFound: [Assembly64Client.SearchResult]
                 if let cached = await Assembly64Cache.shared.searchResults(
                     for: cacheKey) {
-                    found = cached
+                    rawFound = cached
                 } else {
                     if let chartType = list.chartType {
-                        found = try await client.chart(chartType)
+                        rawFound = try await client.chart(chartType)
                     } else {
-                        found = try await client.search(
+                        rawFound = try await client.search(
                             query: query, offset: 0, limit: 100)
                     }
-                    await Assembly64Cache.shared.storeSearchResults(
-                        found, for: cacheKey)
                 }
+                let found = list.chartType == nil
+                    ? rawFound
+                    : await client.enrichChartResults(rawFound)
+                await Assembly64Cache.shared.storeSearchResults(
+                    found, for: cacheKey)
                 guard !Task.isCancelled, selectedDiscoveryList == list else {
                     return
                 }

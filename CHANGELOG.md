@@ -20,6 +20,9 @@
 - **RSID/PSID v3 multi-SID stability.** Multi-SID RSID playback no longer relies on the Ultimate native SID runner’s fragile path; PSID64-generated PRGs provide compatible real-C64 execution.
 - **Second-SID oscilloscope activity.** An already-open SID visualization refreshes its trace address bases immediately after just-in-time SID routing, so the second chip remains visible after an address change.
 - **PSID64 player display.** Removed an unintended automated INST/DEL toggle that could blank the converted player screen after launch.
+- **C64 Ultimate debug reconnect.** Reconnecting now restores the previously active debug-trace mode and device-side destination alongside video and audio, so open Debug Trace and SID windows recover without manual stream rearming.
+- **Visualization window geometry.** Retargeting open SID visualizations to the selected machine keeps their current size, position, and minimum size instead of reverting to the default frame.
+- **Assembly64 Top 200 metadata.** Native chart feeds now enrich their sparse rank/name payloads with Group and Release Year data while preserving chart order and caching the result.
 
 ## 0.123b — 2026-08-16
 

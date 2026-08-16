@@ -262,6 +262,50 @@ struct Assembly64Client {
             Self.baseURL.appendingPathComponent("charts/\(chartType)"))
     }
 
+    /// Native chart feeds intentionally contain only rank/name/rating. Look
+    /// up missing release metadata through AQL while retaining the feed's
+    /// original ordering and rank.
+    func enrichChartResults(
+        _ chartResults: [SearchResult]
+    ) async -> [SearchResult] {
+        var enriched = chartResults
+        let missing = chartResults.enumerated().filter {
+            $0.element.group == nil || $0.element.year == nil
+                || $0.element.released == nil
+        }
+        guard !missing.isEmpty else { return enriched }
+
+        await withTaskGroup(of: (Int, SearchResult?).self) { group in
+            var iterator = missing.makeIterator()
+            func enqueueNext() {
+                guard let (index, chartResult) = iterator.next() else { return }
+                group.addTask {
+                    let safeName = chartResult.name
+                        .replacingOccurrences(of: "\"", with: "")
+                    let query = "name:\"\(safeName)\" sort:name order:asc"
+                    let match = try? await self.search(
+                        query: query, offset: 0, limit: 20)
+                        .first {
+                            $0.itemID == chartResult.itemID
+                                && $0.category == chartResult.category
+                        }
+                    return (index, match)
+                }
+            }
+
+            for _ in 0..<min(8, missing.count) {
+                enqueueNext()
+            }
+            while let (index, result) = await group.next() {
+                if let result {
+                    enriched[index] = result
+                }
+                enqueueNext()
+            }
+        }
+        return enriched
+    }
+
     static func decodeSearchResults(_ data: Data) throws -> [SearchResult] {
         try JSONDecoder()
             .decode([LossyElement<SearchResult>].self, from: data)

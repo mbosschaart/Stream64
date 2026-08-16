@@ -960,6 +960,11 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     private func retarget(to session: DeviceSession, startDelay: TimeInterval) {
         guard deviceID != session.device.id else { return }
         let previousDeviceID = deviceID
+        // Replacing the hosting controller lets SwiftUI apply the new root
+        // view's ideal size. Preserve the user's actual window geometry and
+        // restore it immediately after the rebind instead.
+        let frame = window?.frame
+        let minimumSize = window?.minSize
         startupTask?.cancel()
         startupTask = nil
         model.stop()
@@ -975,6 +980,12 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             rootView: SIDOscilloscopeView(model: newModel, session: session))
         if let window {
             Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+            if let minimumSize {
+                window.minSize = minimumSize
+            }
+            if let frame {
+                window.setFrame(frame, display: false)
+            }
         }
         updateTitle()
         Self.reconcileUIActivity(for: previousDeviceID)

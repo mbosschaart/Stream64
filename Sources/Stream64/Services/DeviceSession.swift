@@ -67,6 +67,10 @@ final class DeviceSession: ObservableObject {
     /// Optional connection-lifetime lease, controlled by
     /// `keepDebugStreamWarm`. It prevents first-window debug:start churn.
     private var warmDebugTraceLease: UUID?
+    /// Last explicitly active debug mode, retained across a reconnect so a
+    /// C64U that reset its stream destination re-establishes its debug trace
+    /// alongside video and audio.
+    private var reconnectDebugTraceMode: DebugStreamMode?
     /// Runs debug capability/prewarm after video/audio are available. SID
     /// playback awaits this task, but normal reconnect UI does not.
     private var debugPrewarmTask: Task<Void, Never>?
@@ -796,6 +800,11 @@ final class DeviceSession: ObservableObject {
         // Suspend open SID engines before stopping receivers so sticky
         // `registerWritesEnabled` cannot block re-acquire after reconnect.
         SIDEngine.existing(for: device.id)?.suspendForSessionTeardown()
+        if case .active(let mode) = debugTraceState {
+            reconnectDebugTraceMode = mode
+        } else if debugTraceState == .starting || !debugTraceConsumers.isEmpty {
+            reconnectDebugTraceMode = .cpu6510Only
+        }
         videoReceiver.stop()
         audioReceiver.stop()
         debugStreamReceiver.stop()
@@ -817,11 +826,11 @@ final class DeviceSession: ObservableObject {
         videoFrameStats.presentFPS = 0
     }
 
-    // MARK: - Debug bus-trace stream (U64/U64 Elite only)
+    // MARK: - Debug bus-trace stream
 
     /// Silent, best-effort probe for U64 debug register support. Never
-    /// surfaces as a connection error — Ultimate-II+/C64 Ultimate hardware
-    /// simply fails this and keeps the debug features hidden.
+    /// surfaces as a connection error — hardware/firmware without this
+    /// register simply fails this and keeps the debug features hidden.
     private func probeDebugCapability() async {
         let probeClient = UltimateAPIClient(device: device, timeout: 3)
         let supported = (try? await probeClient.readDebugRegister()) != nil
@@ -835,7 +844,18 @@ final class DeviceSession: ObservableObject {
     private func beginDebugPrewarm() {
         debugPrewarmTask?.cancel()
         debugPrewarmTask = Task { [weak self] in
-            await self?.probeDebugCapability()
+            guard let self else { return }
+            await self.probeDebugCapability()
+            guard let mode = self.reconnectDebugTraceMode,
+                  self.supportsDebugFeatures,
+                  self.isConnected
+            else { return }
+            self.reconnectDebugTraceMode = nil
+            if case .active(let activeMode) = self.debugTraceState,
+               activeMode == mode {
+                return
+            }
+            await self.startDebugTrace(mode: mode)
         }
     }
 
@@ -890,6 +910,7 @@ final class DeviceSession: ObservableObject {
     /// deliberately does **not** touch the video/audio streams at all.
     func startDebugTrace(mode: DebugStreamMode) async {
         guard isConnected || connecting else { return }
+        reconnectDebugTraceMode = mode
         let generation = connectionGeneration
         debugTraceState = .starting
         debugLifecycleLog(
@@ -1047,6 +1068,7 @@ final class DeviceSession: ObservableObject {
         try? await client.stopDebugStream()
         debugStreamReceiver.stop()
         debugTraceState = .inactive
+        reconnectDebugTraceMode = nil
     }
 
     // MARK: - Machine control
