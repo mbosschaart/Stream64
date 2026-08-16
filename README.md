@@ -220,7 +220,7 @@ sometimes need different handling on that transport.
 
 ### SID Oscilloscope
 
-A 19-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+A 20-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
 dual-8580 U64-II). Reached from the stream's right-click menu under "SID \
@@ -286,6 +286,27 @@ window starts automatically and silently as soon as it opens if one isn't \
 already — no prompt, no button. It can run alongside the Debug Trace \
 window watching the very same trace, and opening several SID Oscilloscope \
 windows at once only starts it the first time, not per window.
+
+### KAOS
+
+**KAOS** is the hybrid acid-house/demoscene performance mode. It combines \
+SID gate/frequency/control events, `$D418` digi activity, and real post-mix \
+audio/FFT energy to infer beats, BPM, bars, phrases, active voices, and bass \
+pulses. Its scene director uses those patterns to cut between original \
+procedural effects: neon grids and tunnels, kaleidoscopes, scope/VU walls, \
+dancers, raster storms, hyperspace, checkerboards, turntables, cassette and \
+floppy motifs, plus wireframe C64/1541/monitor/joystick/smiley cut-ins.
+
+Large digital `ACID`, `HOUSE`, `DANCE`, `BASS`, `JACK`, `RAVE`, `BEAT`, \
+`GROOVE`, and `KAOS` cards are intentionally sparse—appearing on phrase \
+starts or high-confidence sparse bass/digi breaks with a quick flash/fade. \
+The included C64-era line-art assets are white-to-transparent composites \
+layered with the live palette, scopes, VU meters, and spectrum rather than \
+static images.
+
+KAOS shares the per-device SID register trace and audio tap with other SID \
+windows, so multiple KAOS windows remain synchronized and do not create \
+additional debug streams.
 
 ## Building & Running
 
