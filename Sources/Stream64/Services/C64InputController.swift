@@ -177,6 +177,19 @@ final class C64InputController: ObservableObject {
         enqueue(.releaseAll)
     }
 
+    /// Focus transitions occur whenever a tool/visualization window opens.
+    /// Do not send a remote `release_all` unless this controller actually
+    /// owns held or queued input—some RSID players are sensitive to unrelated
+    /// input API traffic while running.
+    func releaseAllIfNeeded() {
+        guard !heldKeys.isEmpty
+            || !joystickSources.isEmpty
+            || !emittedJoystick.isEmpty
+            || logicalQueueDepth > 0
+        else { return }
+        releaseAll()
+    }
+
     func cancelAndRelease() async {
         heldKeys.removeAll()
         joystickSources.removeAll()

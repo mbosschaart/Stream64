@@ -224,6 +224,12 @@ struct GeneralSettingsTab: View {
                 Toggle(
                     "Visualisations auto-follow selected C64",
                     isOn: $settings.visualizationsAutoFollowSelected)
+                Toggle(
+                    "Keep U64 debug stream running while connected",
+                    isOn: $settings.keepDebugStreamWarm)
+                Toggle(
+                    "Log U64 debug stream lifecycle",
+                    isOn: $settings.debugLifecycleLogging)
             } footer: {
                 Text(
                     "Destructive actions include power off, file deletion, "
@@ -231,7 +237,11 @@ struct GeneralSettingsTab: View {
                         + "Drive Bay power-off / unmount. When "
                         + "auto-follow is on, open SID and Memory Map / "
                         + "Debug Trace windows switch to the newly selected "
-                        + "machine. Sound always follows selection."
+                        + "machine. Sound always follows selection. The warm "
+                        + "debug stream applies only to hardware that supports "
+                        + "it and avoids restarting it when opening SID or "
+                        + "Debug Trace windows. Debug lifecycle logging writes "
+                        + "diagnostic counters to the macOS unified log."
                 )
                     .foregroundStyle(.secondary)
             }

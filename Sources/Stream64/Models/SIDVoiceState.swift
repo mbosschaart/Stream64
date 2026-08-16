@@ -196,8 +196,16 @@ struct SIDVoiceSynth {
     /// doc comment for the accuracy caveat.
     private mutating func stepNoise(dt: Double, hz: Double) {
         noiseStepPhase += hz * dt * 16
-        guard noiseStepPhase >= 1 else { return }
-        noiseStepPhase -= noiseStepPhase.rounded(.down)
+        while noiseStepPhase >= 1 {
+            noiseStepPhase -= 1
+            advanceNoiseLFSR()
+        }
+    }
+
+    /// Advance one SID-noise LFSR clock. Kept separate so large elapsed
+    /// intervals catch up every clock instead of skipping directly to one
+    /// stale random value, which made high-frequency noise look nearly flat.
+    private mutating func advanceNoiseLFSR() {
         let bit0 = ((lfsr >> 22) ^ (lfsr >> 17)) & 1
         lfsr = ((lfsr << 1) | bit0) & 0x7F_FFFF
         let byte =

@@ -35,7 +35,7 @@ final class DebugTraceViewModel: ObservableObject {
     @Published private(set) var missedPackets: Int = 0
     @Published var selectedMode: DebugStreamMode = .cpu6510Only
     @Published var displayMode: DebugTraceDisplayMode = .memoryMap
-    @Published var memoryMapVisualization: MemoryMapVisualization = .ioFade
+    @Published var memoryMapVisualization: MemoryMapVisualization = .threeD
     @Published var memoryMap3DOptions = MemoryMap3DOptions()
     let memoryMapRenderSettings = MemoryMapRenderSettings()
     let memoryMap3DInteraction = MemoryMap3DInteraction()

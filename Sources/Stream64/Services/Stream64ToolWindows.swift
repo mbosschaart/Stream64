@@ -10,23 +10,27 @@ import SwiftUI
 @MainActor
 enum Stream64ToolWindows {
     private static var assembly64Controller: Assembly64WindowController?
+    private static var hvscController: HVSCWindowController?
     private static var fileManagerController: FileManagerWindowController?
 
     private static var deviceStore: DeviceStore?
     private static var settings: AppSettings?
     private static var sessionManager: SessionManager?
     private static var assembly64Library: Assembly64LibraryStore?
+    private static var hvscLibrary: HVSCLibraryStore?
 
     static func configure(
         deviceStore: DeviceStore,
         settings: AppSettings,
         sessionManager: SessionManager,
-        assembly64Library: Assembly64LibraryStore
+        assembly64Library: Assembly64LibraryStore,
+        hvscLibrary: HVSCLibraryStore
     ) {
         self.deviceStore = deviceStore
         self.settings = settings
         self.sessionManager = sessionManager
         self.assembly64Library = assembly64Library
+        self.hvscLibrary = hvscLibrary
     }
 
     static func showAssembly64() {
@@ -69,8 +73,34 @@ enum Stream64ToolWindows {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    static func showHVSC() {
+        guard let deviceStore, let settings, let sessionManager,
+              let hvscLibrary else { return }
+        if let existing = hvscController {
+            existing.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let controller = HVSCWindowController(
+            deviceStore: deviceStore,
+            settings: settings,
+            library: hvscLibrary,
+            sessionProvider: { device in
+                sessionManager.session(for: device, settings: settings)
+            }
+        )
+        hvscController = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     fileprivate static func assembly64DidClose() {
         assembly64Controller = nil
+    }
+
+    fileprivate static func hvscDidClose() {
+        hvscController = nil
     }
 
     fileprivate static func fileManagerDidClose() {
@@ -121,6 +151,43 @@ final class Assembly64WindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         Stream64ToolWindows.assembly64DidClose()
+    }
+}
+
+@MainActor
+final class HVSCWindowController: NSWindowController, NSWindowDelegate {
+    init(
+        deviceStore: DeviceStore,
+        settings: AppSettings,
+        library: HVSCLibraryStore,
+        sessionProvider: @escaping (UltimateDevice) -> DeviceSession
+    ) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.title = "HVSC SID Browser"
+        window.minSize = NSSize(width: 880, height: 560)
+        window.isReleasedWhenClosed = false
+        window.center()
+        super.init(window: window)
+        window.delegate = self
+        window.contentViewController = NSHostingController(
+            rootView: NavigationStack {
+                HVSCView(sessionProvider: sessionProvider)
+                    .environmentObject(deviceStore)
+                    .environmentObject(settings)
+                    .environmentObject(library)
+            })
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    func windowWillClose(_ notification: Notification) {
+        Stream64ToolWindows.hvscDidClose()
     }
 }
 

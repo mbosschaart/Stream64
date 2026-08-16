@@ -117,6 +117,19 @@ struct UltimateAPIClient {
             queryItems: [URLQueryItem(name: "value", value: value)])
     }
 
+    /// Avoid rewriting the active debug source when it is already selected.
+    /// Some firmware applies this configuration mutation live, so a redundant
+    /// write during SID playback is needlessly disruptive.
+    func ensureDebugStreamMode(_ mode: DebugStreamMode) async throws {
+        let settings = try await fetchConfigCategory("Data Streams")
+        if settings["Debug Stream Mode"] as? String != mode.rawValue {
+            try await setConfigItem(
+                category: "Data Streams",
+                item: "Debug Stream Mode",
+                value: mode.rawValue)
+        }
+    }
+
     private func fetchConfigCategory(_ category: String) async throws -> [String: Any] {
         let request = try makeRequest(path: "/v1/configs/\(category)", method: "GET")
         let data = try await perform(request)
@@ -128,9 +141,19 @@ struct UltimateAPIClient {
     }
 
     struct SIDConfiguration: Equatable {
+        enum SecondSIDSource: Equatable {
+            case physicalSocket
+            case ultiSID
+        }
+
         let socket1Address: UInt16
+        let socket1Model: String?
         /// nil when a second SID isn't enabled/detected.
         let socket2Address: UInt16?
+        let socket2Model: String?
+        /// Which address entry owns `socket2Address`; used by the explicit
+        /// compatibility Fix action without guessing physical hardware.
+        let secondSIDSource: SecondSIDSource?
     }
 
     /// Best-effort discovery of the configured SID base address(es), used
@@ -144,25 +167,96 @@ struct UltimateAPIClient {
     /// failure — this is a debugging aid, not something that should ever
     /// block or error out the UI.
     func fetchSIDConfiguration() async -> SIDConfiguration {
-        let fallback = SIDConfiguration(socket1Address: 0xD400, socket2Address: nil)
+        let fallback = SIDConfiguration(
+            socket1Address: 0xD400,
+            socket1Model: nil,
+            socket2Address: nil,
+            socket2Model: nil,
+            secondSIDSource: nil)
         guard let addressing = try? await fetchConfigCategory("SID Addressing"),
-              let sockets = try? await fetchConfigCategory("SID Sockets Configuration") else {
+              let sockets = try? await fetchConfigCategory("SID Sockets Configuration"),
+              let ultiSID = try? await fetchConfigCategory("UltiSID Configuration") else {
             return fallback
         }
-        let socket1 = Self.parseHexAddress(addressing["SID Socket 1 Address"] as? String) ?? 0xD400
+        let physicalSocket1Enabled = (sockets["SID Socket 1"] as? String) == "Enabled"
+        let physicalSocket1Model = Self.detectedSIDModel(
+            sockets["SID Detected Socket 1"] as? String)
         let socket2Enabled = (sockets["SID Socket 2"] as? String) == "Enabled"
-        let detected = sockets["SID Detected Socket 2"] as? String
-        let socket2Detected = detected.map { !$0.isEmpty && $0 != "None" } ?? false
-        let socket2 = (socket2Enabled && socket2Detected)
-            ? Self.parseHexAddress(addressing["SID Socket 2 Address"] as? String)
-            : nil
-        return SIDConfiguration(socket1Address: socket1, socket2Address: socket2)
+        let physicalSocket2Model = Self.detectedSIDModel(
+            sockets["SID Detected Socket 2"] as? String)
+
+        // On U64 hardware, active physical sockets take precedence. C64
+        // Ultimate Founder has no physical sockets, so the configured UltiSID
+        // pair is the authoritative source instead.
+        if physicalSocket1Enabled, physicalSocket1Model != nil {
+            let socket1 = Self.parseHexAddress(
+                addressing["SID Socket 1 Address"] as? String) ?? 0xD400
+            let socket2 = (socket2Enabled && physicalSocket2Model != nil)
+                ? Self.parseHexAddress(
+                    addressing["SID Socket 2 Address"] as? String)
+                : nil
+            return SIDConfiguration(
+                socket1Address: socket1,
+                socket1Model: physicalSocket1Model,
+                socket2Address: socket2,
+                socket2Model: socket2 == nil ? nil : physicalSocket2Model,
+                secondSIDSource: socket2 == nil ? nil : .physicalSocket)
+        }
+
+        let ultiSID1 = Self.parseHexAddress(
+            addressing["UltiSID 1 Address"] as? String) ?? 0xD400
+        let ultiSID2 = Self.parseHexAddress(
+            addressing["UltiSID 2 Address"] as? String)
+        return SIDConfiguration(
+            socket1Address: ultiSID1,
+            socket1Model: Self.ultiSIDModel(
+                ultiSID["UltiSID 1 Filter Curve"] as? String),
+            socket2Address: ultiSID2,
+            socket2Model: ultiSID2 == nil ? nil : Self.ultiSIDModel(
+                ultiSID["UltiSID 2 Filter Curve"] as? String),
+            secondSIDSource: ultiSID2 == nil ? nil : .ultiSID)
+    }
+
+    /// Applies the address needed by a PSIDv3/4 second SID. This never
+    /// enables/disables sockets or changes the installed SID's model; callers
+    /// must only expose it after explicit user confirmation.
+    func setSecondSIDAddress(_ address: UInt16) async throws {
+        let configuration = await fetchSIDConfiguration()
+        guard let source = configuration.secondSIDSource,
+              configuration.socket2Address != nil else {
+            throw APIError.httpError(
+                400,
+                "No configured second SID is available.")
+        }
+        guard configuration.socket2Address != address else { return }
+        try await setConfigItem(
+            category: "SID Addressing",
+            item: source == .physicalSocket
+                ? "SID Socket 2 Address"
+                : "UltiSID 2 Address",
+            value: String(format: "$%04X", address))
+        // Persist the specific dirty store rather than relying on a global
+        // save sweep. Founder firmware keeps UltiSID addressing in this
+        // category even though its physical sockets are disabled.
+        try await saveConfigCategoryToFlash("SID Addressing")
     }
 
     private static func parseHexAddress(_ string: String?) -> UInt16? {
         guard var hex = string else { return nil }
         if hex.hasPrefix("$") { hex.removeFirst() }
         return UInt16(hex, radix: 16)
+    }
+
+    private static func detectedSIDModel(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.uppercased()
+        if normalized.contains("6581") { return "6581" }
+        if normalized.contains("8580") { return "8580" }
+        return nil
+    }
+
+    private static func ultiSIDModel(_ filterCurve: String?) -> String? {
+        detectedSIDModel(filterCurve)
     }
 
     // MARK: - Matrix keyboard / joystick input
@@ -266,12 +360,62 @@ struct UltimateAPIClient {
         ])
     }
 
-    /// Upload a SID tune and play it.
-    func playSID(data: Data) async throws {
-        var request = try makeRequest(path: "/v1/runners:sidplay", method: "POST")
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.httpBody = data
+    /// Upload a SID tune and play it. The Ultimate API expects multipart data
+    /// named `sid`; a raw octet-stream body may lose SID metadata on newer
+    /// firmware and breaks multi-SID playback.
+    func playSID(
+        data: Data,
+        filename: String = "tune.sid",
+        songNumber: Int? = nil,
+        songLengths: Data? = nil
+    ) async throws {
+        guard Self.isSafeMultipartFilename(filename) else {
+            throw APIError.invalidURL
+        }
+        var items: [URLQueryItem] = []
+        if let songNumber {
+            items.append(URLQueryItem(name: "songnr", value: String(songNumber)))
+        }
+        var request = try makeRequest(
+            path: "/v1/runners:sidplay",
+            method: "POST",
+            queryItems: items)
+        let boundary = "Stream64-\(UUID().uuidString)"
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type")
+        request.httpBody = Self.multipartSIDBody(
+            boundary: boundary,
+            sid: data,
+            filename: filename,
+            songLengths: songLengths)
         try await perform(request)
+    }
+
+    static func multipartSIDBody(
+        boundary: String,
+        sid: Data,
+        filename: String,
+        songLengths: Data? = nil
+    ) -> Data {
+        var body = Data()
+        func append(_ value: String) {
+            body.append(contentsOf: value.utf8)
+        }
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"sid\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: application/octet-stream\r\n\r\n")
+        body.append(sid)
+        append("\r\n")
+        if let songLengths {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"songlengths\"; filename=\"\(filename).ssl\"\r\n")
+            append("Content-Type: application/octet-stream\r\n\r\n")
+            body.append(songLengths)
+            append("\r\n")
+        }
+        append("--\(boundary)--\r\n")
+        return body
     }
 
     func playSID(path: String, songNumber: Int? = nil) async throws {
@@ -472,6 +616,10 @@ struct UltimateAPIClient {
 
     func saveConfigToFlash() async throws {
         try await put("/v1/configs:save_to_flash")
+    }
+
+    func saveConfigCategoryToFlash(_ category: String) async throws {
+        try await put("/v1/configs/\(category):save_to_flash")
     }
 
     func loadConfigFromFlash() async throws {

@@ -25,6 +25,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     case controlBits = "Control Bits"
     case dashboard = "SID Dashboard"
     case colorfulWaveform = "Colorful Waveform"
+    case kaos = "KAOS"
     var id: String { rawValue }
 
     /// Register-driven modes reconstruct their picture from SID register
@@ -33,7 +34,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// sample tap active instead (or as well).
     var needsAudioTap: Bool {
         switch self {
-        case .spectrum, .lissajous, .spectrogram, .waterfall3D, .barField3D: return true
+        case .spectrum, .lissajous, .spectrogram, .waterfall3D, .barField3D, .kaos: return true
         default: return false
         }
     }
@@ -49,23 +50,28 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// paid for it unconditionally before this was added.
     var needsSampleSynthesis: Bool {
         switch self {
-        case .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform: return true
+        case .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform, .kaos: return true
         default: return false
         }
     }
 
-    /// Whether this mode needs SID register *writes* at all — the inverse
-    /// of `needsAudioTap` today, since no mode currently needs both the
-    /// debug bus-trace and the raw audio tap. Named separately (rather than
-    /// just inlining `!needsAudioTap`) so call sites read as "this mode
-    /// needs register writes" instead of a double negative.
-    var needsRegisterWrites: Bool { !needsAudioTap }
+    /// Whether this mode needs SID register writes. KAOS is intentionally a
+    /// hybrid mode: register events provide rhythm/pattern structure while
+    /// post-mix audio supplies the final beat energy.
+    var needsRegisterWrites: Bool {
+        switch self {
+        case .spectrum, .lissajous, .spectrogram, .waterfall3D, .barField3D:
+            return false
+        default:
+            return true
+        }
+    }
 
     /// Whether this mode consumes FFT bar spectra from `SIDSpectrumAnalyzer`
     /// — as opposed to Lissajous, which only needs raw L/R samples.
     var usesSpectrumBars: Bool {
         switch self {
-        case .spectrum, .spectrogram, .waterfall3D, .barField3D: return true
+        case .spectrum, .spectrogram, .waterfall3D, .barField3D, .kaos: return true
         default: return false
         }
     }
@@ -100,6 +106,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
         case .controlBits: return "switch.2"
         case .dashboard: return "rectangle.3.group"
         case .colorfulWaveform: return "waveform.circle.fill"
+        case .kaos: return "sparkles"
         }
     }
 }
@@ -114,6 +121,10 @@ struct SIDVoiceChannel: Identifiable {
     let voiceIndex: Int   // 0, 1, 2
     var registers = SIDVoiceRegisters()
     var synth = SIDVoiceSynth()
+    /// Decaying indicator that this chip's $D418 master volume changed.
+    /// Volume-register modulation is the classic SID digi/sample technique;
+    /// it has no per-voice waveform-select bit to label.
+    var digiActivity: Float = 0
 
     private var samples: [Float]
     private var envelopeSamples: [Float]
@@ -171,6 +182,7 @@ struct SIDVoiceChannel: Identifiable {
         envelopeSamples = Array(repeating: 0, count: envelopeSamples.count)
         noteHistory = Array(repeating: (false, 0), count: noteHistory.count)
         peakLevel = 0
+        digiActivity = 0
         sampleOrderCache.index = -1
         envelopeOrderCache.index = -1
         sampleOrderCache.values = []
@@ -236,7 +248,9 @@ struct SIDVoiceChannel: Identifiable {
         if registers.sawtoothEnabled { parts.append("Saw") }
         if registers.pulseEnabled { parts.append("Pulse") }
         if registers.noiseEnabled { parts.append("Noise") }
-        return parts.isEmpty ? "—" : parts.joined(separator: "+")
+        if !parts.isEmpty { return parts.joined(separator: "+") }
+        if digiActivity > 0.1 { return "Digi ($D418)" }
+        return registers.gate ? "Gate / no waveform" : "No waveform"
     }
 
     var frequencyHz: Double {
@@ -296,11 +310,13 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     @Published private(set) var spectrumBars: [Float] = []
     @Published private(set) var spectrogramHistory: [[Float]] = []
     @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
+    @Published private(set) var kaosRhythm = KAOSRhythmState()
 
     private var engineToken: SIDEngine.SubscriberToken?
     private var subscribedNeeds: SIDEngineNeeds?
-    /// False while the window is occluded or demoted under high load —
-    /// drops this window's needs from the shared engine.
+    /// False while the window is occluded. The shared engine subscription
+    /// remains alive so changing focus/Spaces never stop-starts the Ultimate
+    /// debug stream; this only suppresses UI pulls for an invisible window.
     private var isVisiblyActive = false
 
     init(session: DeviceSession) {
@@ -315,31 +331,32 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     /// needs to compute `SIDEngineNeeds` once).
     func start() {
         subscribedNeeds = SIDEngineNeeds(mode: visualizationMode)
-        // Force re-apply even if an occlusion notification already marked
-        // us visible before `subscribedNeeds` existed; reconcile may also
-        // call `setVisiblyActive` right after this.
-        isVisiblyActive = false
-        setVisiblyActive(true)
+        guard engineToken == nil, let subscribedNeeds else { return }
+        let needs = subscribedNeeds
+        engineToken = engine.subscribe(needs: needs) { [weak self] in
+            // Background/other-Space windows must keep the device stream
+            // leased, but should not rebuild their SwiftUI canvases.
+            guard let self, self.isVisiblyActive else { return }
+            self.pullFromEngine(needs: needs)
+        }
+        isVisiblyActive = true
+        pullFromEngine(needs: needs)
     }
 
     func stop() {
-        setVisiblyActive(false)
+        isVisiblyActive = false
+        if let engineToken {
+            engine.unsubscribe(engineToken)
+            self.engineToken = nil
+        }
         subscribedNeeds = nil
     }
 
     func setVisiblyActive(_ active: Bool) {
         guard active != isVisiblyActive else { return }
         isVisiblyActive = active
-        if active {
-            guard engineToken == nil, let subscribedNeeds else { return }
-            let needs = subscribedNeeds
-            engineToken = engine.subscribe(needs: needs) { [weak self] in
-                self?.pullFromEngine(needs: needs)
-            }
-            pullFromEngine(needs: needs)
-        } else if let engineToken {
-            engine.unsubscribe(engineToken)
-            self.engineToken = nil
+        if active, let subscribedNeeds {
+            pullFromEngine(needs: subscribedNeeds)
         }
     }
 
@@ -360,6 +377,9 @@ final class SIDOscilloscopeViewModel: ObservableObject {
         }
         if needs.needsLissajousPoints {
             lissajousPoints = engine.lissajousPoints
+        }
+        if needs.needsKAOSRhythm {
+            kaosRhythm = engine.kaosRhythm
         }
     }
 }
@@ -445,6 +465,13 @@ private struct SIDOscilloscopeContent: View {
             SIDDashboardView(channels: model.channels, filterStates: model.filterStates)
         case .colorfulWaveform:
             SIDColorfulWaveformView(channels: model.channels, glow: model.phosphorGlowEnabled)
+        case .kaos:
+            SIDKAOSView(
+                rhythm: model.kaosRhythm,
+                bars: model.spectrumBars,
+                channels: model.channels,
+                lissajousPoints: model.lissajousPoints,
+                glow: model.phosphorGlowEnabled)
         }
     }
 
@@ -605,7 +632,12 @@ private struct SIDChannelPanel: View {
 
     var body: some View {
         SIDPanelChrome(channel: channel) {
-            WaveformTrace(samples: channel.orderedSamples, color: .green, bipolar: true, glow: glow)
+            WaveformTrace(
+                samples: channel.orderedSamples,
+                color: channel.registers.noiseEnabled ? .cyan : .green,
+                bipolar: true,
+                glow: glow,
+                autoGain: channel.registers.noiseEnabled)
         } footer: {
             HStack {
                 Text(channel.waveformLabel)
@@ -649,6 +681,9 @@ struct WaveformTrace: View {
     /// draws 0...1 values from the bottom up (envelope-style).
     let bipolar: Bool
     var glow = false
+    /// Noise and digi-derived traces can be valid but quiet relative to the
+    /// fixed ±1 oscillator range. Normalize their local peak for visibility.
+    var autoGain = false
 
     var body: some View {
         Canvas { context, size in
@@ -659,7 +694,11 @@ struct WaveformTrace: View {
             context.stroke(midline, with: .color(.white.opacity(0.15)), lineWidth: 0.5)
 
             guard samples.count > 1 else { return }
-            let path = Self.path(for: samples, size: size, bipolar: bipolar)
+            let path = Self.path(
+                for: samples,
+                size: size,
+                bipolar: bipolar,
+                gain: autoGain ? Self.autoGain(for: samples) : 1)
 
             if glow {
                 for (radius, opacity) in [(6.0, 0.12), (3.0, 0.22)] {
@@ -672,7 +711,18 @@ struct WaveformTrace: View {
         }
     }
 
-    private static func path(for samples: [Float], size: CGSize, bipolar: Bool) -> Path {
+    private static func autoGain(for samples: [Float]) -> CGFloat {
+        let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        guard peak > 0.015 else { return 1 }
+        return min(16, 0.85 / CGFloat(peak))
+    }
+
+    private static func path(
+        for samples: [Float],
+        size: CGSize,
+        bipolar: Bool,
+        gain: CGFloat
+    ) -> Path {
         let stepX = size.width / CGFloat(samples.count - 1)
         var path = Path()
         for (index, sample) in samples.enumerated() {
@@ -680,7 +730,8 @@ struct WaveformTrace: View {
             let y: CGFloat
             if bipolar {
                 let amplitude = size.height / 2 - 4
-                y = size.height / 2 - CGFloat(sample) * amplitude
+                let scaled = max(-1, min(1, CGFloat(sample) * gain))
+                y = size.height / 2 - scaled * amplitude
             } else {
                 y = size.height - 2 - CGFloat(max(0, min(1, sample))) * (size.height - 6)
             }

@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.122b-purple)
+![Version](https://img.shields.io/badge/version-0.123b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -26,13 +26,14 @@ Designed by Martijn Bosschaart, 2026.
 - **Audio output device picker** — choose which Mac speaker/headphones Stream64 uses locally (independent of the system default and of AirPlay)
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — search the online C64 library with rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
+- **HVSC SID browser** — interactive, rate-limited search of High Voltage SID Collection’s web session; inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download-and-play a SID on one Ultimate or **All Connected C64s**; persistent playlists, plus optional `Songlengths.md5` updates, provide validated per-subtune durations
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
 - **Menu-bar Stream menu** — same per-stream controls as the video right-click menu, always targeting the sidebar-selected device (works across Mission Control Spaces)
 - **Independent full-screen Spaces** — viewer, Assembly64, File Manager, SID, Drive Bay, Config, Memory Console, Debug Trace and Help can each own a Mission Control Space instead of stacking into the viewer's fullscreen desktop
 - **Drive Bay, Ultimate Config, Memory Console** — mount/unmount and power IEC drives, switch 1541/1571/1581 mode, create blank D64/D71/D81 images; browse/edit flash config categories; DMA peek/poke hex dump via `readmem`/`writemem` (toolbar + stream context menu)
 - **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
-- **SID Oscilloscope** (Ultimate 64/Elite only) — a 19-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 19 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, plus real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, and sndpeek-style 3D Waterfall/3D Bar Field modes — with an optional phosphor-glow overlay
+- **SID Oscilloscope** (Ultimate 64/Elite only) — a 20-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 20 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, sndpeek-style 3D Waterfall/3D Bar Field, and **KAOS**—a hybrid register/audio acid-house scene library with beat cuts, scopes, VU meters, spectral layers, and typography — with an optional phosphor-glow overlay
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -302,10 +303,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.122b BUILD_NUMBER=122 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.123b BUILD_NUMBER=123 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.122b BUILD_NUMBER=122 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.123b BUILD_NUMBER=123 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -352,7 +353,7 @@ Right-click the picture for stream, machine and display controls — the same se
                      SessionManager / SwiftUI views / DisplaySettings
 ```
 
-Each configured device gets one `DeviceSession` owning its receivers, API client and display settings. Sessions are cached in `SessionManager` and survive view rebuilds. Device defaults and manual edits validate stream-port ranges and collisions. `SingleInstanceLock` prevents separate Stream64 processes from competing for the same listeners. `Assembly64LibraryStore` and `Assembly64Cache` separate persistent user intent from regenerable metadata. Health monitoring, reconnect/backoff, screenshot GPU readback and resource lookup operate around the core stream path.
+Each configured device gets one `DeviceSession` owning its receivers, API client and display settings. Sessions are cached in `SessionManager` and survive view rebuilds. Device defaults and manual edits validate stream-port ranges and collisions. `SingleInstanceLock` prevents separate Stream64 processes from competing for the same listeners. `Assembly64LibraryStore` / `Assembly64Cache` and `HVSCLibraryStore` separate local user/cache state from their online sources. Health monitoring, reconnect/backoff, screenshot GPU readback and resource lookup operate around the core stream path.
 
 ## Source Layout
 
@@ -399,10 +400,12 @@ Sources/Stream64/
 │   ├── TransferQueue.swift      Persistent, retryable file-transfer queue
 │   ├── Assembly64Client.swift, Assembly64Cache.swift
 │   │                            Assembly64 search, metadata, cache, and downloads
+│   ├── HVSCClient.swift        Interactive HVSC search/download, SID headers,
+│   │                            and validated Songlengths.md5 cache
 │   ├── Assembly64ArchiveInspector.swift  Safe ZIP inspection/extraction
 │   ├── CSDBPreviewClient.swift  CSDB screenshot/source fallback
 │   ├── Stream64WindowPolicy.swift  Independent full-screen Spaces for all windows
-│   ├── Stream64ToolWindows.swift   AppKit hosts for Assembly64 / File Manager
+│   ├── Stream64ToolWindows.swift   AppKit hosts for Assembly64 / HVSC / File Manager
 │   └── SingleInstanceLock.swift Process lock preventing duplicate UDP listeners
 ├── Rendering/
 │   ├── MetalFrameRenderer.swift Metal + shaders (CRT/signal/phosphor/history/dirt)
@@ -416,8 +419,8 @@ Sources/Stream64/
     │                            Main viewer, grid, MTKView, and keyboard capture
     ├── StreamContextMenu.swift, SettingsView.swift, DeviceEditSheet.swift
     │                            Per-stream controls, preferences, and device setup
-    ├── Assembly64View.swift, RemoteBrowserView.swift
-    │                            Assembly64 browser and Commander file manager
+    ├── Assembly64View.swift, HVSCView.swift, RemoteBrowserView.swift
+    │                            Assembly64/HVSC browsers and Commander file manager
     ├── DebugTraceView.swift, MemoryMapView.swift, MemoryMap3DView.swift
     │                            Trace table, flat map, and 3D map UI
     ├── TelnetMonitorView.swift, RemoteMenuView.swift
@@ -502,6 +505,12 @@ Drag-and-drop accepts `.prg` (`POST /v1/runners:run_prg`), disk images (multipar
 ### Assembly64 Integration
 
 `Assembly64Client` talks to the [Assembly64](https://hackerswithstyle.se/leet/swagger-ui/index.html) REST API (requires `client-id: assembly64`). Search facets are loaded from `/search/aql/presets`; tested AQL composition handles quoting, repository/type/year/rating/recency filters, sorting and pagination. Composite release identity prevents cross-repository collisions. Selecting a result concurrently loads files and cached metadata, with CSDB preview/source fallback. Favorites, recents, saved searches and successful remembered actions persist locally. Complete release ZIPs can be saved or safely inspected: traversal, symlinks, duplicates, suspicious ratios and size/count limits are rejected before selective in-memory extraction and device loading.
+
+### HVSC Integration
+
+`HVSCClient` follows the public requests used by the [HVSC](https://www.hvsc.c64.org/) website itself: user-entered `GET /api/v1/sids` search, one `GET /api/v1/sids/{id}` detail request, then one explicit `GET /download/sids/{id}` when **Play** is pressed. Stream64 never crawls, bulk-indexes, prefetches, or auto-pages the collection. Search requests are debounced and cancellable, and all JSON/SID responses have size, HTTPS-host, MIME, and PSID/RSID header validation before a selected SID reaches the Ultimate `/v1/runners:sidplay` runner as the documented multipart `sid` attachment.
+
+The optional **Song Lengths** updater retrieves and validates the current [Songlengths.md5 format](https://hvsc.de/download/C64Music/DOCUMENTS/Songlengths.faq) into Application Support. It atomically preserves the last valid cache if an update fails. Full-file MD5 (including SID header) maps a downloaded tune to millisecond-accurate duration entries for each subtune; no legacy `Songlengths.txt` algorithm is used. Before multi-SID playback, Stream64 checks the target's SID socket models/addresses. Its user-confirmed **Fix** action only corrects the address of an already enabled/detected second SID and saves the Ultimate configuration; it never enables missing hardware or changes a chip model. The browser also persists a manually ordered playlist; play, remove, reorder, and double-click entries, while automatic advancement remains unavailable without a playback-complete callback from the Ultimate runner. HVSC is independent of Stream64; the endpoint contract is browser-internal and may change.
 
 ## Design Notes & Learned Constraints
 

@@ -6,6 +6,37 @@ import AVFoundation
 @testable import Stream64
 
 final class InputTests: XCTestCase {
+    @MainActor
+    func testFocusReleaseSkipsRemoteCallWhenNoInputIsHeld() async throws {
+        let transport = RecordingHTTPTransport()
+        let controller = C64InputController(
+            device: UltimateDevice(
+                id: UUID(), name: "Input", host: "192.168.1.64"),
+            transport: transport)
+        controller.settings.transport = .matrix
+
+        controller.releaseAllIfNeeded()
+        try await Task.sleep(for: .milliseconds(20))
+        let noInputRequest = await transport.recordedRequest()
+        XCTAssertNil(noInputRequest)
+
+        controller.keyDown(
+            hostKeyCode: 0,
+            inputs: ["a"],
+            fallback: 0x41,
+            holdable: true)
+        controller.releaseAllIfNeeded()
+        for _ in 0..<20 where await transport.recordedRequest() == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let recordedRequest = await transport.recordedRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertTrue([
+            "/v1/machine:input",
+            "/v1/machine:writemem",
+        ].contains(request.url?.path))
+    }
+
     func testMachineInputRequestAndServiceAutoEnable() async throws {
         let transport = ScriptedInputTransport()
         let device = UltimateDevice(name: "Input", host: "192.168.1.64")

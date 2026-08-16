@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.122b"
+            ?? "0.123b"
     }
 }
 
@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the viewer stays full screen elsewhere.
     private func installIndependentFullScreenPolicyObserver() {
         guard windowFullScreenPolicyObserver == nil else { return }
-        let apply: (Notification) -> Void = { note in
+        let apply: @Sendable (Notification) -> Void = { note in
             guard let window = note.object as? NSWindow else { return }
             Task { @MainActor in
                 Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
@@ -303,6 +303,8 @@ struct Stream64App: App {
     @StateObject private var updateService = UpdateService()
     /// Persistent library state survives Assembly64 window reconstruction.
     @StateObject private var assembly64Library = Assembly64LibraryStore()
+    /// Optional local Songlengths.md5 cache survives HVSC window recreation.
+    @StateObject private var hvscLibrary = HVSCLibraryStore()
 
     init() {
         // Needed when launched via `swift run` (no app bundle): become a regular
@@ -323,7 +325,8 @@ struct Stream64App: App {
                 deviceStore: deviceStore,
                 settings: settings,
                 sessionManager: sessionManager,
-                assembly64Library: assembly64Library)
+                assembly64Library: assembly64Library,
+                hvscLibrary: hvscLibrary)
         }()
         WindowGroup("Stream64") {
             ContentView()
@@ -338,7 +341,8 @@ struct Stream64App: App {
                         deviceStore: deviceStore,
                         settings: settings,
                         sessionManager: sessionManager,
-                        assembly64Library: assembly64Library)
+                        assembly64Library: assembly64Library,
+                        hvscLibrary: hvscLibrary)
                 }
                 .task {
                     try? await Task.sleep(for: .seconds(2))
@@ -372,6 +376,11 @@ struct Stream64App: App {
                     Stream64ToolWindows.showAssembly64()
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
+                Divider()
+                Button("Search HVSC…") {
+                    Stream64ToolWindows.showHVSC()
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
                 Divider()
                 Button("File Manager…") {
                     Stream64ToolWindows.showFileManager()

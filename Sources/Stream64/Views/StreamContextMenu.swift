@@ -110,6 +110,10 @@ struct StreamContextMenu: View {
             Stream64ToolWindows.showAssembly64()
         }
 
+        Button("HVSC SID Browser…", systemImage: "music.note.list") {
+            Stream64ToolWindows.showHVSC()
+        }
+
         Button("File Manager…", systemImage: "rectangle.split.2x1") {
             Stream64ToolWindows.showFileManager()
         }
@@ -140,15 +144,13 @@ struct StreamContextMenu: View {
             }
             .disabled(!session.isConnected)
 
-            // Every mode is its own entry here — picking one always opens
-            // a brand-new window already set to that mode, never
-            // switches whatever an existing window happens to be
-            // showing (see `SIDOscilloscopeWindowController.showNewWindow`
-            // and the matching in-window context menu in
-            // `SIDVisualizationMenuContent`, which behaves the same way).
-            SIDVisualizationsMenu(session: session)
-                .disabled(!session.isConnected)
         }
+
+        // Keep visualization access visible while the asynchronous debug
+        // capability probe settles. The window itself will report a trace
+        // failure if this device ultimately lacks debug support.
+        SIDVisualizationsMenu(session: session)
+            .disabled(!session.isConnected)
 
         Divider()
 

@@ -127,6 +127,14 @@ final class AppSettings: ObservableObject {
     /// newly selected C64. Sound always follows selection regardless.
     @AppStorage("visualizationsAutoFollowSelected")
     var visualizationsAutoFollowSelected: Bool = true
+    /// Keep the U64 debug stream alive for supported connected devices so
+    /// Debug Trace / register SID windows never need to start it on demand.
+    @AppStorage("keepDebugStreamWarm")
+    var keepDebugStreamWarm: Bool = true
+    /// Emits U64 debug-stream lifecycle counters to macOS unified logging.
+    /// Off by default; useful only when diagnosing device/trace issues.
+    @AppStorage("debugLifecycleLogging")
+    var debugLifecycleLogging: Bool = false
 }
 
 // Allow enums in @AppStorage via RawRepresentable String conformance (already String-backed).

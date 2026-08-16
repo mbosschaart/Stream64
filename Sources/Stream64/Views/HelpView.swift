@@ -47,6 +47,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     case files
     case fileManager
     case assembly64
+    case hvsc
     case multiDevice
     case machineControl
     case driveConfigMemory
@@ -65,6 +66,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .files: return "Loading Files"
         case .fileManager: return "Commander File Manager"
         case .assembly64: return "Assembly64 Library"
+        case .hvsc: return "HVSC SID Browser"
         case .multiDevice: return "Multiple Devices"
         case .machineControl: return "Machine Control"
         case .driveConfigMemory: return "Drive Bay, Config & Memory"
@@ -83,6 +85,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .files: return "arrow.down.doc"
         case .fileManager: return "rectangle.split.2x1"
         case .assembly64: return "books.vertical"
+        case .hvsc: return "music.note.list"
         case .multiDevice: return "square.grid.2x2"
         case .machineControl: return "power"
         case .driveConfigMemory: return "externaldrive"
@@ -101,6 +104,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .files: return Self.filesText
         case .fileManager: return Self.fileManagerText
         case .assembly64: return Self.assembly64Text
+        case .hvsc: return Self.hvscText
         case .multiDevice: return Self.multiDeviceText
         case .machineControl: return Self.machineControlText
         case .driveConfigMemory: return Self.driveConfigMemoryText
@@ -452,6 +456,55 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     buttons always keep the same neutral appearance.
     """
 
+    private static let hvscText = """
+    **HVSC SID Browser** searches the High Voltage SID Collection and sends a \
+    selected `.sid` directly to the Ultimate's built-in SID player. Open it \
+    from the toolbar, the picture's right-click menu, **Stream → HVSC SID \
+    Browser…**, or **File → Search HVSC…** (⇧⌘H).
+
+    **Interactive search only** — Stream64 uses the same search, tune-detail, \
+    and one-file download requests as the HVSC website. It does not crawl, \
+    bulk-index, prefetch, or automatically page through HVSC. Searches wait \
+    briefly while you type, require at least three characters, and cancel \
+    obsolete requests.
+
+    **Filters** narrow results by title, author, release, filename, SID model, \
+    video standard, and year. Select a result to inspect its PSID/RSID format, \
+    subtune count, PAL/NTSC setting, SID model, and additional SID-chip \
+    requirements. RSID, 2SID, and 3SID tunes are flagged; the Ultimate's SID \
+    player remains the final compatibility authority.
+
+    **SID compatibility** — Stream64 checks the selected target's configured \
+    SID sockets before playing multi-SID tunes. A warning pill identifies a \
+    missing/incorrect chip model or address. When an enabled, detected second \
+    SID only has the wrong address, **Fix** changes that socket address to the \
+    value declared by the SID and saves the Ultimate configuration. It never \
+    enables hardware or changes a physical SID's model automatically.
+
+    **Play** — use the button or double-click a selected result — downloads \
+    the SID only after that explicit action, validates its PSID/RSID header, \
+    then uploads it once to the selected device or to \
+    **All Connected C64s**. The browser reports any Ultimate playback error \
+    per target.
+
+    **Playlist** — add a selected tune to the persistent playlist, then use \
+    the playlist toolbar button to play, remove, or move entries up/down. \
+    Double-clicking a playlist entry plays it on the current target. Stream64 \
+    does not auto-advance yet: the Ultimate SID runner does not expose a \
+    playback-complete event.
+
+    **Song lengths** — choose **Song Lengths → Update Songlengths Database** \
+    to retrieve the current HVSC `Songlengths.md5` database, or import a \
+    previously downloaded copy. Stream64 validates and caches its entries \
+    atomically; a failed update keeps the last working cache. When a selected \
+    downloaded SID has a full-file MD5 match, its per-subtune durations appear \
+    in the playback panel. Song lengths are informational and can differ when \
+    a PAL/NTSC tune runs on a different video standard.
+
+    HVSC is an independent collection. Stream64 is not affiliated with HVSC; \
+    use **Open HVSC** to visit its official website.
+    """
+
     private static let multiDeviceText = """
     Stream64 handles multiple C64 Ultimates at once — each with its own \
     stream, rendering settings, and controls.
@@ -583,7 +636,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **SID Oscilloscope** — right-click menu → **SID Visualizations**
 
-    A 19-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+    A 20-mode SID visualizer — 3 channels normally, 6 when a second SID is \
     configured. Pick any mode from **SID Visualizations** to open it in its \
     own window; any number of modes can be open side by side, or use \
     **Open All in Grid** to open every mode at once, automatically tiled to \
@@ -598,6 +651,16 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     even after quitting and relaunching the app. Those layout actions are \
     also on the right-click menu, so restoring works even with no SID \
     windows currently open.
+
+    **KAOS** — an original acid-house/demoscene visual performance mode. It \
+    mixes SID gate/control and `$D418` digi events with real post-mix audio \
+    energy to infer beats, BPM, phrases, and patterns. Beat-directed cuts \
+    select a large procedural scene library: neon grids/tunnels, scope and \
+    VU walls, dancers, wireframe C64/floppy/cassette/turntable motifs, \
+    hyperspace, raster storms, checkerboards, cubes, and spectral layers. \
+    Rare full-screen `ACID`/`HOUSE`/`BASS`/`KAOS` digital word flashes hit on \
+    bars and bass pulses. Because it joins the shared SID trace and audio \
+    path, multiple KAOS windows stay synchronized.
 
     A window's mode is fixed once it's open — picking a different mode from \
     either menu always opens a *new* window rather than switching the \

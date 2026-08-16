@@ -18,6 +18,8 @@ struct SIDEngineNeeds: Hashable {
     /// samples, not FFT bars), so it needs its own flag rather than being
     /// derivable from the others.
     var needsLissajousPoints: Bool
+    /// KAOS combines register rhythm events with post-mix spectrum energy.
+    var needsKAOSRhythm: Bool
 
     init(mode: SIDVisualizationMode) {
         needsRegisterWrites = mode.needsRegisterWrites
@@ -25,12 +27,14 @@ struct SIDEngineNeeds: Hashable {
         needsAudioTap = mode.needsAudioTap
         usesSpectrumBars = mode.usesSpectrumBars
         usesSpectrogramHistory = mode.usesSpectrogramHistory
-        needsLissajousPoints = mode == .lissajous
+        needsLissajousPoints = mode == .lissajous || mode == .kaos
+        needsKAOSRhythm = mode == .kaos
     }
 
     private init(
         needsRegisterWrites: Bool, needsSampleSynthesis: Bool, needsAudioTap: Bool,
-        usesSpectrumBars: Bool, usesSpectrogramHistory: Bool, needsLissajousPoints: Bool
+        usesSpectrumBars: Bool, usesSpectrogramHistory: Bool,
+        needsLissajousPoints: Bool, needsKAOSRhythm: Bool
     ) {
         self.needsRegisterWrites = needsRegisterWrites
         self.needsSampleSynthesis = needsSampleSynthesis
@@ -38,11 +42,13 @@ struct SIDEngineNeeds: Hashable {
         self.usesSpectrumBars = usesSpectrumBars
         self.usesSpectrogramHistory = usesSpectrogramHistory
         self.needsLissajousPoints = needsLissajousPoints
+        self.needsKAOSRhythm = needsKAOSRhythm
     }
 
     static let none = SIDEngineNeeds(
         needsRegisterWrites: false, needsSampleSynthesis: false, needsAudioTap: false,
-        usesSpectrumBars: false, usesSpectrogramHistory: false, needsLissajousPoints: false)
+        usesSpectrumBars: false, usesSpectrogramHistory: false,
+        needsLissajousPoints: false, needsKAOSRhythm: false)
 
     /// The union of two sets of needs — "does at least one of us need X."
     func union(_ other: SIDEngineNeeds) -> SIDEngineNeeds {
@@ -52,7 +58,8 @@ struct SIDEngineNeeds: Hashable {
             needsAudioTap: needsAudioTap || other.needsAudioTap,
             usesSpectrumBars: usesSpectrumBars || other.usesSpectrumBars,
             usesSpectrogramHistory: usesSpectrogramHistory || other.usesSpectrogramHistory,
-            needsLissajousPoints: needsLissajousPoints || other.needsLissajousPoints)
+            needsLissajousPoints: needsLissajousPoints || other.needsLissajousPoints,
+            needsKAOSRhythm: needsKAOSRhythm || other.needsKAOSRhythm)
     }
 }
 
@@ -168,6 +175,7 @@ final class SIDEngine: ObservableObject {
     @Published private(set) var spectrumBars: [Float] = []
     @Published private(set) var spectrogramHistory: [[Float]] = []
     @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
+    @Published private(set) var kaosRhythm = KAOSRhythmState()
 
     private struct Subscriber {
         var needs: SIDEngineNeeds
@@ -183,6 +191,7 @@ final class SIDEngine: ObservableObject {
     private var workingChannels: [SIDVoiceChannel] = []
     private var workingFilterStates: [SIDFilterRegisters] = []
     private var workingRegisterActivity = SIDRegisterActivity(chipCount: 1)
+    private var workingKAOSRhythm = KAOSRhythmState()
     private var chipBaseAddresses: [UInt16] = [0xD400]
     /// Snapshot of `chipBaseAddresses` for the debug-receiver queue. The
     /// entries observer must not read `@MainActor` state from that queue.
@@ -481,6 +490,8 @@ final class SIDEngine: ObservableObject {
         channels = workingChannels
         workingFilterStates = workingFilterStates.map { _ in SIDFilterRegisters() }
         filterStates = workingFilterStates
+        workingKAOSRhythm = KAOSRhythmState()
+        kaosRhythm = workingKAOSRhythm
         lissajousBuffer.removeAll(keepingCapacity: true)
         lissajousPoints = []
         spectrogramHistory.removeAll(keepingCapacity: true)
@@ -584,15 +595,40 @@ final class SIDEngine: ObservableObject {
         pendingFilterWrites.removeAll(keepingCapacity: true)
         pendingLock.unlock()
 
+        var kaosEvents: [KAOSRhythmState.Event] = []
         for write in voiceWrites {
             let index = write.chipIndex * 3 + write.offset / 7
             guard workingChannels.indices.contains(index) else { continue }
-            workingChannels[index].registers.write(offset: write.offset % 7, value: write.value)
+            let registerOffset = write.offset % 7
+            let previous = workingChannels[index].registers
+            if registerOffset == 4 {
+                let wasGated = previous.gate
+                let nextGated = write.value & 0x01 != 0
+                if !wasGated, nextGated {
+                    kaosEvents.append(.gateRise)
+                }
+                if previous.control & 0xF0 != write.value & 0xF0 {
+                    kaosEvents.append(.waveformChange)
+                }
+            } else if registerOffset == 0 || registerOffset == 1,
+                      previous.frequency != 0 {
+                kaosEvents.append(.frequencyChange)
+            }
+            workingChannels[index].registers.write(offset: registerOffset, value: write.value)
             workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset, at: now)
         }
         for write in filterWrites {
             guard workingFilterStates.indices.contains(write.chipIndex) else { continue }
+            let previousVolume = workingFilterStates[write.chipIndex].volume
             workingFilterStates[write.chipIndex].write(offset: write.offset, value: write.value)
+            if write.offset == 3,
+               workingFilterStates[write.chipIndex].volume != previousVolume {
+                kaosEvents.append(.digiVolumeStep)
+                for index in workingChannels.indices
+                where workingChannels[index].chipIndex == write.chipIndex {
+                    workingChannels[index].digiActivity = 1
+                }
+            }
             // Filter writes' offset is already relative to *within* the
             // filter block (0..<4, reduced by -21 when first decoded in
             // the entries observer above) — add it back to land in the
@@ -608,6 +644,14 @@ final class SIDEngine: ObservableObject {
         if voiceWrites.isEmpty,
            filterWrites.isEmpty,
            !aggregateNeeds.needsSampleSynthesis {
+            if aggregateNeeds.needsKAOSRhythm {
+                workingKAOSRhythm.advance(
+                    timestamp: now.timeIntervalSinceReferenceDate,
+                    events: kaosEvents,
+                    spectrumBars: spectrumBars,
+                    channels: workingChannels)
+                kaosRhythm = workingKAOSRhythm
+            }
             if aggregateNeeds.needsRegisterWrites {
                 registerActivity = workingRegisterActivity
             }
@@ -654,8 +698,25 @@ final class SIDEngine: ObservableObject {
             }
         }
 
+        // Keep $D418 sample activity visible briefly after a volume step,
+        // without incorrectly assigning it to a particular oscillator.
+        for index in workingChannels.indices {
+            workingChannels[index].digiActivity = max(
+                0,
+                workingChannels[index].digiActivity - Float(dt * 1.5))
+        }
+
         for i in workingChannels.indices {
             workingChannels[i].pushNoteHistory()
+        }
+
+        if aggregateNeeds.needsKAOSRhythm {
+            workingKAOSRhythm.advance(
+                timestamp: now.timeIntervalSinceReferenceDate,
+                events: kaosEvents,
+                spectrumBars: spectrumBars,
+                channels: workingChannels)
+            kaosRhythm = workingKAOSRhythm
         }
 
         channels = workingChannels

@@ -64,6 +64,12 @@ final class DeviceSession: ObservableObject {
 
     @Published private(set) var debugTraceState: DebugTraceState = .inactive
     private var debugTraceConsumers = Set<UUID>()
+    /// Optional connection-lifetime lease, controlled by
+    /// `keepDebugStreamWarm`. It prevents first-window debug:start churn.
+    private var warmDebugTraceLease: UUID?
+    /// Runs debug capability/prewarm after video/audio are available. SID
+    /// playback awaits this task, but normal reconnect UI does not.
+    private var debugPrewarmTask: Task<Void, Never>?
     /// Whether this device's firmware implements the U64 debug register —
     /// Ultimate-II+ and C64 Ultimate hardware do not. Populated by a
     /// silent, best-effort probe once connected; gates the Debug Trace /
@@ -383,9 +389,6 @@ final class DeviceSession: ObservableObject {
         }
         guard isCurrentConnection(generation) else { return }
         let description = info.connectionDescription
-        await input.prepare()
-        guard isCurrentConnection(generation) else { return }
-
         do {
             // Start local UDP receivers first so no packets are dropped.
             try validateLocalPortSet()
@@ -452,12 +455,17 @@ final class DeviceSession: ObservableObject {
                 abandonStaleConnectionAttempt()
                 return
             }
-            state = .connected(info: description.isEmpty ? device.displayAddress : description)
+            state = .connected(
+                info: description.isEmpty ? device.displayAddress : description)
+            // These are not required to show the live picture. Run them
+            // asynchronously so restarting the app reconnects promptly;
+            // SID playback itself awaits the debug task below.
+            Task { [weak self] in await self?.input.prepare() }
+            beginDebugPrewarm()
             if !audioOK {
                 recoverAudioQuietly()
             }
             watchForSilentStream()
-            probeDebugCapability()
             // SID windows may still be open from before disconnect — re-arm
             // register-write / audio-tap paths that suspendForSessionTeardown cleared.
             SIDEngine.existing(for: device.id)?.resumeAfterSessionConnect()
@@ -703,14 +711,10 @@ final class DeviceSession: ObservableObject {
                 port: device.audioPort,
                 durationSeconds: settings.streamDurationSeconds)
         }
-        // Video stop/start can kill the debug bus-trace on some firmware
-        // (C64 Ultimate Founder / early 1.0 aka "3.14"). Re-arm it when SID
-        // / Debug Trace still hold leases so register-driven SID modes
-        // keep receiving writes.
-        if !debugTraceConsumers.isEmpty,
-           case .active(let mode) = debugTraceState {
-            await startDebugTrace(mode: mode)
-        }
+        // Keep the existing warm debug stream untouched. In particular, do
+        // not issue a second debug:start after the video watchdog re-arms
+        // VIC: some SID/RSID programs are stable with an already-running
+        // trace but wedge if debug is restarted mid-playback.
     }
 
     /// startStreaming for UI call sites: failures surface in `state`.
@@ -795,6 +799,9 @@ final class DeviceSession: ObservableObject {
         audioReceiver.stop()
         debugStreamReceiver.stop()
         debugTraceConsumers.removeAll()
+        warmDebugTraceLease = nil
+        debugPrewarmTask?.cancel()
+        debugPrewarmTask = nil
         debugTraceState = .inactive
         resetFrameStats()
         isVideoGPUBehind = false
@@ -814,13 +821,57 @@ final class DeviceSession: ObservableObject {
     /// Silent, best-effort probe for U64 debug register support. Never
     /// surfaces as a connection error — Ultimate-II+/C64 Ultimate hardware
     /// simply fails this and keeps the debug features hidden.
-    private func probeDebugCapability() {
+    private func probeDebugCapability() async {
+        let probeClient = UltimateAPIClient(device: device, timeout: 3)
+        let supported = (try? await probeClient.readDebugRegister()) != nil
+        guard isConnected || connecting else { return }
+        supportsDebugFeatures = supported
+        if supported, settings.keepDebugStreamWarm {
+            await enableWarmDebugTrace()
+        }
+    }
+
+    private func beginDebugPrewarm() {
+        debugPrewarmTask?.cancel()
+        debugPrewarmTask = Task { [weak self] in
+            await self?.probeDebugCapability()
+        }
+    }
+
+    private func awaitDebugPrewarmBeforeSIDPlayback() async {
+        guard settings.keepDebugStreamWarm else { return }
+        if let debugPrewarmTask {
+            await debugPrewarmTask.value
+        } else {
+            await probeDebugCapability()
+        }
+    }
+
+    /// Called after debug capability detection and when the preference changes.
+    /// Unsupported hardware never receives a debug:start request.
+    func updateDebugStreamWarmPreference() {
+        guard (isConnected || connecting), supportsDebugFeatures else { return }
+        if settings.keepDebugStreamWarm {
+            Task { await self.enableWarmDebugTrace() }
+        } else {
+            disableWarmDebugTrace()
+        }
+    }
+
+    private func enableWarmDebugTrace() async {
+        guard warmDebugTraceLease == nil else { return }
+        guard (isConnected || connecting),
+              settings.keepDebugStreamWarm,
+              supportsDebugFeatures
+        else { return }
+        warmDebugTraceLease = await acquireDebugTrace(mode: .cpu6510Only)
+    }
+
+    private func disableWarmDebugTrace() {
+        guard let lease = warmDebugTraceLease else { return }
+        warmDebugTraceLease = nil
         Task { [weak self] in
-            guard let self else { return }
-            let probeClient = UltimateAPIClient(device: self.device, timeout: 3)
-            let supported = (try? await probeClient.readDebugRegister()) != nil
-            guard self.isConnected else { return }
-            self.supportsDebugFeatures = supported
+            await self?.releaseDebugTrace(lease)
         }
     }
 
@@ -837,25 +888,24 @@ final class DeviceSession: ObservableObject {
     /// all three kept delivering packets simultaneously. So this
     /// deliberately does **not** touch the video/audio streams at all.
     func startDebugTrace(mode: DebugStreamMode) async {
-        guard isConnected else { return }
+        guard isConnected || connecting else { return }
         let generation = connectionGeneration
         debugTraceState = .starting
+        debugLifecycleLog(
+            "[Stream64 debug] start requested mode=\(mode.rawValue) "
+                + "consumers=\(debugTraceConsumers.count) "
+                + "packets=\(debugStreamReceiver.packetsReceived)")
         guard let localIP = LocalNetwork.primaryIPv4Address(reachingDevice: device.host) else {
             debugTraceState = .error("Could not determine this Mac's address on the Ultimate's network.")
             return
         }
 
         do {
-            // Mode selection is a config item, not the debug register —
-            // confirmed against real U64-II hardware on firmware 3.15 via
-            // `GET /v1/configs/Data%20Streams`, which lists exactly this
-            // enum's raw values under "Debug Stream Mode". Writing the
-            // debug register ($D7FF) has no effect on stream source.
-            try await client.setConfigItem(
-                category: "Data Streams",
-                item: "Debug Stream Mode",
-                value: mode.rawValue)
-            guard isCurrentConnection(generation), isConnected else {
+            // Mode selection is a config item, not the debug register.
+            // Only write it when a different source is requested; rewriting
+            // the current value can disrupt live SID/RSID playback.
+            try await client.ensureDebugStreamMode(mode)
+                guard isCurrentConnection(generation), isConnected || connecting else {
                 debugStreamReceiver.stop()
                 if isCurrentConnection(generation) {
                     debugTraceState = .inactive
@@ -873,7 +923,7 @@ final class DeviceSession: ObservableObject {
                 destinationHost: localIP,
                 port: device.debugPort,
                 generation: generation)
-            guard isCurrentConnection(generation), isConnected else {
+            guard isCurrentConnection(generation), isConnected || connecting else {
                 debugStreamReceiver.stop()
                 try? await client.stopDebugStream()
                 if isCurrentConnection(generation) {
@@ -882,11 +932,16 @@ final class DeviceSession: ObservableObject {
                 return
             }
             debugTraceState = .active(mode)
+            debugLifecycleLog(
+                "[Stream64 debug] active mode=\(mode.rawValue) "
+                    + "packets=\(debugStreamReceiver.packetsReceived)")
         } catch {
             debugStreamReceiver.stop()
             if isCurrentConnection(generation) {
                 debugTraceState = .error(error.localizedDescription)
             }
+            debugLifecycleLog(
+                "[Stream64 debug] start failed: \(error.localizedDescription)")
         }
     }
 
@@ -904,12 +959,12 @@ final class DeviceSession: ObservableObject {
         } catch {
             guard isHostResolveError(error) else { throw error }
         }
-        guard isCurrentConnection(generation), isConnected else {
+        guard isCurrentConnection(generation), isConnected || connecting else {
             throw CancellationError()
         }
         try? await client.stopDebugStream()
         try await Task.sleep(for: .seconds(1))
-        guard isCurrentConnection(generation), isConnected else {
+        guard isCurrentConnection(generation), isConnected || connecting else {
             throw CancellationError()
         }
         try await client.startDebugStream(
@@ -920,6 +975,11 @@ final class DeviceSession: ObservableObject {
         error.localizedDescription.contains("Network Host Resolve Error")
     }
 
+    private func debugLifecycleLog(_ message: String) {
+        guard settings.debugLifecycleLogging else { return }
+        NSLog("%@", message)
+    }
+
     /// Acquire shared ownership of the session's debug stream. Multiple
     /// Debug Trace/SID windows can hold leases simultaneously; only the first
     /// starts the device stream. Returns `nil` when the stream cannot be
@@ -928,7 +988,12 @@ final class DeviceSession: ObservableObject {
     /// the sole consumer path (no other leases yet), it restarts in `mode`;
     /// otherwise the existing mode is shared and the new lease joins it.
     func acquireDebugTrace(mode: DebugStreamMode) async -> UUID? {
-        guard isConnected else { return nil }
+        guard isConnected || connecting else { return nil }
+        debugLifecycleLog(
+            "[Stream64 debug] acquire mode=\(mode.rawValue) "
+                + "state=\(debugTraceState) "
+                + "consumers=\(debugTraceConsumers.count) "
+                + "packets=\(debugStreamReceiver.packetsReceived)")
 
         switch debugTraceState {
         case .active(let activeMode) where activeMode != mode:
@@ -949,6 +1014,9 @@ final class DeviceSession: ObservableObject {
         guard case .active = debugTraceState else { return nil }
         let token = UUID()
         debugTraceConsumers.insert(token)
+        debugLifecycleLog(
+            "[Stream64 debug] acquired consumers=\(debugTraceConsumers.count) "
+                + "packets=\(debugStreamReceiver.packetsReceived)")
         return token
     }
 
@@ -1289,6 +1357,7 @@ final class DeviceSession: ObservableObject {
                     transferStatus = .done("Mounted \(filename) in drive A")
                 }
             case "sid":
+                await awaitDebugPrewarmBeforeSIDPlayback()
                 try await client.playSID(path: path)
                 transferStatus = .done("Playing \(filename)")
             case "mod":
@@ -1350,7 +1419,8 @@ final class DeviceSession: ObservableObject {
                     outcome = .mounted(filename)
                 }
             case "sid":
-                try await client.playSID(data: data)
+                await awaitDebugPrewarmBeforeSIDPlayback()
+                try await client.playSID(data: data, filename: filename)
                 transferStatus = .done("Playing \(filename)")
                 outcome = .playing(filename)
             case "crt":

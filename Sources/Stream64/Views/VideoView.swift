@@ -53,7 +53,7 @@ struct VideoView: NSViewRepresentable {
         }
         view.onFocusLost = {
             Task { @MainActor in
-                context.coordinator.session.input.releaseAll()
+                context.coordinator.session.input.releaseAllIfNeeded()
             }
         }
         context.coordinator.session.videoReceiver.onFrame = {

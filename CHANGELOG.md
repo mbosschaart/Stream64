@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.123b — 2026-08-16
+
+### Added
+
+- **HVSC SID Browser.** Search the High Voltage SID Collection with the website’s interactive search flow, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download and play a selected SID on the chosen Ultimate or **All Connected C64s**. Searches are debounced, cancellable, and never crawl or bulk-index HVSC. Build a persistent playlist, reorder/remove entries, and double-click either a result or playlist entry to play it.
+- **Songlengths.md5 support.** The HVSC browser can update or import the current song-length database, validate it off the main thread, retain the last valid cache on failure, and display full-file-MD5 matched per-subtune durations for downloaded SIDs.
+- **Multi-SID upload and configuration checks.** SID uploads now use the Ultimate API’s documented multipart `sid` attachment. The HVSC browser compares a tune’s 2SID/3SID requirements with the target’s configured sockets and offers a user-confirmed address Fix only for an already enabled/detected second SID.
+- **KAOS SID visualization.** A hybrid register/audio acid-house scene library that infers beat/BPM/pattern structure from SID gate/control and `$D418` events, blends real post-mix energy, and jump-cuts a large procedural library: neon grids/tunnels, dancers, wireframe C64/floppy/cassette/turntable motifs, hyperspace, raster storms, checkerboards, scope/VU walls, and sparse screen-filling house-music typography.
+
+### Improved
+
+- **Noise and digi-driven SID visualizations.** Noise LFSR timing now catches up correctly at high frequencies, quiet noise traces auto-gain for visibility, and `$D418` volume-register sample activity is labeled explicitly. This improves compatibility with LMan’s SID Chip Club productions and other sample/noise-heavy SID music.
+- **SID/debug window lifecycle across Spaces.** Opening, closing, focusing, and moving visualization windows between macOS Spaces no longer repeatedly restarts the U64 debug stream; invisible windows pause UI updates while retaining their shared trace lease.
+- **U64 debug stream prewarm and reconnect.** Supported devices prewarm debug in the background while the video/audio viewer becomes available immediately; SID playback waits for that prewarm, avoiding a late `debug:start` during RSID/SID playback. Restarting Stream64 now no longer waits on input-service or debug preparation before showing the live stream.
+- **SID/debug compatibility controls.** The SID Visualizations menu remains available while debug capability detection is pending, U64 debug lifecycle logging is opt-in under Settings → General, and SID address fixes persist the exact `SID Addressing` configuration store.
+- **More accurate SID visual state.** Focus changes no longer send a remote release-all/keyboard-buffer operation unless input is actually held, and register-driven visualizations retain lossless trace decoding instead of dropping intermediate SID writes.
+- **Debug Trace default.** The Debug Trace window opens with the 3D Memory Map selected.
+
 ## 0.122b — 2026-08-14
 
 ### Improved

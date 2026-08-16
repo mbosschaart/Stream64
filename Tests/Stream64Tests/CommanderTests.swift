@@ -533,6 +533,43 @@ final class CommanderTests: XCTestCase {
             request.value(forHTTPHeaderField: "X-Password"), "secret")
     }
 
+    func testSIDUploadUsesDocumentedMultipartAttachment() async throws {
+        let transport = RecordingHTTPTransport()
+        let client = UltimateAPIClient(
+            device: UltimateDevice(
+                name: "Test",
+                host: "192.168.1.64",
+                password: "secret"),
+            transport: transport)
+
+        try await client.playSID(
+            data: Data([0x50, 0x53, 0x49, 0x44]),
+            filename: "Singularity_2SID.sid",
+            songNumber: 1,
+            songLengths: Data([0x01, 0x30]))
+
+        let recordedRequest = await transport.recordedRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/v1/runners:sidplay")
+        XCTAssertEqual(
+            URLComponents(
+                url: try XCTUnwrap(request.url),
+                resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "songnr" })?.value,
+            "1")
+        let contentType = try XCTUnwrap(
+            request.value(forHTTPHeaderField: "Content-Type"))
+        XCTAssertTrue(contentType.hasPrefix("multipart/form-data; boundary="))
+        let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+        XCTAssertTrue(
+            body.contains(
+                "name=\"sid\"; filename=\"Singularity_2SID.sid\""))
+        XCTAssertTrue(body.contains("name=\"songlengths\""))
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Password"), "secret")
+    }
+
 
     func testMultipartFilenamesRejectHeaderInjectionAndPaths() {
         XCTAssertTrue(

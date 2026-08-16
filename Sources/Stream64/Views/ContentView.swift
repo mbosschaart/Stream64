@@ -57,6 +57,9 @@ struct ContentView: View {
         .onChange(of: settings.audioOutputDeviceUID) {
             sessionManager.applyAudioOutputDeviceUID(settings.audioOutputDeviceUID)
         }
+        .onChange(of: settings.keepDebugStreamWarm) {
+            sessionManager.applyDebugStreamWarmPreference()
+        }
         .onAppear {
             applyAudioPolicy()
             sessionManager.applyAudioOutputDeviceUID(settings.audioOutputDeviceUID)
@@ -1323,6 +1326,13 @@ struct ViewerSessionToolbar: ToolbarContent {
             .help("Search the Assembly64 online library and load programs")
 
             Button {
+                Stream64ToolWindows.showHVSC()
+            } label: {
+                Label("HVSC", systemImage: "music.note.list")
+            }
+            .help("Search High Voltage SID Collection and play SIDs")
+
+            Button {
                 Stream64ToolWindows.showFileManager()
             } label: {
                 Label("File Manager", systemImage: "rectangle.split.2x1")
@@ -1362,37 +1372,38 @@ struct ViewerSessionToolbar: ToolbarContent {
                 .help("Debug Trace for \(session.device.name)")
                 .disabled(!session.isConnected)
 
-                Menu {
-                    ForEach(SIDVisualizationMode.allCases) { mode in
-                        Button {
-                            SIDOscilloscopeWindowController.showNewWindow(
-                                session: session, mode: mode)
-                        } label: {
-                            Label(mode.rawValue, systemImage: mode.systemImage)
-                        }
-                    }
-                    Divider()
-                    Button("Open All in Grid", systemImage: "square.grid.3x3") {
-                        session.openAllSIDVisualizations()
-                    }
-                    Button("Close All Visualizations", systemImage: "xmark.circle") {
-                        session.closeAllSIDVisualizations()
-                    }
-                    .disabled(!session.hasOpenSIDWindows)
-                    Divider()
-                    Button("Save Window Layout", systemImage: "square.and.arrow.down") {
-                        session.saveWindowLayout()
-                    }
-                    Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
-                        session.restoreWindowLayout()
-                    }
-                    .disabled(!session.hasSavedWindowLayout)
-                } label: {
-                    Label("SID Visualizations", systemImage: "waveform")
-                }
-                .help("SID visualizations for \(session.device.name)")
-                .disabled(!session.isConnected)
             }
+
+            Menu {
+                ForEach(SIDVisualizationMode.allCases) { mode in
+                    Button {
+                        SIDOscilloscopeWindowController.showNewWindow(
+                            session: session, mode: mode)
+                    } label: {
+                        Label(mode.rawValue, systemImage: mode.systemImage)
+                    }
+                }
+                Divider()
+                Button("Open All in Grid", systemImage: "square.grid.3x3") {
+                    session.openAllSIDVisualizations()
+                }
+                Button("Close All Visualizations", systemImage: "xmark.circle") {
+                    session.closeAllSIDVisualizations()
+                }
+                .disabled(!session.hasOpenSIDWindows)
+                Divider()
+                Button("Save Window Layout", systemImage: "square.and.arrow.down") {
+                    session.saveWindowLayout()
+                }
+                Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
+                    session.restoreWindowLayout()
+                }
+                .disabled(!session.hasSavedWindowLayout)
+            } label: {
+                Label("SID Visualizations", systemImage: "waveform")
+            }
+            .help("SID visualizations for \(session.device.name)")
+            .disabled(!session.isConnected)
 
             Button {
                 NSApp.keyWindow?.toggleFullScreen(nil)

@@ -6,6 +6,23 @@ import AVFoundation
 @testable import Stream64
 
 final class SIDTests: XCTestCase {
+    func testWaveformLabelNamesNoiseAndDigiActivity() {
+        var channel = SIDVoiceChannel(
+            id: 0,
+            chipIndex: 0,
+            voiceIndex: 0,
+            bufferSize: 32,
+            noteHistoryLength: 16)
+        XCTAssertEqual(channel.waveformLabel, "No waveform")
+
+        channel.registers.control = 0x80
+        XCTAssertEqual(channel.waveformLabel, "Noise")
+
+        channel.registers.control = 0
+        channel.digiActivity = 1
+        XCTAssertEqual(channel.waveformLabel, "Digi ($D418)")
+    }
+
     func testViewerPaneDroppableExtensionsIncludeSIDAndCRT() {
         XCTAssertTrue(ViewerPane.droppableExtensions.contains("sid"))
         XCTAssertTrue(ViewerPane.droppableExtensions.contains("crt"))
@@ -305,7 +322,8 @@ final class SIDTests: XCTestCase {
         // the modes that actually read its output (waveform samples, RMS
         // level, or peak-hold level) should require it.
         let waveformDriven: Set<SIDVisualizationMode> = [
-            .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform,
+            .oscilloscope, .envelope, .mixerConsole, .vuMeterBank,
+            .colorfulWaveform, .kaos,
         ]
         for mode in SIDVisualizationMode.allCases {
             XCTAssertEqual(
@@ -315,19 +333,22 @@ final class SIDTests: XCTestCase {
     }
 
 
-    func testSIDVisualizationModeNeedsRegisterWritesIsInverseOfAudioTap() {
-        // No mode currently needs both the debug bus-trace (register
-        // writes) and the raw post-mix audio tap — every mode is one or
-        // the other. `needsRegisterWrites` exists as a positively-phrased
-        // name for that same split, so this locks in the assumption that
-        // lets `start()` treat them as mutually exclusive gates.
+    func testSIDVisualizationModeRegisterAndAudioNeeds() {
+        // KAOS is intentionally hybrid: register events identify musical
+        // pattern while post-mix energy supplies sample/digi beat response.
         for mode in SIDVisualizationMode.allCases {
-            XCTAssertEqual(mode.needsRegisterWrites, !mode.needsAudioTap, "\(mode.rawValue) mismatch")
+            let expectedRegisterWrites = mode == .kaos || !mode.needsAudioTap
+            XCTAssertEqual(
+                mode.needsRegisterWrites,
+                expectedRegisterWrites,
+                "\(mode.rawValue) mismatch")
         }
         // Spot-check both directions explicitly rather than only the
         // derived relationship above.
         XCTAssertTrue(SIDVisualizationMode.oscilloscope.needsRegisterWrites)
         XCTAssertFalse(SIDVisualizationMode.spectrum.needsRegisterWrites)
+        XCTAssertTrue(SIDVisualizationMode.kaos.needsRegisterWrites)
+        XCTAssertTrue(SIDVisualizationMode.kaos.needsAudioTap)
     }
 
 
@@ -339,11 +360,42 @@ final class SIDTests: XCTestCase {
             XCTAssertEqual(needs.needsAudioTap, mode.needsAudioTap, "\(mode.rawValue)")
             XCTAssertEqual(needs.usesSpectrumBars, mode.usesSpectrumBars, "\(mode.rawValue)")
             XCTAssertEqual(needs.usesSpectrogramHistory, mode.usesSpectrogramHistory, "\(mode.rawValue)")
-            // Lissajous is the one audio-tap mode that plots raw points
-            // rather than FFT bars, so it's the only mode this should be
-            // true for.
-            XCTAssertEqual(needs.needsLissajousPoints, mode == .lissajous, "\(mode.rawValue)")
+            // KAOS composites the existing real-audio Lissajous motif with
+            // its beat/rhythm scene library.
+            XCTAssertEqual(
+                needs.needsLissajousPoints,
+                mode == .lissajous || mode == .kaos,
+                "\(mode.rawValue)")
+            XCTAssertEqual(needs.needsKAOSRhythm, mode == .kaos, "\(mode.rawValue)")
         }
+    }
+
+    func testKAOSRhythmUsesRegisterEventsAndAudioEnergy() {
+        var rhythm = KAOSRhythmState()
+        var channel = SIDVoiceChannel(
+            id: 0, chipIndex: 0, voiceIndex: 0,
+            bufferSize: 8, noteHistoryLength: 8)
+        channel.registers.control = 0x81
+        channel.push(sample: 0.8, envelope: 1)
+
+        rhythm.advance(
+            timestamp: 1,
+            events: [.gateRise, .digiVolumeStep],
+            spectrumBars: Array(repeating: 0.7, count: 24),
+            channels: [channel])
+        XCTAssertGreaterThan(rhythm.beatPulse, 0.9)
+        XCTAssertGreaterThan(rhythm.digiActivity, 0.9)
+        XCTAssertNotEqual(rhythm.activeVoiceMask, 0)
+        XCTAssertGreaterThan(rhythm.masterLevel, 0)
+
+        rhythm.advance(
+            timestamp: 1.5,
+            events: [.gateRise],
+            spectrumBars: Array(repeating: 0.8, count: 24),
+            channels: [channel])
+        XCTAssertGreaterThan(rhythm.inferredBPM, 100)
+        XCTAssertLessThan(rhythm.inferredBPM, 140)
+        XCTAssertGreaterThan(rhythm.beatConfidence, 0)
     }
 
 

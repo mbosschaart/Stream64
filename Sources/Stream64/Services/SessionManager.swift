@@ -98,6 +98,12 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    func applyDebugStreamWarmPreference() {
+        for session in sessions.values {
+            session.updateDebugStreamWarmPreference()
+        }
+    }
+
     /// Immediate local teardown for app quit — stops AirPlay and every
     /// receiver/engine before any remote REST work, so music cannot keep
     /// playing while `disconnect` awaits an unreachable Ultimate.
