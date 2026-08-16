@@ -213,6 +213,8 @@ private struct DeviceInputSettings: View {
 struct GeneralSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var updateService: UpdateService
+    @State private var psid64 = PSID64Service()
+    @State private var psid64Status = ""
 
     var body: some View {
         Form {
@@ -230,6 +232,9 @@ struct GeneralSettingsTab: View {
                 Toggle(
                     "Log U64 debug stream lifecycle",
                     isOn: $settings.debugLifecycleLogging)
+                Toggle(
+                    "Oscilloscope post-mix lowpass overlay",
+                    isOn: $settings.oscilloscopePostMixLowpassOverlay)
             } footer: {
                 Text(
                     "Destructive actions include power off, file deletion, "
@@ -241,7 +246,9 @@ struct GeneralSettingsTab: View {
                         + "debug stream applies only to hardware that supports "
                         + "it and avoids restarting it when opening SID or "
                         + "Debug Trace windows. Debug lifecycle logging writes "
-                        + "diagnostic counters to the macOS unified log."
+                        + "diagnostic counters to the macOS unified log. The "
+                        + "oscilloscope lowpass overlay shows real post-mix "
+                        + "bass/kick energy for filter or digi-driven drums."
                 )
                     .foregroundStyle(.secondary)
             }
@@ -257,8 +264,42 @@ struct GeneralSettingsTab: View {
                 )
                     .foregroundStyle(.secondary)
             }
+            psid64Section
         }
         .formStyle(.grouped)
+    }
+
+    private var psid64Section: some View {
+        let version = psid64.installedVersion()
+        return Section {
+            LabeledContent("Converter", value: version ?? "Not installed")
+            if version != nil {
+                Text(psid64.installationPath)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button("Remove PSID64", role: .destructive) {
+                    do {
+                        try psid64.removeInstalledTool()
+                        psid64Status = "PSID64 removed."
+                    } catch {
+                        psid64Status = error.localizedDescription
+                    }
+                }
+            }
+            Link("PSID64 project and GPL source", destination: PSID64Service.sourceURL)
+            if !psid64Status.isEmpty {
+                Text(psid64Status).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("PSID64 Playback")
+        } footer: {
+            Text(
+                "Multi-SID PSID and RSID files are converted to PRGs with user-approved PSID64 "
+                    + "to improve real-C64 compatibility. v1/v2 files use Ultimate native playback. "
+                    + "PSID64 is GPL-2.0-or-later and is downloaded from its upstream release.")
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

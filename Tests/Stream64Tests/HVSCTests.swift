@@ -117,6 +117,19 @@ final class HVSCTests: XCTestCase {
         XCTAssertEqual(header.thirdSIDAddress, 0xD440)
     }
 
+    func testSIDHeaderRejectsMalformedAdditionalSIDAndReadsModels() throws {
+        var data = makeSIDHeader(version: 3, flags: 0x00A0)
+        data[0x7A] = 0x42
+
+        let header = try SIDHeader(data: data)
+        XCTAssertEqual(header.primarySIDModel, "8580")
+        XCTAssertEqual(header.secondSIDModel, "8580")
+        XCTAssertEqual(header.requiredSIDAddresses, [0xD400, 0xD420])
+
+        data[0x7A] = 0x41
+        XCTAssertThrowsError(try SIDHeader(data: data))
+    }
+
     func testSIDHeaderRejectsInvalidMagicAndSongRange() {
         XCTAssertThrowsError(try SIDHeader(data: Data(repeating: 0, count: 0x7C)))
 
@@ -164,6 +177,52 @@ final class HVSCTests: XCTestCase {
         XCTAssertEqual(detail.sidRequirements, "6581")
     }
 
+    func testHVSCSIDCollectionsUseVerifiedSearchTokensAndLocallyNarrowResults() throws {
+        var filters = HVSCClient.SearchFilters()
+        filters.model = .mos8580
+        filters.collection = .twoSID
+
+        let twoSIDURL = try HVSCClient.searchURL(
+            query: try XCTUnwrap(filters.collection.searchToken),
+            filters: filters)
+        let items = try XCTUnwrap(
+            URLComponents(url: twoSIDURL, resolvingAgainstBaseURL: false)?
+                .queryItems)
+        XCTAssertEqual(items.first(where: { $0.name == "q" })?.value, "2SID")
+        XCTAssertEqual(items.first(where: { $0.name == "model" })?.value, "8580")
+
+        filters.collection = .threeSID
+        let threeSIDURL = try HVSCClient.searchURL(
+            query: try XCTUnwrap(filters.collection.searchToken),
+            filters: filters)
+        let threeSIDItems = try XCTUnwrap(
+            URLComponents(url: threeSIDURL, resolvingAgainstBaseURL: false)?
+                .queryItems)
+        XCTAssertEqual(
+            threeSIDItems.first(where: { $0.name == "q" })?.value,
+            "3SID")
+
+        let result = HVSCClient.SearchResult(
+            id: 1,
+            title: "A Walk in the Countryside",
+            author: "Gaetano Chiummo",
+            released: "2014 Samar Productions")
+        XCTAssertTrue(result.matches("countryside"))
+        XCTAssertTrue(result.matches("CHI"))
+        XCTAssertFalse(result.matches("Turrican"))
+    }
+
+    func testPSID64ConversionKeepsScreenAndValidatesPRGOutput() {
+        let input = URL(fileURLWithPath: "/tmp/input.sid")
+        let output = URL(fileURLWithPath: "/tmp/output.prg")
+
+        XCTAssertEqual(
+            PSID64Service.conversionArguments(output: output, input: input),
+            ["--output", "/tmp/output.prg", "/tmp/input.sid"])
+        XCTAssertFalse(PSID64Service.isValidPRG(Data([0x01, 0x08])))
+        XCTAssertTrue(PSID64Service.isValidPRG(Data([0x01, 0x08, 0x60])))
+    }
+
     func testSIDConfigurationReadsModelsAndFixesSecondAddress() async throws {
         let transport = SIDConfigurationTransport()
         let client = UltimateAPIClient(
@@ -192,6 +251,52 @@ final class HVSCTests: XCTestCase {
         })
     }
 
+    func testSIDAutoRoutingPersistsPSIDv3SecondAddressAndWarnsPhysicalMismatch() async throws {
+        let transport = SIDConfigurationTransport()
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Test", host: "192.168.1.64"),
+            transport: transport)
+        var twoSID = makeSIDHeader(version: 3, flags: 0x00A0)
+        twoSID[0x7A] = 0x50
+
+        let route = try await client.ensureSIDRouting(
+            for: SIDHeader(data: twoSID))
+        XCTAssertEqual(route.configuredSlots, [.socket2])
+        let requests = await transport.recordedRequests()
+        let addressRequest = try XCTUnwrap(requests.first {
+            $0.url?.path.contains("SID Socket 2 Address") == true
+        })
+        let items = URLComponents(
+            url: try XCTUnwrap(addressRequest.url),
+            resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(items?.first(where: { $0.name == "value" })?.value, "$D500")
+        XCTAssertTrue(requests.contains {
+            $0.url?.path == "/v1/configs/SID Addressing:save_to_flash"
+        })
+
+        var incompatible = makeSIDHeader(version: 3, flags: 0x0050)
+        incompatible[0x7A] = 0x50
+        let mismatchTransport = SIDConfigurationTransport()
+        let mismatchClient = UltimateAPIClient(
+            device: UltimateDevice(name: "Test", host: "192.168.1.64"),
+            transport: mismatchTransport)
+        let mismatchRoute = try await mismatchClient.ensureSIDRouting(
+            for: SIDHeader(data: incompatible))
+        XCTAssertEqual(mismatchRoute.configuredSlots, [.socket2])
+        XCTAssertEqual(mismatchRoute.warnings.count, 2)
+        let mismatchRequests = await mismatchTransport.recordedRequests()
+        XCTAssertTrue(mismatchRequests.contains {
+            $0.url?.path.contains("SID Socket 2 Address") == true
+        })
+        XCTAssertFalse(mismatchRequests.contains {
+            $0.httpMethod == "PUT"
+                && $0.url?.path.contains("UltiSID Configuration") == true
+        })
+        XCTAssertFalse(mismatchRequests.contains {
+            $0.url?.path == "/v1/runners:sidplay"
+        })
+    }
+
     func testFounderUsesUltiSIDAddressesWhenPhysicalSocketsDisabled() async {
         let transport = SIDConfigurationTransport(founder: true)
         let client = UltimateAPIClient(
@@ -205,6 +310,22 @@ final class HVSCTests: XCTestCase {
         XCTAssertEqual(configuration.socket2Address, 0xD420)
         XCTAssertEqual(configuration.socket2Model, "8580")
         XCTAssertEqual(configuration.secondSIDSource, .ultiSID)
+
+        var twoSID6581 = makeSIDHeader(version: 3, flags: 0x0050)
+        twoSID6581[0x7A] = 0x42
+        let route = try? await client.ensureSIDRouting(
+            for: SIDHeader(data: twoSID6581))
+        XCTAssertEqual(route?.warnings, [])
+        let requests = await transport.recordedRequests()
+        XCTAssertEqual(
+            requests.filter {
+                $0.url?.path.contains("UltiSID") == true
+                    && $0.url?.path.contains("Filter Curve") == true
+            }.count,
+            2)
+        XCTAssertTrue(requests.contains {
+            $0.url?.path == "/v1/configs/UltiSID Configuration:save_to_flash"
+        })
     }
 
     private func writeWord(_ value: Int, at offset: Int, in data: inout Data) {
@@ -216,6 +337,17 @@ final class HVSCTests: XCTestCase {
         for (index, byte) in value.utf8.prefix(31).enumerated() {
             data[offset + index] = byte
         }
+    }
+
+    private func makeSIDHeader(version: Int, flags: Int) -> Data {
+        var data = Data(repeating: 0, count: 0x90)
+        data.replaceSubrange(0..<4, with: Data("PSID".utf8))
+        writeWord(version, at: 0x04, in: &data)
+        writeWord(0x7C, at: 0x06, in: &data)
+        writeWord(1, at: 0x0E, in: &data)
+        writeWord(1, at: 0x10, in: &data)
+        writeWord(flags, at: 0x76, in: &data)
+        return data
     }
 
     private func makeTuneDetail(id: Int, title: String) throws -> HVSCClient.TuneDetail {

@@ -6,6 +6,51 @@ import AVFoundation
 @testable import Stream64
 
 final class CommanderTests: XCTestCase {
+    func testDiscoveryListsResolveDynamicCategoriesAndRankingQueries() {
+        let categories = [
+            Assembly64Client.Category(
+                id: 9,
+                name: "Charts",
+                description: "Charts",
+                groupingName: "Discover",
+                type: nil),
+            Assembly64Client.Category(
+                id: 4,
+                name: "Demos",
+                description: "C64 Demos",
+                groupingName: "Releases",
+                type: nil),
+        ]
+
+        XCTAssertEqual(
+            Assembly64DiscoveryList.demoTop200.chartType,
+            "demos")
+        XCTAssertEqual(
+            Assembly64DiscoveryList.onefileDemos.chartType,
+            "onefiledemos")
+        XCTAssertEqual(
+            Assembly64DiscoveryList.games.chartType,
+            "games")
+        XCTAssertEqual(
+            Assembly64DiscoveryList.demoTop200.query(categories: categories).aql,
+            "subcat:demos sort:rating order:desc")
+        XCTAssertEqual(
+            Assembly64DiscoveryList.recentReleases.query(categories: categories).aql,
+            "latest:1month sort:updated order:desc")
+    }
+
+    func testAssembly64SearchPageCacheExpiresByKey() async {
+        let key = "discovery-test-\(UUID().uuidString)"
+        let result = try! makeSearchResult(id: "999", category: 9, name: "Chart Demo")
+        await Assembly64Cache.shared.storeSearchResults([result], for: key)
+        let cached = await Assembly64Cache.shared.searchResults(
+            for: key, maxAge: 60)
+        XCTAssertEqual(cached, [result])
+        let expired = await Assembly64Cache.shared.searchResults(
+            for: key, maxAge: -1)
+        XCTAssertNil(expired)
+    }
+
     func testQueryQuotesTextAndCombinesAllFilters() {
         let filters = Assembly64SearchFilters(
             repository: "csdb",

@@ -53,6 +53,7 @@ final class Assembly64LibraryStore: ObservableObject {
         var recents: [RecentItem]
         var savedSearches: [SavedSearch]
         var rememberedActions: [String: String]
+        var selectedDiscoveryListRaw: String?
     }
 
     @Published private(set) var favorites: [Favorite] = [] {
@@ -65,6 +66,9 @@ final class Assembly64LibraryStore: ObservableObject {
         didSet { save() }
     }
     @Published private(set) var rememberedActions: [String: String] = [:] {
+        didSet { save() }
+    }
+    @Published var selectedDiscoveryListRaw = Assembly64DiscoveryList.demoTop200.rawValue {
         didSet { save() }
     }
     @Published private(set) var persistenceError: String?
@@ -179,6 +183,8 @@ final class Assembly64LibraryStore: ObservableObject {
         recents = snapshot.recents
         savedSearches = snapshot.savedSearches
         rememberedActions = snapshot.rememberedActions
+        selectedDiscoveryListRaw = snapshot.selectedDiscoveryListRaw
+            ?? Assembly64DiscoveryList.demoTop200.rawValue
     }
 
     private func save() {
@@ -187,7 +193,8 @@ final class Assembly64LibraryStore: ObservableObject {
             favorites: favorites,
             recents: recents,
             savedSearches: savedSearches,
-            rememberedActions: rememberedActions)
+            rememberedActions: rememberedActions,
+            selectedDiscoveryListRaw: selectedDiscoveryListRaw)
         guard let data = try? JSONEncoder().encode(snapshot) else {
             persistenceError = "Assembly64 library could not be encoded."
             return

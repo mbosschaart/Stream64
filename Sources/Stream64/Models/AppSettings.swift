@@ -135,6 +135,10 @@ final class AppSettings: ObservableObject {
     /// Off by default; useful only when diagnosing device/trace issues.
     @AppStorage("debugLifecycleLogging")
     var debugLifecycleLogging: Bool = false
+    /// Shows a real post-mix low-pass/kick trace above register-derived SID
+    /// oscilloscope channels. Useful for filter and $D418 sample drums.
+    @AppStorage("oscilloscopePostMixLowpassOverlay")
+    var oscilloscopePostMixLowpassOverlay: Bool = false
 }
 
 // Allow enums in @AppStorage via RawRepresentable String conformance (already String-backed).

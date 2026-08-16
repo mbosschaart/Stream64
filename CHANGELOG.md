@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.124b — 2026-08-17
+
+### Added
+
+- **Assembly64 browser reorganisation.** A simpler Discover-first layout exposes native **Demo, Games, Graphics, Music, OneFile Demos, and Tools Top 200** lists alongside Recent Releases, while normal search/filtering remains available for targeted discovery.
+- **HVSC 2-SID and 3-SID collections.** The HVSC browser now has dedicated 2-SID and 3-SID collection selectors, backed by HVSC’s own interactive search results and locally narrowed by title/author/release text. Automatic hardware address routing is supported for 2-SID playback; 3-SID tunes remain visible and clearly identify their additional hardware requirement.
+- **On-demand PSID64 playback.** PSID v3/v4 and RSID v3/v4 files can be converted to relocated real-C64 PRGs through PSID64 before launch. Stream64 asks once before downloading the upstream GPL PSID64 tool, verifies the installed executable, keeps the generated player screen visible, and retains native Ultimate playback for v1/v2 files.
+- **Oscilloscope post-mix lowpass/kick scopes.** Settings → General can add real-audio lowpass kick traces beside the register-derived oscilloscope voices, including one panel per active SID chip.
+
+### Improved
+
+- **Safe multi-SID routing.** Before data-backed SID playback, Stream64 validates the actual PSID/RSID header and persists required 2-SID addresses. Physical SID sockets are preferred whenever installed; all-UltiSID systems can switch their filter curve between 6581 and 8580 to match a tune. Physical-model mismatches now warn without blocking playback.
+
+### Fixed
+
+- **RSID/PSID v3 multi-SID stability.** Multi-SID RSID playback no longer relies on the Ultimate native SID runner’s fragile path; PSID64-generated PRGs provide compatible real-C64 execution.
+- **Second-SID oscilloscope activity.** An already-open SID visualization refreshes its trace address bases immediately after just-in-time SID routing, so the second chip remains visible after an address change.
+- **PSID64 player display.** Removed an unintended automated INST/DEL toggle that could blank the converted player screen after launch.
+
 ## 0.123b — 2026-08-16
 
 ### Added
@@ -10,6 +29,7 @@
 - **Songlengths.md5 support.** The HVSC browser can update or import the current song-length database, validate it off the main thread, retain the last valid cache on failure, and display full-file-MD5 matched per-subtune durations for downloaded SIDs.
 - **Multi-SID upload and configuration checks.** SID uploads now use the Ultimate API’s documented multipart `sid` attachment. The HVSC browser compares a tune’s 2SID/3SID requirements with the target’s configured sockets and offers a user-confirmed address Fix only for an already enabled/detected second SID.
 - **KAOS SID visualization.** A hybrid register/audio acid-house scene library that infers beat/BPM/pattern structure from SID gate/control and `$D418` events, blends real post-mix energy, and jump-cuts a large procedural library: neon grids/tunnels, dancers, wireframe C64/floppy/cassette/turntable motifs, hyperspace, raster storms, checkerboards, scope/VU walls, and sparse screen-filling house-music typography.
+- **Assembly64 Discover and Charts.** One-click native chart lists for Demos (Top 200), Games, Graphics, Music, OneFile Demos, and Tools; recent releases, dynamic category/preset data, and short-lived query caching make discovery immediate, with native rank/update context in the results table.
 
 ### Improved
 
@@ -19,6 +39,7 @@
 - **SID/debug compatibility controls.** The SID Visualizations menu remains available while debug capability detection is pending, U64 debug lifecycle logging is opt-in under Settings → General, and SID address fixes persist the exact `SID Addressing` configuration store.
 - **More accurate SID visual state.** Focus changes no longer send a remote release-all/keyboard-buffer operation unless input is actually held, and register-driven visualizations retain lossless trace decoding instead of dropping intermediate SID writes.
 - **Debug Trace default.** The Debug Trace window opens with the 3D Memory Map selected.
+- **Assembly64 preview sizing and KAOS release resources.** The browser minimum height now protects the metadata thumbnail from clipping, and release packaging verifies all KAOS line-art assets are included in the app bundle.
 
 ## 0.122b — 2026-08-14
 

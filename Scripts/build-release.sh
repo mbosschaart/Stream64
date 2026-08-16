@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.123b}"
-BUILD_NUMBER="${BUILD_NUMBER:-123}"
+VERSION="${VERSION:-0.124b}"
+BUILD_NUMBER="${BUILD_NUMBER:-124}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
     arm64|x86_64) ;;
@@ -163,6 +163,23 @@ cp "$BIN_DIR/Stream64_Stream64.bundle/logofactuur.png" \
     "$APP_BUNDLE/Contents/Resources/logofactuur.png"
 cp "$BIN_DIR/Stream64_Stream64.bundle/Stream64logo.png" \
     "$APP_BUNDLE/Contents/Resources/Stream64logo.png"
+KAOS_ASSETS=(
+    kaos-1541.png
+    kaos-c64.png
+    kaos-cassette.png
+    kaos-floppy.png
+    kaos-joystick.png
+    kaos-monitor.png
+    kaos-smiley.png
+)
+for asset in "${KAOS_ASSETS[@]}"; do
+    cp "$BIN_DIR/Stream64_Stream64.bundle/$asset" \
+        "$APP_BUNDLE/Contents/Resources/$asset"
+    [[ -f "$APP_BUNDLE/Contents/Resources/$asset" ]] || {
+        echo "Missing packaged KAOS asset: $asset" >&2
+        exit 3
+    }
+done
 if [[ -f "$BIN_DIR/ZIPFoundation_ZIPFoundation.bundle/PrivacyInfo.xcprivacy" ]]; then
     cp "$BIN_DIR/ZIPFoundation_ZIPFoundation.bundle/PrivacyInfo.xcprivacy" \
         "$APP_BUNDLE/Contents/Resources/PrivacyInfo.xcprivacy"

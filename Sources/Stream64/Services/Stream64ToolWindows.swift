@@ -131,7 +131,7 @@ final class Assembly64WindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered,
             defer: false)
         window.title = "Assembly64"
-        window.minSize = NSSize(width: 900, height: 580)
+        window.minSize = NSSize(width: 900, height: 680)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)

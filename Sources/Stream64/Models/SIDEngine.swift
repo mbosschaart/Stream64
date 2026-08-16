@@ -20,6 +20,8 @@ struct SIDEngineNeeds: Hashable {
     var needsLissajousPoints: Bool
     /// KAOS combines register rhythm events with post-mix spectrum energy.
     var needsKAOSRhythm: Bool
+    /// Real low-pass post-mix trace for the register-driven Oscilloscope.
+    var needsPostMixScope: Bool
 
     init(mode: SIDVisualizationMode) {
         needsRegisterWrites = mode.needsRegisterWrites
@@ -29,12 +31,14 @@ struct SIDEngineNeeds: Hashable {
         usesSpectrogramHistory = mode.usesSpectrogramHistory
         needsLissajousPoints = mode == .lissajous || mode == .kaos
         needsKAOSRhythm = mode == .kaos
+        needsPostMixScope = mode == .oscilloscope
     }
 
     private init(
         needsRegisterWrites: Bool, needsSampleSynthesis: Bool, needsAudioTap: Bool,
         usesSpectrumBars: Bool, usesSpectrogramHistory: Bool,
-        needsLissajousPoints: Bool, needsKAOSRhythm: Bool
+        needsLissajousPoints: Bool, needsKAOSRhythm: Bool,
+        needsPostMixScope: Bool
     ) {
         self.needsRegisterWrites = needsRegisterWrites
         self.needsSampleSynthesis = needsSampleSynthesis
@@ -43,12 +47,14 @@ struct SIDEngineNeeds: Hashable {
         self.usesSpectrogramHistory = usesSpectrogramHistory
         self.needsLissajousPoints = needsLissajousPoints
         self.needsKAOSRhythm = needsKAOSRhythm
+        self.needsPostMixScope = needsPostMixScope
     }
 
     static let none = SIDEngineNeeds(
         needsRegisterWrites: false, needsSampleSynthesis: false, needsAudioTap: false,
         usesSpectrumBars: false, usesSpectrogramHistory: false,
-        needsLissajousPoints: false, needsKAOSRhythm: false)
+        needsLissajousPoints: false, needsKAOSRhythm: false,
+        needsPostMixScope: false)
 
     /// The union of two sets of needs — "does at least one of us need X."
     func union(_ other: SIDEngineNeeds) -> SIDEngineNeeds {
@@ -59,7 +65,8 @@ struct SIDEngineNeeds: Hashable {
             usesSpectrumBars: usesSpectrumBars || other.usesSpectrumBars,
             usesSpectrogramHistory: usesSpectrogramHistory || other.usesSpectrogramHistory,
             needsLissajousPoints: needsLissajousPoints || other.needsLissajousPoints,
-            needsKAOSRhythm: needsKAOSRhythm || other.needsKAOSRhythm)
+            needsKAOSRhythm: needsKAOSRhythm || other.needsKAOSRhythm,
+            needsPostMixScope: needsPostMixScope || other.needsPostMixScope)
     }
 }
 
@@ -88,6 +95,7 @@ final class SIDEngine: ObservableObject {
     /// doesn't try to synthesize a huge backlog of samples the instant it
     /// resumes.
     private static let maxTickSeconds = 0.1
+    private static let postMixScopeCapacity = 400
     /// Cap the audio-tap mailbox at ~100 ms of interleaved stereo float
     /// samples (~48 kHz). If MainActor ticks fall behind, drop oldest audio
     /// instead of letting the queue grow without bound.
@@ -161,6 +169,16 @@ final class SIDEngine: ObservableObject {
         instances[deviceID]
     }
 
+    /// Hardware routing can change immediately before a multi-SID tune starts.
+    /// Refresh an already-visible engine without constructing one solely for
+    /// playback, so its debug-trace decoder follows the new address bases.
+    static func refreshConfiguration(for session: DeviceSession) async {
+        guard let existing = instances[session.device.id] else { return }
+        let config = await UltimateAPIClient(
+            device: session.device).fetchSIDConfiguration()
+        existing.configure(with: config)
+    }
+
     struct SubscriberToken: Hashable {
         fileprivate let id = UUID()
     }
@@ -176,6 +194,8 @@ final class SIDEngine: ObservableObject {
     @Published private(set) var spectrogramHistory: [[Float]] = []
     @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
     @Published private(set) var kaosRhythm = KAOSRhythmState()
+    @Published private(set) var postMixLowpassSamplesByChip: [[Float]] = []
+    @Published private(set) var postMixBassLevels: [Float] = []
 
     private struct Subscriber {
         var needs: SIDEngineNeeds
@@ -192,6 +212,8 @@ final class SIDEngine: ObservableObject {
     private var workingFilterStates: [SIDFilterRegisters] = []
     private var workingRegisterActivity = SIDRegisterActivity(chipCount: 1)
     private var workingKAOSRhythm = KAOSRhythmState()
+    private var lowpassStates: [Float] = []
+    private var workingPostMixLowpassSamplesByChip: [[Float]] = []
     private var chipBaseAddresses: [UInt16] = [0xD400]
     /// Snapshot of `chipBaseAddresses` for the debug-receiver queue. The
     /// entries observer must not read `@MainActor` state from that queue.
@@ -496,6 +518,10 @@ final class SIDEngine: ObservableObject {
         lissajousPoints = []
         spectrogramHistory.removeAll(keepingCapacity: true)
         spectrumBars = []
+        lowpassStates.removeAll(keepingCapacity: true)
+        workingPostMixLowpassSamplesByChip.removeAll(keepingCapacity: true)
+        postMixLowpassSamplesByChip = []
+        postMixBassLevels = []
     }
 
     /// Drains whatever audio samples accumulated since the last tick and
@@ -518,12 +544,47 @@ final class SIDEngine: ObservableObject {
         let frameCount = interleaved.count / 2
         guard frameCount > 0 else { return }
         var mono = [Float](repeating: 0, count: frameCount)
+        let chipCount = max(chipBaseAddresses.count, 1)
+        if lowpassStates.count != chipCount {
+            lowpassStates = Array(repeating: 0, count: chipCount)
+            workingPostMixLowpassSamplesByChip = Array(
+                repeating: [], count: chipCount)
+        }
         for i in 0..<frameCount {
             let left = interleaved[i * 2]
             let right = interleaved[i * 2 + 1]
             mono[i] = (left + right) * 0.5
+            if aggregateNeeds.needsPostMixScope {
+                // Dual-SID Ultimate audio is stereo, so preserve left/right
+                // as per-chip post-mix scopes. A single SID instead receives
+                // the summed mix in its one panel.
+                for chip in 0..<chipCount {
+                    let source = chipCount == 1
+                        ? mono[i]
+                        : (chip == 0 ? left : right)
+                    lowpassStates[chip] += 0.055 * (
+                        source - lowpassStates[chip])
+                    workingPostMixLowpassSamplesByChip[chip].append(
+                        lowpassStates[chip])
+                }
+            }
             if aggregateNeeds.needsLissajousPoints {
                 lissajousBuffer.append((left, right))
+            }
+        }
+        if aggregateNeeds.needsPostMixScope {
+            for chip in workingPostMixLowpassSamplesByChip.indices {
+                let samples = workingPostMixLowpassSamplesByChip[chip]
+                if samples.count > Self.postMixScopeCapacity {
+                    workingPostMixLowpassSamplesByChip[chip].removeFirst(
+                        samples.count - Self.postMixScopeCapacity)
+                }
+            }
+            postMixLowpassSamplesByChip = workingPostMixLowpassSamplesByChip
+            postMixBassLevels = workingPostMixLowpassSamplesByChip.map {
+                guard !$0.isEmpty else { return 0 }
+                return sqrt($0.reduce(Float(0)) { $0 + $1 * $1 }
+                    / Float($0.count))
             }
         }
         if lissajousBuffer.count > Self.lissajousBufferSize {

@@ -12,6 +12,30 @@ struct HVSCClient: Sendable {
     static let maximumSonglengthBytes: Int64 = 5 * 1024 * 1024
 
     struct SearchFilters: Equatable, Sendable {
+        enum Collection: String, CaseIterable, Identifiable, Sendable {
+            case all
+            case twoSID
+            case threeSID
+
+            var id: String { rawValue }
+
+            var label: String {
+                switch self {
+                case .all: return "All SIDs"
+                case .twoSID: return "2-SID Collection"
+                case .threeSID: return "3-SID Collection"
+                }
+            }
+
+            var searchToken: String? {
+                switch self {
+                case .all: return nil
+                case .twoSID: return "2SID"
+                case .threeSID: return "3SID"
+                }
+            }
+        }
+
         enum Field: String, CaseIterable, Identifiable, Sendable {
             case any = ""
             case title
@@ -69,6 +93,7 @@ struct HVSCClient: Sendable {
         var model: SIDModel = .any
         var clock: Clock = .any
         var year: Int?
+        var collection: Collection = .all
     }
 
     struct SearchResult: Codable, Identifiable, Hashable, Sendable {
@@ -76,6 +101,14 @@ struct HVSCClient: Sendable {
         let title: String
         let author: String
         let released: String
+
+        func matches(_ query: String) -> Bool {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return true }
+            return [title, author, released].contains {
+                $0.localizedCaseInsensitiveContains(trimmed)
+            }
+        }
     }
 
     struct TuneDetail: Codable, Identifiable, Hashable, Sendable {
@@ -169,6 +202,26 @@ struct HVSCClient: Sendable {
         query: String,
         filters: SearchFilters = .init()
     ) async throws -> [SearchResult] {
+        let url = try Self.searchURL(query: query, filters: filters)
+        return try await get(url, maximumBytes: Self.maximumSearchBytes)
+    }
+
+    /// Retrieves HVSC's conventionally named multi-SID sets through one
+    /// user-initiated search request. HVSC has no separate collection endpoint.
+    func searchCollection(
+        _ collection: SearchFilters.Collection,
+        filters: SearchFilters = .init()
+    ) async throws -> [SearchResult] {
+        guard let token = collection.searchToken else {
+            throw ClientError.emptyQuery
+        }
+        return try await search(query: token, filters: filters)
+    }
+
+    static func searchURL(
+        query: String,
+        filters: SearchFilters = .init()
+    ) throws -> URL {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 3 else { throw ClientError.emptyQuery }
 
@@ -189,7 +242,7 @@ struct HVSCClient: Sendable {
             items.append(URLQueryItem(name: "year", value: String(year)))
         }
         components.queryItems = items
-        return try await get(components.url!, maximumBytes: Self.maximumSearchBytes)
+        return components.url!
     }
 
     func details(id: Int) async throws -> TuneDetail {
@@ -306,6 +359,16 @@ struct SIDHeader: Equatable, Sendable {
     let flags: UInt16
     let secondSIDAddress: UInt16?
     let thirdSIDAddress: UInt16?
+    let primarySIDModel: String?
+    let secondSIDModel: String?
+    let thirdSIDModel: String?
+    /// PSID files with this flag rely on PlaySID-only behavior and are not
+    /// safe to execute on an unmodified C64 SID-player path.
+    let isPlaySIDSpecific: Bool
+
+    var requiredSIDAddresses: [UInt16] {
+        [0xD400, secondSIDAddress, thirdSIDAddress].compactMap { $0 }
+    }
 
     init(data: Data) throws {
         guard data.count >= 0x76 else {
@@ -340,12 +403,22 @@ struct SIDHeader: Equatable, Sendable {
         numberOfSongs = songCount
         self.startSong = startSong
         self.flags = flags
-        secondSIDAddress = version >= 3
-            ? Self.sidAddress(data[0x7A])
-            : nil
-        thirdSIDAddress = version >= 4
-            ? Self.sidAddress(data[0x7B])
-            : nil
+        primarySIDModel = Self.sidModel(flags, shift: 4)
+        secondSIDModel = Self.sidModel(flags, shift: 6)
+        thirdSIDModel = Self.sidModel(flags, shift: 8)
+        isPlaySIDSpecific = format == .psid && (flags & 0x0002) != 0
+        secondSIDAddress = try Self.additionalSIDAddress(
+            data,
+            offset: 0x7A,
+            requiredByVersion: 3,
+            version: version,
+            label: "second")
+        thirdSIDAddress = try Self.additionalSIDAddress(
+            data,
+            offset: 0x7B,
+            requiredByVersion: 4,
+            version: version,
+            label: "third")
     }
 
     private static func word(_ data: Data, at offset: Int) -> Int {
@@ -361,6 +434,31 @@ struct SIDHeader: Equatable, Sendable {
             ?? String(decoding: bytes, as: UTF8.self)
         return text
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func additionalSIDAddress(
+        _ data: Data,
+        offset: Int,
+        requiredByVersion: Int,
+        version: Int,
+        label: String
+    ) throws -> UInt16? {
+        guard version >= requiredByVersion else { return nil }
+        let value = data[offset]
+        guard value != 0 else { return nil }
+        guard let address = sidAddress(value) else {
+            throw HVSCClient.ClientError.invalidSID(
+                "invalid \(label) SID address")
+        }
+        return address
+    }
+
+    private static func sidModel(_ flags: UInt16, shift: UInt16) -> String? {
+        switch (flags >> shift) & 0x0003 {
+        case 1: return "6581"
+        case 2: return "8580"
+        default: return nil
+        }
     }
 
     private static func sidAddress(_ value: UInt8) -> UInt16? {

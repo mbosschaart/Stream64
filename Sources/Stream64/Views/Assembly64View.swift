@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct Assembly64View: View {
     enum LibraryScope: String, CaseIterable, Identifiable {
         case search = "Search"
+        case discover = "Discover"
         case favorites = "Favorites"
         case recent = "Recent"
 
@@ -51,6 +52,7 @@ struct Assembly64View: View {
     @State private var savedSearchName = ""
     @State private var archivePreview: ArchivePreview?
     @State private var actionTarget: DeviceActionTarget?
+    @State private var selectedDiscoveryList: Assembly64DiscoveryList = .demoTop200
 
     private static let pageSize = 200
 
@@ -61,6 +63,7 @@ struct Assembly64View: View {
     private var displayedResults: [Assembly64Client.SearchResult] {
         switch scope {
         case .search: return searchResults
+        case .discover: return searchResults
         case .favorites: return library.favoriteResults
         case .recent: return library.recentResults
         }
@@ -94,6 +97,10 @@ struct Assembly64View: View {
     var body: some View {
         VStack(spacing: 0) {
             resultsPane
+                // SwiftUI's unified macOS title/toolbar can otherwise let a
+                // Table header sit under the top chrome at minimum window
+                // size, making the column bar look clipped.
+                .padding(.top, 10)
             Divider()
             filesPane
         }
@@ -103,16 +110,28 @@ struct Assembly64View: View {
         .toolbar { toolbarContent }
         .navigationTitle("Assembly64")
         .frame(minWidth: 900, idealWidth: 980, maxWidth: .infinity,
-               minHeight: 580, idealHeight: 680, maxHeight: .infinity,
+               minHeight: 680, idealHeight: 700, maxHeight: .infinity,
                alignment: .top)
         .task { await loadReferenceData() }
         .onAppear {
             if actionTarget == nil, let id = deviceStore.selectedDeviceID {
                 actionTarget = .device(id)
             }
+            selectedDiscoveryList = Assembly64DiscoveryList(
+                rawValue: library.selectedDiscoveryListRaw
+            ) ?? .demoTop200
         }
         .onChange(of: scope) {
             clearSelection()
+            if scope == .discover {
+                runDiscovery()
+            }
+        }
+        .onChange(of: selectedDiscoveryList) {
+            library.selectedDiscoveryListRaw = selectedDiscoveryList.rawValue
+            if scope == .discover {
+                runDiscovery()
+            }
         }
         .alert("Save Search", isPresented: $showingSaveSearch) {
             TextField("Search name", text: $savedSearchName)
@@ -134,14 +153,34 @@ struct Assembly64View: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Picker("Library", selection: $scope) {
-                ForEach(LibraryScope.allCases) { value in
-                    Text(value.rawValue).tag(value)
+        ToolbarItem {
+            Menu {
+                Picker("Library", selection: $scope) {
+                    ForEach(LibraryScope.allCases) { value in
+                        Text(value.rawValue).tag(value)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Label(scope.rawValue, systemImage: "books.vertical")
             }
-            .pickerStyle(.segmented)
-            .frame(width: 190)
+            .help("Assembly64 browser scope")
+        }
+
+        if scope == .discover {
+            ToolbarItem {
+                Menu {
+                    Picker("Discover List", selection: $selectedDiscoveryList) {
+                        ForEach(Assembly64DiscoveryList.allCases) { list in
+                            Text(list.title).tag(list)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label(selectedDiscoveryList.title, systemImage: "chart.bar.fill")
+                }
+                .help("Curated Assembly64 charts and ranked discovery lists")
+            }
         }
 
         ToolbarItem {
@@ -158,21 +197,28 @@ struct Assembly64View: View {
             .help("Device target for Run, Play, Mount, and Mount & Run")
         }
 
-        ToolbarItem(placement: .navigation) {
-            Picker("Category", selection: $selectedCategory) {
-                Text("All Categories").tag(nil as Assembly64Client.Category?)
-                ForEach(groupedCategories, id: \.0) { group, cats in
-                    Section(group) {
-                        ForEach(cats) { cat in
-                            Text(cat.description ?? cat.name)
-                                .tag(cat as Assembly64Client.Category?)
+        if scope == .search {
+            ToolbarItem {
+                Menu {
+                    Picker("Category", selection: $selectedCategory) {
+                        Text("All Categories").tag(nil as Assembly64Client.Category?)
+                        ForEach(groupedCategories, id: \.0) { group, cats in
+                            Section(group) {
+                                ForEach(cats) { cat in
+                                    Text(cat.description ?? cat.name)
+                                        .tag(cat as Assembly64Client.Category?)
+                                }
+                            }
                         }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label(
+                        selectedCategory?.description ?? selectedCategory?.name ?? "Category",
+                        systemImage: "square.grid.2x2")
                 }
+                .help("Limit search to one Assembly64 subcategory")
             }
-            .frame(maxWidth: 150)
-            .disabled(scope != .search)
-            .help("Limit search to one Assembly64 subcategory")
         }
 
         ToolbarItem {
@@ -331,43 +377,7 @@ struct Assembly64View: View {
 
     private var resultsPane: some View {
         VStack(spacing: 0) {
-            Table(displayedResults, selection: $selectedResult) {
-                TableColumn("") { result in
-                    Button {
-                        library.toggleFavorite(result)
-                    } label: {
-                        Image(systemName: library.isFavorite(result)
-                              ? "star.fill" : "star")
-                            .foregroundStyle(library.isFavorite(result)
-                                             ? Color.yellow : Color.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(library.isFavorite(result)
-                          ? "Remove from favorites" : "Add to favorites")
-                }
-                .width(28)
-
-                TableColumn("Name") { result in
-                    Text(result.name)
-                }
-                .width(min: 160, ideal: 240, max: 300)
-
-                TableColumn("Group") { result in
-                    Text(result.displayGroup)
-                }
-                .width(min: 80, ideal: 120, max: 160)
-
-                TableColumn("Year") { result in
-                    Text(result.year.map { $0 == 0 ? "" : String($0) } ?? "")
-                }
-                .width(min: 48, ideal: 56, max: 64)
-
-                TableColumn("Rating") { result in
-                    Text(result.displayRating)
-                }
-                .width(min: 48, ideal: 56, max: 64)
-            }
-            .onChange(of: selectedResult) { loadSelectedItem() }
+            resultTable
 
             statusBar
         }
@@ -379,11 +389,83 @@ struct Assembly64View: View {
         .frame(height: 300)
     }
 
+    @ViewBuilder
+    private var resultTable: some View {
+        if scope == .discover {
+            Table(searchResults, selection: $selectedResult) {
+                TableColumn("#") { result in
+                    Text(discoveryRank(for: result).map(String.init) ?? "")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .width(min: 34, ideal: 44, max: 52)
+                TableColumn("") { result in
+                    favoriteButton(for: result)
+                }
+                .width(28)
+                TableColumn("Name") { result in Text(result.name) }
+                    .width(min: 160, ideal: 240, max: 300)
+                TableColumn("Group") { result in Text(result.displayGroup) }
+                    .width(min: 80, ideal: 120, max: 160)
+                TableColumn("Year") { result in
+                    Text(result.year.map { $0 == 0 ? "" : String($0) } ?? "")
+                }
+                .width(min: 48, ideal: 56, max: 64)
+                TableColumn("Rating") { result in Text(result.displayRating) }
+                    .width(min: 48, ideal: 56, max: 64)
+                TableColumn("Updated") { result in
+                    Text(result.updated ?? result.released ?? "").lineLimit(1)
+                }
+                .width(min: 82, ideal: 96, max: 120)
+            }
+            .onChange(of: selectedResult) { loadSelectedItem() }
+        } else {
+            Table(displayedResults, selection: $selectedResult) {
+                TableColumn("") { result in
+                    favoriteButton(for: result)
+                }
+                .width(28)
+                TableColumn("Name") { result in Text(result.name) }
+                    .width(min: 160, ideal: 240, max: 300)
+                TableColumn("Group") { result in Text(result.displayGroup) }
+                    .width(min: 80, ideal: 120, max: 160)
+                TableColumn("Year") { result in
+                    Text(result.year.map { $0 == 0 ? "" : String($0) } ?? "")
+                }
+                .width(min: 48, ideal: 56, max: 64)
+                TableColumn("Rating") { result in Text(result.displayRating) }
+                    .width(min: 48, ideal: 56, max: 64)
+            }
+            .onChange(of: selectedResult) { loadSelectedItem() }
+        }
+    }
+
+    private func favoriteButton(
+        for result: Assembly64Client.SearchResult
+    ) -> some View {
+        Button {
+            library.toggleFavorite(result)
+        } label: {
+            Image(systemName: library.isFavorite(result)
+                  ? "star.fill" : "star")
+                .foregroundStyle(library.isFavorite(result)
+                                 ? Color.yellow : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(library.isFavorite(result)
+              ? "Remove from favorites" : "Add to favorites")
+    }
+
     private var statusBar: some View {
         HStack {
             switch scope {
             case .search:
                 searchStatus
+            case .discover:
+                Label(
+                    selectedDiscoveryList.subtitle,
+                    systemImage: "chart.bar.fill")
+                    .foregroundStyle(.secondary)
             case .favorites:
                 Label("\(library.favorites.count) favorites", systemImage: "star.fill")
                     .foregroundStyle(.secondary)
@@ -406,6 +488,16 @@ struct Assembly64View: View {
         .font(.callout)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    private func discoveryRank(
+        for result: Assembly64Client.SearchResult
+    ) -> Int? {
+        guard scope == .discover,
+              let index = searchResults.firstIndex(of: result) else {
+            return nil
+        }
+        return index + 1
     }
 
     @ViewBuilder
@@ -466,7 +558,10 @@ struct Assembly64View: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 250)
+        // Results (300pt) + this pane + toolbar/status/preview content must
+        // fit inside the AppKit window minimum. Otherwise the fixed thumbnail
+        // card is compressed and clips when the window reaches its minimum.
+        .frame(maxWidth: .infinity, minHeight: 310)
     }
 
     private func itemSummary(_ result: Assembly64Client.SearchResult) -> some View {
@@ -684,10 +779,28 @@ struct Assembly64View: View {
     // MARK: - Search actions
 
     private func loadReferenceData() async {
+        if let cached = await Assembly64Cache.shared.referenceData() {
+            categories = cached.categories
+            presets = cached.presets
+        }
         async let categoryRequest = try? client.categories()
         async let presetRequest = try? client.presets()
-        categories = await categoryRequest ?? []
-        presets = await presetRequest ?? []
+        let fetchedCategories = await categoryRequest
+        let fetchedPresets = await presetRequest
+        if let fetchedCategories {
+            categories = fetchedCategories
+        }
+        if let fetchedPresets {
+            presets = fetchedPresets
+        }
+        if !categories.isEmpty || !presets.isEmpty {
+            await Assembly64Cache.shared.storeReferenceData(
+                categories: categories,
+                presets: presets)
+        }
+        if scope == .discover {
+            runDiscovery()
+        }
     }
 
     private func runSearch(text: String? = nil,
@@ -719,8 +832,20 @@ struct Assembly64View: View {
 
         searchTask = Task {
             do {
-                let found = try await client.search(
-                    query: query, offset: 0, limit: Self.pageSize)
+                let cacheKey = Self.searchCacheKey(
+                    query: query,
+                    offset: 0,
+                    limit: Self.pageSize)
+                let found: [Assembly64Client.SearchResult]
+                if let cached = await Assembly64Cache.shared.searchResults(
+                    for: cacheKey) {
+                    found = cached
+                } else {
+                    found = try await client.search(
+                        query: query, offset: 0, limit: Self.pageSize)
+                    await Assembly64Cache.shared.storeSearchResults(
+                        found, for: cacheKey)
+                }
                 guard !Task.isCancelled else { return }
                 searchResults = found
                 searchState = .done(count: found.count)
@@ -742,8 +867,18 @@ struct Assembly64View: View {
         Task {
             defer { isLoadingMore = false }
             do {
-                let found = try await client.search(
+                let cacheKey = Self.searchCacheKey(
                     query: query, offset: offset, limit: Self.pageSize)
+                let found: [Assembly64Client.SearchResult]
+                if let cached = await Assembly64Cache.shared.searchResults(
+                    for: cacheKey) {
+                    found = cached
+                } else {
+                    found = try await client.search(
+                        query: query, offset: offset, limit: Self.pageSize)
+                    await Assembly64Cache.shared.storeSearchResults(
+                        found, for: cacheKey)
+                }
                 searchResults.append(contentsOf: found)
                 searchState = .done(count: searchResults.count)
                 hasMoreResults = found.count == Self.pageSize
@@ -751,6 +886,62 @@ struct Assembly64View: View {
                 loadStatus = "Load more failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func runDiscovery() {
+        searchTask?.cancel()
+        selectionTask?.cancel()
+        scope = .discover
+        searchState = .searching
+        searchResults = []
+        clearSelection()
+        hasMoreResults = false
+        let list = selectedDiscoveryList
+        let query = list.query(
+            categories: categories,
+            presets: presets).aql
+        loadedQuery = query
+
+        searchTask = Task {
+            do {
+                let cacheQuery = list.chartType.map { "chart:\($0)" } ?? query
+                let cacheKey = Self.searchCacheKey(
+                    query: cacheQuery, offset: 0, limit: 200)
+                let found: [Assembly64Client.SearchResult]
+                if let cached = await Assembly64Cache.shared.searchResults(
+                    for: cacheKey) {
+                    found = cached
+                } else {
+                    if let chartType = list.chartType {
+                        found = try await client.chart(chartType)
+                    } else {
+                        found = try await client.search(
+                            query: query, offset: 0, limit: 100)
+                    }
+                    await Assembly64Cache.shared.storeSearchResults(
+                        found, for: cacheKey)
+                }
+                guard !Task.isCancelled, selectedDiscoveryList == list else {
+                    return
+                }
+                searchResults = found
+                searchState = .done(count: found.count)
+                hasMoreResults = false
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                searchState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private static func searchCacheKey(
+        query: String,
+        offset: Int,
+        limit: Int
+    ) -> String {
+        "\(query)|\(offset)|\(limit)"
     }
 
     private func saveCurrentSearch() {

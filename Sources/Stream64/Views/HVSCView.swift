@@ -15,6 +15,8 @@ struct HVSCView: View {
     @State private var query = ""
     @State private var filters = HVSCClient.SearchFilters()
     @State private var results: [HVSCClient.SearchResult] = []
+    @State private var collectionResults: [HVSCClient.SearchResult] = []
+    @State private var loadedCollection: HVSCClient.SearchFilters.Collection?
     @State private var selectedID: Int?
     @State private var detail: HVSCClient.TuneDetail?
     @State private var searchStatus = "Enter at least three characters to search HVSC."
@@ -82,6 +84,9 @@ struct HVSCView: View {
         .onChange(of: query) {
             scheduleSearch(immediately: false)
         }
+        .onChange(of: filters.collection) {
+            scheduleSearch(immediately: true, reloadCollection: true)
+        }
         .onChange(of: actionTarget) {
             if let detail {
                 refreshSIDCompatibility(for: detail)
@@ -132,6 +137,17 @@ struct HVSCView: View {
             .frame(width: 120)
         }
 
+        ToolbarItem(placement: .navigation) {
+            Picker("Collection", selection: $filters.collection) {
+                ForEach(HVSCClient.SearchFilters.Collection.allCases) {
+                    collection in
+                    Text(collection.label).tag(collection)
+                }
+            }
+            .frame(width: 150)
+            .help("Browse HVSC's conventionally named multi-SID tune sets")
+        }
+
         ToolbarItem {
             Menu {
                 Picker("SID Model", selection: $filters.model) {
@@ -153,7 +169,7 @@ struct HVSCView: View {
                 }
                 Divider()
                 Button("Apply Filters") {
-                    scheduleSearch(immediately: true)
+                    scheduleSearch(immediately: true, reloadCollection: true)
                 }
                 Button("Clear Filters") {
                     filters = .init()
@@ -411,17 +427,6 @@ struct HVSCView: View {
                     .foregroundStyle(.orange)
                 Text(sidCompatibility.message)
                     .lineLimit(2)
-                if sidCompatibility.canFixAddress,
-                   let address = sidCompatibility.desiredSecondAddress {
-                    Button("Fix") {
-                        fixSecondSIDAddress(address, on: sidCompatibility.fixableDevices)
-                    }
-                    .controlSize(.small)
-                    .disabled(isFixingSIDAddress)
-                }
-                if isFixingSIDAddress {
-                    ProgressView().controlSize(.small)
-                }
             }
             .font(.caption)
             .padding(.horizontal, 9)
@@ -529,16 +534,57 @@ struct HVSCView: View {
     @State private var downloadedSIDForDetail: [Int: Data] = [:]
 
     private func scheduleSearch(immediately: Bool) {
+        scheduleSearch(immediately: immediately, reloadCollection: false)
+    }
+
+    private func scheduleSearch(
+        immediately: Bool,
+        reloadCollection: Bool
+    ) {
         searchTask?.cancel()
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filters = filters
+        let collection = filters.collection
+
+        if collection != .all {
+            if !reloadCollection, loadedCollection == collection {
+                applyCollectionResults(for: query, collection: collection)
+                return
+            }
+            searchTask = Task {
+                if !immediately {
+                    try? await Task.sleep(for: .milliseconds(350))
+                }
+                guard !Task.isCancelled else { return }
+                isSearching = true
+                defer { isSearching = false }
+                do {
+                    let found = try await client.searchCollection(
+                        collection, filters: filters)
+                    guard !Task.isCancelled else { return }
+                    collectionResults = found
+                    loadedCollection = collection
+                    applyCollectionResults(for: query, collection: collection)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    collectionResults = []
+                    loadedCollection = nil
+                    clearSelectedResult()
+                    searchStatus = error.localizedDescription
+                }
+            }
+            return
+        }
+
+        collectionResults = []
+        loadedCollection = nil
         guard query.count >= 3 else {
-            results = []
-            selectedID = nil
-            detail = nil
+            clearSelectedResult()
             searchStatus = "Enter at least three characters to search HVSC."
             return
         }
-        let filters = filters
         searchTask = Task {
             if !immediately {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -550,10 +596,7 @@ struct HVSCView: View {
                 let found = try await client.search(query: query, filters: filters)
                 guard !Task.isCancelled else { return }
                 results = found
-                selectedID = nil
-                detail = nil
-                sidCompatibility = nil
-                downloadedSIDForDetail.removeAll()
+                clearSelectedResult()
                 searchStatus = "\(found.count) result\(found.count == 1 ? "" : "s")"
             } catch is CancellationError {
                 return
@@ -563,6 +606,25 @@ struct HVSCView: View {
                 searchStatus = error.localizedDescription
             }
         }
+    }
+
+    private func applyCollectionResults(
+        for query: String,
+        collection: HVSCClient.SearchFilters.Collection
+    ) {
+        let filtered = collectionResults.filter { $0.matches(query) }
+        results = filtered
+        clearSelectedResult()
+        let total = collectionResults.count
+        let prefix = query.isEmpty ? "" : "\(filtered.count) of "
+        searchStatus = "\(prefix)\(total) \(collection.label.lowercased())"
+    }
+
+    private func clearSelectedResult() {
+        selectedID = nil
+        detail = nil
+        sidCompatibility = nil
+        downloadedSIDForDetail.removeAll()
     }
 
     private func loadDetail() {
@@ -646,55 +708,15 @@ struct HVSCView: View {
             sidCompatibility = nil
             return
         }
-        let requiredSecondAddress = Self.parseSIDAddress(detail.sid2BaseAddress)
-        let requiredPrimaryModel = Self.requiredModel(
-            needs6581: detail.model6581,
-            needs8580: detail.model8580)
-        let requiredSecondModel = Self.requiredModel(
-            needs6581: detail.model6581Sid2 == true,
-            needs8580: detail.model8580Sid2 == true)
-
-        isCheckingSIDCompatibility = true
-        Task {
-            var messages: [String] = []
-            var fixable: [UltimateDevice] = []
-            for device in targets {
-                let configuration = await UltimateAPIClient(
-                    device: device).fetchSIDConfiguration()
-                if let requiredPrimaryModel,
-                   let actual = configuration.socket1Model,
-                   actual != requiredPrimaryModel {
-                    messages.append(
-                        "\(device.name): primary SID is \(actual), tune requires \(requiredPrimaryModel).")
-                }
-                guard let requiredSecondAddress else { continue }
-                guard let actualAddress = configuration.socket2Address else {
-                    messages.append(
-                        "\(device.name): tune requires a second SID at \(Self.addressLabel(requiredSecondAddress)).")
-                    continue
-                }
-                if let requiredSecondModel,
-                   let actual = configuration.socket2Model,
-                   actual != requiredSecondModel {
-                    messages.append(
-                        "\(device.name): second SID is \(actual), tune requires \(requiredSecondModel).")
-                    continue
-                }
-                if actualAddress != requiredSecondAddress {
-                    messages.append(
-                        "\(device.name): second SID is at \(Self.addressLabel(actualAddress)); tune requires \(Self.addressLabel(requiredSecondAddress)).")
-                    fixable.append(device)
-                }
-            }
-            guard self.detail?.id == detail.id else { return }
-            isCheckingSIDCompatibility = false
-            sidCompatibility = messages.isEmpty
-                ? nil
-                : SIDCompatibility(
-                    message: messages.joined(separator: " "),
-                    desiredSecondAddress: requiredSecondAddress,
-                    fixableDevices: fixable)
+        guard detail.sid2BaseAddress != nil || detail.sid3BaseAddress != nil else {
+            sidCompatibility = nil
+            return
         }
+        let count = detail.sid3BaseAddress == nil ? "2-SID" : "3-SID"
+        sidCompatibility = SIDCompatibility(
+            message: "\(count) routing will be configured and saved before playback.",
+            desiredSecondAddress: nil,
+            fixableDevices: [])
     }
 
     /// User-confirmed fix: only changes the address of an already-enabled,

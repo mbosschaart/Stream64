@@ -432,6 +432,19 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     filters as a named search. Favorites, history, saved searches, metadata \
     previews, and remembered disk actions persist between launches.
 
+    **Discover and Charts**
+
+    Choose **Discover** in the browser to open Assembly64’s native charts \
+    without typing a query: **Demos** (Demo Top 200), **Games**, **Graphics**, \
+    **Music**, **OneFile Demos**, and **Tools**—plus recent releases. Native \
+    chart ranks come directly from `/leet/charts`; recent releases use ranked \
+    AQL search. Results are cached briefly for responsive list switching, \
+    while category/filter definitions refresh daily.
+
+    The results table adds rank and update context for discovery lists. The \
+    normal search, filters, favorites, saved searches, and file actions remain \
+    available unchanged.
+
     **Loading**
 
     Select a result to see its metadata, preview/source link when available, \

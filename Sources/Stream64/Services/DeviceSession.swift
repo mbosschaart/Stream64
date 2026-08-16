@@ -94,6 +94,7 @@ final class DeviceSession: ObservableObject {
     let input: C64InputController
     private let settings: AppSettings
     private var client: UltimateAPIClient
+    private let psid64 = PSID64Service()
     /// Shared REST client for tool windows (Drive Bay, Config, Memory Console).
     var api: UltimateAPIClient { client }
     private var displayObserver: AnyCancellable?
@@ -1357,9 +1358,13 @@ final class DeviceSession: ObservableObject {
                     transferStatus = .done("Mounted \(filename) in drive A")
                 }
             case "sid":
+                // The file is already on Ultimate storage and the REST API
+                // has no read-by-path endpoint. Do not guess its topology or
+                // mutate hardware routing without inspecting its header.
                 await awaitDebugPrewarmBeforeSIDPlayback()
                 try await client.playSID(path: path)
-                transferStatus = .done("Playing \(filename)")
+                transferStatus = .done(
+                    "Playing \(filename) (SID routing was not verified)")
             case "mod":
                 try await client.playMOD(path: path)
                 transferStatus = .done("Playing \(filename)")
@@ -1420,8 +1425,22 @@ final class DeviceSession: ObservableObject {
                 }
             case "sid":
                 await awaitDebugPrewarmBeforeSIDPlayback()
-                try await client.playSID(data: data, filename: filename)
-                transferStatus = .done("Playing \(filename)")
+                transferStatus = .uploading("Configuring SID routing for \(filename)")
+                let header = try SIDHeader(data: data)
+                _ = try await client.ensureSIDRouting(for: header)
+                await SIDEngine.refreshConfiguration(for: self)
+                // v1/v2 play reliably through the Ultimate runner. v3/v4
+                // add multi-SID metadata, and PSID64's relocated real-C64
+                // driver is safer for both PSID and RSID execution.
+                if header.version >= 3 {
+                    transferStatus = .uploading("Converting \(filename) with PSID64")
+                    let prg = try await psid64.convert(data, filename: filename)
+                    try await client.runPRG(data: prg)
+                    transferStatus = .done("Playing \(filename) via PSID64")
+                } else {
+                    try await client.playSID(data: data, filename: filename)
+                    transferStatus = .done("Playing \(filename)")
+                }
                 outcome = .playing(filename)
             case "crt":
                 try await client.runCRT(data: data)

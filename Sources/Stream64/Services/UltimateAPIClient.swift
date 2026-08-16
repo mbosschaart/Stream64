@@ -146,6 +146,50 @@ struct UltimateAPIClient {
             case ultiSID
         }
 
+        struct Slot: Equatable, Identifiable {
+            enum Source: String, CaseIterable {
+                case socket1
+                case socket2
+                case ultiSID1
+                case ultiSID2
+
+                var configItem: String {
+                    switch self {
+                    case .socket1: return "SID Socket 1 Address"
+                    case .socket2: return "SID Socket 2 Address"
+                    case .ultiSID1: return "UltiSID 1 Address"
+                    case .ultiSID2: return "UltiSID 2 Address"
+                    }
+                }
+
+                var label: String {
+                    switch self {
+                    case .socket1: return "SID socket 1"
+                    case .socket2: return "SID socket 2"
+                    case .ultiSID1: return "UltiSID 1"
+                    case .ultiSID2: return "UltiSID 2"
+                    }
+                }
+            }
+
+            let source: Source
+            let address: UInt16
+            let model: String?
+
+            var id: Source { source }
+            var isPhysical: Bool {
+                source == .socket1 || source == .socket2
+            }
+
+            var modelConfigItem: String? {
+                switch source {
+                case .ultiSID1: return "UltiSID 1 Filter Curve"
+                case .ultiSID2: return "UltiSID 2 Filter Curve"
+                case .socket1, .socket2: return nil
+                }
+            }
+        }
+
         let socket1Address: UInt16
         let socket1Model: String?
         /// nil when a second SID isn't enabled/detected.
@@ -154,6 +198,40 @@ struct UltimateAPIClient {
         /// Which address entry owns `socket2Address`; used by the explicit
         /// compatibility Fix action without guessing physical hardware.
         let secondSIDSource: SecondSIDSource?
+        /// Every addressable SID source currently available to the Ultimate.
+        /// This lets playback route a 3-SID tune without discarding UltiSIDs
+        /// just because physical sockets are present.
+        let slots: [Slot]
+    }
+
+    struct SIDRoutingResult: Equatable {
+        let configuredSlots: [SIDConfiguration.Slot.Source]
+        let warnings: [String]
+
+        var description: String {
+            var parts: [String] = []
+            if !configuredSlots.isEmpty {
+                parts.append(
+                    "Configured " + configuredSlots.map(\.rawValue).joined(separator: ", ") + ".")
+            }
+            parts.append(contentsOf: warnings)
+            return parts.isEmpty ? "SID routing already matched." : parts.joined(separator: " ")
+        }
+    }
+
+    enum SIDRoutingError: LocalizedError {
+        case playSIDSpecific
+        case noCompatibleSlot(address: UInt16, model: String?)
+
+        var errorDescription: String? {
+            switch self {
+            case .playSIDSpecific:
+                return "This PSID uses PlaySID-specific behavior and is unsafe for native C64 playback."
+            case .noCompatibleSlot(let address, let model):
+                let requirement = model.map { " (\($0))" } ?? ""
+                return "No compatible SID is available at \(String(format: "$%04X", address))\(requirement)."
+            }
+        }
     }
 
     /// Best-effort discovery of the configured SID base address(es), used
@@ -172,7 +250,8 @@ struct UltimateAPIClient {
             socket1Model: nil,
             socket2Address: nil,
             socket2Model: nil,
-            secondSIDSource: nil)
+            secondSIDSource: nil,
+            slots: [])
         guard let addressing = try? await fetchConfigCategory("SID Addressing"),
               let sockets = try? await fetchConfigCategory("SID Sockets Configuration"),
               let ultiSID = try? await fetchConfigCategory("UltiSID Configuration") else {
@@ -185,9 +264,38 @@ struct UltimateAPIClient {
         let physicalSocket2Model = Self.detectedSIDModel(
             sockets["SID Detected Socket 2"] as? String)
 
-        // On U64 hardware, active physical sockets take precedence. C64
-        // Ultimate Founder has no physical sockets, so the configured UltiSID
-        // pair is the authoritative source instead.
+        var slots: [SIDConfiguration.Slot] = []
+        if physicalSocket1Enabled, let physicalSocket1Model {
+            slots.append(.init(
+                source: .socket1,
+                address: Self.parseHexAddress(
+                    addressing["SID Socket 1 Address"] as? String) ?? 0xD400,
+                model: physicalSocket1Model))
+        }
+        if socket2Enabled, let physicalSocket2Model,
+           let address = Self.parseHexAddress(
+            addressing["SID Socket 2 Address"] as? String) {
+            slots.append(.init(source: .socket2, address: address, model: physicalSocket2Model))
+        }
+        let ultiSID1 = Self.parseHexAddress(
+            addressing["UltiSID 1 Address"] as? String) ?? 0xD400
+        let ultiSID2 = Self.parseHexAddress(
+            addressing["UltiSID 2 Address"] as? String)
+        slots.append(.init(
+            source: .ultiSID1,
+            address: ultiSID1,
+            model: Self.ultiSIDModel(
+                ultiSID["UltiSID 1 Filter Curve"] as? String)))
+        if let ultiSID2 {
+            slots.append(.init(
+                source: .ultiSID2,
+                address: ultiSID2,
+                model: Self.ultiSIDModel(
+                    ultiSID["UltiSID 2 Filter Curve"] as? String)))
+        }
+
+        // On U64 hardware, active physical sockets are still the preferred
+        // oscilloscope source, while auto-routing also keeps UltiSIDs visible.
         if physicalSocket1Enabled, physicalSocket1Model != nil {
             let socket1 = Self.parseHexAddress(
                 addressing["SID Socket 1 Address"] as? String) ?? 0xD400
@@ -200,13 +308,10 @@ struct UltimateAPIClient {
                 socket1Model: physicalSocket1Model,
                 socket2Address: socket2,
                 socket2Model: socket2 == nil ? nil : physicalSocket2Model,
-                secondSIDSource: socket2 == nil ? nil : .physicalSocket)
+                secondSIDSource: socket2 == nil ? nil : .physicalSocket,
+                slots: slots)
         }
 
-        let ultiSID1 = Self.parseHexAddress(
-            addressing["UltiSID 1 Address"] as? String) ?? 0xD400
-        let ultiSID2 = Self.parseHexAddress(
-            addressing["UltiSID 2 Address"] as? String)
         return SIDConfiguration(
             socket1Address: ultiSID1,
             socket1Model: Self.ultiSIDModel(
@@ -214,7 +319,95 @@ struct UltimateAPIClient {
             socket2Address: ultiSID2,
             socket2Model: ultiSID2 == nil ? nil : Self.ultiSIDModel(
                 ultiSID["UltiSID 2 Filter Curve"] as? String),
-            secondSIDSource: ultiSID2 == nil ? nil : .ultiSID)
+            secondSIDSource: ultiSID2 == nil ? nil : .ultiSID,
+            slots: slots)
+    }
+
+    /// Applies the addresses declared by a PSID/RSID header immediately before
+    /// native playback. Address changes are deliberately persisted: the user
+    /// asked the Ultimate to retain the routing that made the tune playable.
+    func ensureSIDRouting(for header: SIDHeader) async throws -> SIDRoutingResult {
+        guard !header.isPlaySIDSpecific else {
+            throw SIDRoutingError.playSIDSpecific
+        }
+        let configuration = await fetchSIDConfiguration()
+        let requirements = zip(
+            header.requiredSIDAddresses,
+            [header.primarySIDModel, header.secondSIDModel, header.thirdSIDModel])
+        var available = configuration.slots
+        var addressChanges: [SIDConfiguration.Slot.Source] = []
+        var modelChanges: [SIDConfiguration.Slot.Source] = []
+        var warnings: [String] = []
+        let hasPhysicalSID = configuration.slots.contains(where: \.isPhysical)
+        let physicalSIDCount = configuration.slots.filter(\.isPhysical).count
+
+        for (index, requirement) in requirements.enumerated() {
+            let (address, requiredModel) = requirement
+            let candidates = hasPhysicalSID && index < physicalSIDCount
+                ? available.indices.filter { available[$0].isPhysical }
+                : Array(available.indices)
+            guard !candidates.isEmpty else {
+                throw SIDRoutingError.noCompatibleSlot(
+                    address: address, model: requiredModel)
+            }
+            let selectedIndex = candidates.min { lhs, rhs in
+                let left = available[lhs]
+                let right = available[rhs]
+                let leftScore = Self.routingScore(
+                    left, address: address, ordinal: index)
+                let rightScore = Self.routingScore(
+                    right, address: address, ordinal: index)
+                return leftScore < rightScore
+            }!
+            let selected = available.remove(at: selectedIndex)
+            if let requiredModel, selected.model != requiredModel {
+                if hasPhysicalSID {
+                    warnings.append(
+                        "\(selected.source.label) is \(selected.model ?? "unknown"); tune requests \(requiredModel).")
+                } else if let item = selected.modelConfigItem {
+                    try await setConfigItem(
+                        category: "UltiSID Configuration",
+                        item: item,
+                        value: Self.ultiSIDFilterCurve(for: requiredModel))
+                    modelChanges.append(selected.source)
+                }
+            }
+            if selected.address != address {
+                try await setConfigItem(
+                    category: "SID Addressing",
+                    item: selected.source.configItem,
+                    value: String(format: "$%04X", address))
+                addressChanges.append(selected.source)
+            }
+        }
+        if !addressChanges.isEmpty {
+            try await saveConfigCategoryToFlash("SID Addressing")
+        }
+        if !modelChanges.isEmpty {
+            try await saveConfigCategoryToFlash("UltiSID Configuration")
+        }
+        return SIDRoutingResult(
+            configuredSlots: Array(Set(addressChanges + modelChanges)),
+            warnings: warnings)
+    }
+
+    private static func routingScore(
+        _ slot: SIDConfiguration.Slot,
+        address: UInt16,
+        ordinal: Int
+    ) -> Int {
+        let addressPenalty = slot.address == address ? 0 : 100
+        let preferredSource: SIDConfiguration.Slot.Source = switch ordinal {
+        case 0: .socket1
+        case 1: .socket2
+        default: .ultiSID1
+        }
+        let sourcePenalty = slot.source == preferredSource ? 0 : 10
+        return addressPenalty + sourcePenalty
+    }
+
+    private static func ultiSIDFilterCurve(for model: String) -> String {
+        model == "6581" ? "6581 R2" : "8580 Lo"
     }
 
     /// Applies the address needed by a PSIDv3/4 second SID. This never

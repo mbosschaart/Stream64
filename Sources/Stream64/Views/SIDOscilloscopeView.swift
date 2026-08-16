@@ -34,7 +34,9 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// sample tap active instead (or as well).
     var needsAudioTap: Bool {
         switch self {
-        case .spectrum, .lissajous, .spectrogram, .waterfall3D, .barField3D, .kaos: return true
+        case .oscilloscope, .spectrum, .lissajous, .spectrogram,
+             .waterfall3D, .barField3D, .kaos:
+            return true
         default: return false
         }
     }
@@ -311,6 +313,8 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     @Published private(set) var spectrogramHistory: [[Float]] = []
     @Published private(set) var lissajousPoints: [(left: Float, right: Float)] = []
     @Published private(set) var kaosRhythm = KAOSRhythmState()
+    @Published private(set) var postMixLowpassSamplesByChip: [[Float]] = []
+    @Published private(set) var postMixBassLevels: [Float] = []
 
     private var engineToken: SIDEngine.SubscriberToken?
     private var subscribedNeeds: SIDEngineNeeds?
@@ -381,6 +385,10 @@ final class SIDOscilloscopeViewModel: ObservableObject {
         if needs.needsKAOSRhythm {
             kaosRhythm = engine.kaosRhythm
         }
+        if needs.needsPostMixScope {
+            postMixLowpassSamplesByChip = engine.postMixLowpassSamplesByChip
+            postMixBassLevels = engine.postMixBassLevels
+        }
     }
 }
 
@@ -408,12 +416,31 @@ struct SIDOscilloscopeView: View {
 
 private struct SIDOscilloscopeContent: View {
     @ObservedObject var model: SIDOscilloscopeViewModel
+    @AppStorage("oscilloscopePostMixLowpassOverlay")
+    private var showPostMixLowpassOverlay = false
 
     var body: some View {
         switch model.visualizationMode {
         case .oscilloscope:
-            SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
-                SIDChannelPanel(channel: channel, glow: model.phosphorGlowEnabled)
+            HStack(spacing: 8) {
+                SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
+                    SIDChannelPanel(channel: channel, glow: model.phosphorGlowEnabled)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showPostMixLowpassOverlay {
+                    VStack(spacing: 8) {
+                        ForEach(0..<max(model.chipCount, 1), id: \.self) { index in
+                            SIDPostMixKickScope(
+                                chipIndex: index,
+                                samples: model.postMixLowpassSamplesByChip.indices.contains(index)
+                                    ? model.postMixLowpassSamplesByChip[index] : [],
+                                bassLevel: model.postMixBassLevels.indices.contains(index)
+                                    ? model.postMixBassLevels[index] : 0,
+                                glow: model.phosphorGlowEnabled)
+                        }
+                    }
+                    .frame(minWidth: 180, idealWidth: 220, maxWidth: 260)
+                }
             }
         case .envelope:
             SIDChannelGrid(channels: model.channels, chipCount: model.chipCount) { channel in
@@ -647,6 +674,45 @@ private struct SIDChannelPanel: View {
                     .font(.system(.caption2, design: .monospaced))
             }
         }
+    }
+}
+
+/// Real post-mix bass/kick trace. This deliberately sits above the per-voice
+/// reconstructed scopes because filter resonance and $D418 digi modulation
+/// cannot be assigned to one SID voice with register data alone.
+private struct SIDPostMixKickScope: View {
+    let chipIndex: Int
+    let samples: [Float]
+    let bassLevel: Float
+    let glow: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(
+                    "SID \(chipIndex + 1) POST-MIX LOWPASS",
+                    systemImage: "waveform.path.ecg")
+                    .font(.callout).bold()
+                    .foregroundStyle(.orange)
+                Spacer()
+                Text(String(format: "Bass %.0f%%", bassLevel * 100))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+            WaveformTrace(
+                samples: samples,
+                color: .orange,
+                bipolar: true,
+                glow: glow,
+                autoGain: true)
+                .background(Color.black)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.orange.opacity(0.38)))
+        }
+        .padding(8)
+        .background(Color(white: 0.08))
+        .cornerRadius(6)
     }
 }
 

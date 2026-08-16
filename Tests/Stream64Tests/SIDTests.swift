@@ -334,10 +334,11 @@ final class SIDTests: XCTestCase {
 
 
     func testSIDVisualizationModeRegisterAndAudioNeeds() {
-        // KAOS is intentionally hybrid: register events identify musical
-        // pattern while post-mix energy supplies sample/digi beat response.
+        // KAOS is intentionally hybrid, and Oscilloscope also taps post-mix
+        // audio for its optional low-pass kick overlay.
         for mode in SIDVisualizationMode.allCases {
-            let expectedRegisterWrites = mode == .kaos || !mode.needsAudioTap
+            let expectedRegisterWrites =
+                mode == .kaos || mode == .oscilloscope || !mode.needsAudioTap
             XCTAssertEqual(
                 mode.needsRegisterWrites,
                 expectedRegisterWrites,
@@ -367,6 +368,10 @@ final class SIDTests: XCTestCase {
                 mode == .lissajous || mode == .kaos,
                 "\(mode.rawValue)")
             XCTAssertEqual(needs.needsKAOSRhythm, mode == .kaos, "\(mode.rawValue)")
+            XCTAssertEqual(
+                needs.needsPostMixScope,
+                mode == .oscilloscope,
+                "\(mode.rawValue)")
         }
     }
 

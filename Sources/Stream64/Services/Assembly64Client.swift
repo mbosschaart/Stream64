@@ -124,7 +124,7 @@ struct Assembly64Client {
         case prg, disk, sid, cartridge, other
     }
 
-    struct Category: Decodable, Identifiable, Hashable {
+    struct Category: Codable, Identifiable, Hashable {
         let id: Int
         let name: String
         let description: String?
@@ -132,13 +132,13 @@ struct Assembly64Client {
         let type: String?
     }
 
-    struct AQLPreset: Decodable, Hashable {
+    struct AQLPreset: Codable, Hashable {
         let type: String
         let description: String
         let values: [AQLPresetValue]
     }
 
-    struct AQLPresetValue: Decodable, Hashable {
+    struct AQLPresetValue: Codable, Hashable {
         let id: Int?
         let aqlKey: String
         let name: String?
@@ -247,6 +247,19 @@ struct Assembly64Client {
         components.queryItems = [URLQueryItem(name: "query", value: query)]
         let data = try await getData(components.url!)
         return try Self.decodeSearchResults(data)
+    }
+
+    /// Native Assembly64 chart lists, used by the desktop client as
+    /// `/leet/charts/{demos|games|graphics|music|onefiledemos|tools}`.
+    func chart(_ chartType: String) async throws -> [SearchResult] {
+        let allowed = [
+            "demos", "games", "graphics", "music", "onefiledemos", "tools",
+        ]
+        guard allowed.contains(chartType) else {
+            throw ClientError.apiError(463)
+        }
+        return try await get(
+            Self.baseURL.appendingPathComponent("charts/\(chartType)"))
     }
 
     static func decodeSearchResults(_ data: Data) throws -> [SearchResult] {
