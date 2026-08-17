@@ -213,6 +213,7 @@ private struct DeviceInputSettings: View {
 struct GeneralSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var updateService: UpdateService
+    @EnvironmentObject var sidFlowRecommendations: SIDFlowRecommendationStore
     @State private var psid64 = PSID64Service()
     @State private var psid64Status = ""
 
@@ -264,6 +265,7 @@ struct GeneralSettingsTab: View {
                 )
                     .foregroundStyle(.secondary)
             }
+            sidRadioSection
             psid64Section
         }
         .formStyle(.grouped)
@@ -298,6 +300,52 @@ struct GeneralSettingsTab: View {
                 "Multi-SID PSID and RSID files are converted to PRGs with user-approved PSID64 "
                     + "to improve real-C64 compatibility. v1/v2 files use Ultimate native playback. "
                     + "PSID64 is GPL-2.0-or-later and is downloaded from its upstream release.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var sidRadioSection: some View {
+        Section {
+            LabeledContent(
+                "Recommendation data",
+                value: sidFlowRecommendations.isInstalled ? "Installed" : "Not installed")
+            if let manifest = sidFlowRecommendations.manifest {
+                LabeledContent("Corpus", value: manifest.hvscVersion ?? manifest.corpusVersion)
+                LabeledContent("Tracks", value: String(manifest.trackCount))
+            }
+            HStack {
+                Button(sidFlowRecommendations.isInstalled ? "Update SIDFlow Data" : "Download SIDFlow Data") {
+                    Task { await sidFlowRecommendations.downloadLatest() }
+                }
+                .disabled(sidFlowRecommendations.isLoading)
+                if sidFlowRecommendations.isInstalled {
+                    Button("Remove Data", role: .destructive) {
+                        sidFlowRecommendations.removeDownloadedData()
+                    }
+                }
+            }
+            if sidFlowRecommendations.isLoading {
+                ProgressView().controlSize(.small)
+            }
+            HStack {
+                Text("Fallback song length")
+                Slider(value: $settings.sidRadioFallbackDurationSeconds, in: 30...600, step: 15)
+                Text("\(Int(settings.sidRadioFallbackDurationSeconds / 60)) min")
+                    .monospacedDigit()
+                    .frame(width: 48)
+            }
+            Toggle(
+                "Fade out at the end of SID Station tracks",
+                isOn: $settings.sidRadioFadeOutEnabled)
+            Text(sidFlowRecommendations.status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("SID Station")
+        } footer: {
+            Text(
+                "Stream64 downloads only SIDFlow's verified recommendation data. "
+                    + "Actual SID files are resolved from HVSC just before playback and are never cached.")
                 .foregroundStyle(.secondary)
         }
     }

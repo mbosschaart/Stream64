@@ -139,6 +139,11 @@ final class AppSettings: ObservableObject {
     /// oscilloscope channels. Useful for filter and $D418 sample drums.
     @AppStorage("oscilloscopePostMixLowpassOverlay")
     var oscilloscopePostMixLowpassOverlay: Bool = false
+    /// Used by SID Station when Songlengths.md5 has no duration for a selected subtune.
+    @AppStorage("sidRadioFallbackDurationSeconds")
+    var sidRadioFallbackDurationSeconds: Double = 180
+    @AppStorage("sidRadioFadeOutEnabled")
+    var sidRadioFadeOutEnabled: Bool = true
 }
 
 // Allow enums in @AppStorage via RawRepresentable String conformance (already String-backed).

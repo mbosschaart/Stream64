@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.124b"
+            ?? "0.125b"
     }
 }
 
@@ -305,6 +305,9 @@ struct Stream64App: App {
     @StateObject private var assembly64Library = Assembly64LibraryStore()
     /// Optional local Songlengths.md5 cache survives HVSC window recreation.
     @StateObject private var hvscLibrary = HVSCLibraryStore()
+    /// Optional verified SIDFlow similarity data plus Stream64-owned radio
+    /// likes/skips/history. SID files are never cached here.
+    @StateObject private var sidFlowRecommendations = SIDFlowRecommendationStore()
 
     init() {
         // Needed when launched via `swift run` (no app bundle): become a regular
@@ -326,7 +329,8 @@ struct Stream64App: App {
                 settings: settings,
                 sessionManager: sessionManager,
                 assembly64Library: assembly64Library,
-                hvscLibrary: hvscLibrary)
+                hvscLibrary: hvscLibrary,
+                sidFlowRecommendations: sidFlowRecommendations)
         }()
         WindowGroup("Stream64") {
             ContentView()
@@ -334,6 +338,7 @@ struct Stream64App: App {
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
                 .environmentObject(updateService)
+                .environmentObject(sidFlowRecommendations)
                 .independentFullScreenWindow()
                 .onAppear {
                     appDelegate.sessionManager = sessionManager
@@ -342,7 +347,8 @@ struct Stream64App: App {
                         settings: settings,
                         sessionManager: sessionManager,
                         assembly64Library: assembly64Library,
-                        hvscLibrary: hvscLibrary)
+                        hvscLibrary: hvscLibrary,
+                        sidFlowRecommendations: sidFlowRecommendations)
                 }
                 .task {
                     try? await Task.sleep(for: .seconds(2))
@@ -381,6 +387,11 @@ struct Stream64App: App {
                     Stream64ToolWindows.showHVSC()
                 }
                 .keyboardShortcut("h", modifiers: [.command, .shift])
+                Divider()
+                Button("SID Station…") {
+                    Stream64ToolWindows.showSIDRadio()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
                 Divider()
                 Button("File Manager…") {
                     Stream64ToolWindows.showFileManager()

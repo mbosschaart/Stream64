@@ -516,6 +516,15 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     HVSC is an independent collection. Stream64 is not affiliated with HVSC; \
     use **Open HVSC** to visit its official website.
+
+    **SID Station** — open **SID Station…** from the main toolbar or File \
+    menu to start a random-playing personal station based on the HVSC SIDs you \
+    have liked. Recommendations use published [SIDFlow](https://github.com/chrisgleissner/sidflow) \
+    data by Chris Gleissner; the next SID is fetched just in time and is never \
+    stored. Songlengths.md5 drives automatic advance when an entry exists, \
+    with a configurable fallback otherwise. Play, Previous, Next, Shuffle, \
+    and Loop control the selected C64; the optional end-of-track fade avoids \
+    abrupt local audio switches.
     """
 
     private static let multiDeviceText = """

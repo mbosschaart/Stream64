@@ -1333,6 +1333,13 @@ struct ViewerSessionToolbar: ToolbarContent {
             .help("Search High Voltage SID Collection and play SIDs")
 
             Button {
+                Stream64ToolWindows.showSIDRadio()
+            } label: {
+                Label("SID Station", systemImage: "dot.radiowaves.left.and.right")
+            }
+            .help("Play a continuous SID recommendation station")
+
+            Button {
                 Stream64ToolWindows.showFileManager()
             } label: {
                 Label("File Manager", systemImage: "rectangle.split.2x1")

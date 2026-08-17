@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.124b-purple)
+![Version](https://img.shields.io/badge/version-0.125b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -27,6 +27,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — a simplified Discover-first library with native Demo, Games, Graphics, Music, OneFile Demos, and Tools Top 200 lists, Recent Releases, rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
 - **HVSC SID browser** — interactive, rate-limited search of High Voltage SID Collection’s web session; browse dedicated 2-SID and 3-SID collections, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download-and-play a SID on one Ultimate or **All Connected C64s**; persistent playlists, plus optional `Songlengths.md5` updates, provide validated per-subtune durations
+- **SID Station** — a random-playing personal station built from your liked HVSC SIDs and the published SIDFlow similarity data; it fetches each SID just in time, uses Songlengths.md5 (with a configurable fallback) to advance the queue, and can fade local output before switching tracks to avoid abrupt transitions
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
 - **Menu-bar Stream menu** — same per-stream controls as the video right-click menu, always targeting the sidebar-selected device (works across Mission Control Spaces)
@@ -324,10 +325,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.124b BUILD_NUMBER=124 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.125b BUILD_NUMBER=125 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.124b BUILD_NUMBER=124 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.125b BUILD_NUMBER=125 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -534,6 +535,10 @@ The **Discover** scope provides the native Assembly64 chart feeds—**Demos** (D
 `HVSCClient` follows the public requests used by the [HVSC](https://www.hvsc.c64.org/) website itself: user-entered `GET /api/v1/sids` search, one `GET /api/v1/sids/{id}` detail request, then one explicit `GET /download/sids/{id}` when **Play** is pressed. Stream64 never crawls, bulk-indexes, prefetches, or auto-pages the collection. Dedicated **2-SID Collection** and **3-SID Collection** selectors issue the same user-initiated `2SID` / `3SID` search and narrow the loaded results locally. Search requests are debounced and cancellable, and all JSON/SID responses have size, HTTPS-host, MIME, and PSID/RSID header validation.
 
 The optional **Song Lengths** updater retrieves and validates the current [Songlengths.md5 format](https://hvsc.de/download/C64Music/DOCUMENTS/Songlengths.faq) into Application Support. It atomically preserves the last valid cache if an update fails. Full-file MD5 (including SID header) maps a downloaded tune to millisecond-accurate duration entries for each subtune; no legacy `Songlengths.txt` algorithm is used. Before playback, Stream64 validates the SID header and persistently routes a declared second SID address; this automatic address configuration is supported for 2-SID playback. With physical SIDs installed, model mismatches remain advisory; all-UltiSID setups can adapt their curve to the tune. PSID/RSID v3/v4 files ask once to install upstream PSID64, then run as relocated PRGs for real-C64 compatibility. The browser also persists a manually ordered playlist; play, remove, reorder, and double-click entries, while automatic advancement remains unavailable without a playback-complete callback from the Ultimate runner. HVSC is independent of Stream64; the endpoint contract is browser-internal and may change.
+
+### SID Station
+
+**SID Station** is Stream64's random-playing, personal HVSC station. It builds a queue from your liked SIDs using the published [SIDFlow](https://github.com/chrisgleissner/sidflow) similarity data by Chris Gleissner, then resolves only the next selected SID from HVSC. It follows Songlengths.md5 per-subtune durations (with a configurable fallback), supports play/previous/next/shuffle/loop controls, and can fade local output before the next upload to avoid abrupt changes. SID files are never retained on disk.
 
 ## Design Notes & Learned Constraints
 

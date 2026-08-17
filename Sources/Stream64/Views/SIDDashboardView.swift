@@ -48,6 +48,7 @@ private struct SIDChipDashboardPanel: View {
                     }
                 }
             }
+            .frame(width: 132, alignment: .leading)
             Divider().background(Color.white.opacity(0.2)).frame(height: 60)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Master Volume")
@@ -59,7 +60,9 @@ private struct SIDChipDashboardPanel: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.6))
             }
-            .frame(width: 130)
+            // Leave the filter readout a stable, wider lane so its labels do
+            // not reflow as the dashboard updates.
+            .frame(width: 112)
             Divider().background(Color.white.opacity(0.2)).frame(height: 60)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Filter: \(filterModeLabel)")

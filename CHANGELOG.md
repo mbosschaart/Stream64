@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.125b — 2026-08-18
+
+### Added
+
+- **SID Station.** A dedicated, random-playing personal HVSC station powered by liked tunes and published SIDFlow similarity data by Chris Gleissner. It supports selected-C64 playback, play/previous/next, shuffle, loop, likes/dislikes, current tune metadata, Songlengths.md5-driven advance with a configurable fallback, and an optional end-of-track local-output fade.
+
+### Improved
+
+- **SID Dashboard layout.** Fixed-width active-voice and volume columns keep filter labels stable as voice counts change.
+
 ## 0.124b — 2026-08-17
 
 ### Added

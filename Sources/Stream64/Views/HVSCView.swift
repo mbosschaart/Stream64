@@ -8,6 +8,7 @@ struct HVSCView: View {
     @EnvironmentObject private var deviceStore: DeviceStore
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var library: HVSCLibraryStore
+    @EnvironmentObject private var sidFlowRecommendations: SIDFlowRecommendationStore
 
     let sessionProvider: (UltimateDevice) -> DeviceSession
     private let client = HVSCClient()
@@ -230,6 +231,15 @@ struct HVSCView: View {
         }
 
         ToolbarItem {
+            Button {
+                Stream64ToolWindows.showSIDRadio()
+            } label: {
+                Label("SID Station", systemImage: "dot.radiowaves.left.and.right")
+            }
+                .help("Open your personal SID recommendation station")
+        }
+
+        ToolbarItem {
             Link(destination: HVSCClient.baseURL) {
                 Label("Open HVSC", systemImage: "safari")
             }
@@ -397,6 +407,14 @@ struct HVSCView: View {
                     library.addToPlaylist(detail)
                 }
                 .disabled(library.playlist.contains { $0.tune.id == detail.id })
+                Button(
+                    sidFlowRecommendations.likedKeys.contains(sidFlowKey(for: detail))
+                        ? "Liked" : "Like for SID Station",
+                    systemImage: "heart")
+                {
+                    sidFlowRecommendations.like(sidFlowKey(for: detail))
+                }
+                .disabled(sidFlowRecommendations.likedKeys.contains(sidFlowKey(for: detail)))
                 if isPlaying {
                     ProgressView().controlSize(.small)
                 }
@@ -793,6 +811,15 @@ struct HVSCView: View {
     private func songlengthDescription(_ info: HVSCLibraryStore.SonglengthInfo) -> String {
         let version = info.hvscVersion.map { "HVSC #\($0)" } ?? "Imported"
         return "\(version) · \(info.entryCount) tunes"
+    }
+
+    private func sidFlowKey(for detail: HVSCClient.TuneDetail) -> SIDFlowTrackKey {
+        // SIDFlow identifies a sub-tune; the selected default tune is the
+        // strongest available intent signal in the current HVSC browser.
+        .init(
+            sidPath: detail.relativePath.trimmingCharacters(
+                in: CharacterSet(charactersIn: "/")),
+            songIndex: detail.startSong)
     }
 
     private func formatDuration(_ milliseconds: Int) -> String {

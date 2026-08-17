@@ -11,6 +11,7 @@ import SwiftUI
 enum Stream64ToolWindows {
     private static var assembly64Controller: Assembly64WindowController?
     private static var hvscController: HVSCWindowController?
+    private static var sidRadioController: SIDRadioWindowController?
     private static var fileManagerController: FileManagerWindowController?
 
     private static var deviceStore: DeviceStore?
@@ -18,19 +19,22 @@ enum Stream64ToolWindows {
     private static var sessionManager: SessionManager?
     private static var assembly64Library: Assembly64LibraryStore?
     private static var hvscLibrary: HVSCLibraryStore?
+    private static var sidFlowRecommendations: SIDFlowRecommendationStore?
 
     static func configure(
         deviceStore: DeviceStore,
         settings: AppSettings,
         sessionManager: SessionManager,
         assembly64Library: Assembly64LibraryStore,
-        hvscLibrary: HVSCLibraryStore
+        hvscLibrary: HVSCLibraryStore,
+        sidFlowRecommendations: SIDFlowRecommendationStore
     ) {
         self.deviceStore = deviceStore
         self.settings = settings
         self.sessionManager = sessionManager
         self.assembly64Library = assembly64Library
         self.hvscLibrary = hvscLibrary
+        self.sidFlowRecommendations = sidFlowRecommendations
     }
 
     static func showAssembly64() {
@@ -75,7 +79,7 @@ enum Stream64ToolWindows {
 
     static func showHVSC() {
         guard let deviceStore, let settings, let sessionManager,
-              let hvscLibrary else { return }
+              let hvscLibrary, let sidFlowRecommendations else { return }
         if let existing = hvscController {
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -85,11 +89,34 @@ enum Stream64ToolWindows {
             deviceStore: deviceStore,
             settings: settings,
             library: hvscLibrary,
+            sidFlowRecommendations: sidFlowRecommendations,
             sessionProvider: { device in
                 sessionManager.session(for: device, settings: settings)
             }
         )
         hvscController = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    static func showSIDRadio() {
+        guard let deviceStore, let settings, let sessionManager,
+              let sidFlowRecommendations, let hvscLibrary else { return }
+        if let existing = sidRadioController {
+            existing.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let controller = SIDRadioWindowController(
+            deviceStore: deviceStore,
+            settings: settings,
+            store: sidFlowRecommendations,
+            library: hvscLibrary,
+            sessionProvider: { device in
+                sessionManager.session(for: device, settings: settings)
+            })
+        sidRadioController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -101,6 +128,10 @@ enum Stream64ToolWindows {
 
     fileprivate static func hvscDidClose() {
         hvscController = nil
+    }
+
+    fileprivate static func sidRadioDidClose() {
+        sidRadioController = nil
     }
 
     fileprivate static func fileManagerDidClose() {
@@ -160,6 +191,7 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
         deviceStore: DeviceStore,
         settings: AppSettings,
         library: HVSCLibraryStore,
+        sidFlowRecommendations: SIDFlowRecommendationStore,
         sessionProvider: @escaping (UltimateDevice) -> DeviceSession
     ) {
         let window = NSWindow(
@@ -179,6 +211,7 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(deviceStore)
                     .environmentObject(settings)
                     .environmentObject(library)
+                    .environmentObject(sidFlowRecommendations)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }
@@ -188,6 +221,45 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         Stream64ToolWindows.hvscDidClose()
+    }
+}
+
+@MainActor
+final class SIDRadioWindowController: NSWindowController, NSWindowDelegate {
+    init(
+        deviceStore: DeviceStore,
+        settings: AppSettings,
+        store: SIDFlowRecommendationStore,
+        library: HVSCLibraryStore,
+        sessionProvider: @escaping (UltimateDevice) -> DeviceSession
+    ) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.title = "SID Station"
+        window.minSize = NSSize(width: 760, height: 500)
+        window.isReleasedWhenClosed = false
+        window.center()
+        super.init(window: window)
+        window.delegate = self
+        window.contentViewController = NSHostingController(
+            rootView: NavigationStack {
+                SIDRadioView(sessionProvider: sessionProvider)
+                    .environmentObject(deviceStore)
+                    .environmentObject(settings)
+                    .environmentObject(store)
+                    .environmentObject(library)
+            })
+        Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    func windowWillClose(_ notification: Notification) {
+        Stream64ToolWindows.sidRadioDidClose()
     }
 }
 

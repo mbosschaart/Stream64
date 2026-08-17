@@ -266,6 +266,29 @@ struct HVSCClient: Sendable {
         return data
     }
 
+    /// Resolves a SIDFlow `(sid_path, song_index)` key only when the user
+    /// presses Play. SIDFlow provides stable HVSC paths, whereas HVSC's public
+    /// browser API downloads by numeric ID. We therefore perform a narrowly
+    /// scoped filename search, inspect a bounded number of returned details,
+    /// and keep only the selected SID bytes in memory.
+    ///
+    /// This intentionally does not cache or prefetch SID files.
+    func downloadSID(for key: SIDFlowTrackKey) async throws -> Data {
+        var filters = SearchFilters()
+        filters.field = .filename
+        let filename = (key.sidPath as NSString).lastPathComponent
+        let matches = try await search(query: filename, filters: filters)
+        let expectedPath = Self.normalizedHVSCPath(key.sidPath)
+        for result in matches.prefix(24) {
+            let detail = try await details(id: result.id)
+            guard Self.normalizedHVSCPath(detail.relativePath) == expectedPath else {
+                continue
+            }
+            return try await downloadSID(id: detail.id)
+        }
+        throw ClientError.invalidSID("HVSC could not resolve \(key.sidPath)")
+    }
+
     /// The current HVSC distribution exposes this document alongside STIL.
     /// It may be temporarily unavailable; callers retain the previous cache.
     func downloadSonglengths() async throws -> Data {
@@ -337,6 +360,10 @@ struct HVSCClient: Sendable {
             throw ClientError.invalidContentType(contentType)
         }
         return data
+    }
+
+    private static func normalizedHVSCPath(_ path: String) -> String {
+        "/" + path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 }
 

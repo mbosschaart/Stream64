@@ -1423,10 +1423,16 @@ final class DeviceSession: ObservableObject {
     /// lets library/history callers persist intent only after the Ultimate
     /// accepted the operation; drag-and-drop callers may ignore it.
     @discardableResult
-    func loadData(_ data: Data, filename: String,
-                  mountBehavior: MountBehavior = .mountOnly) async -> LoadOutcome? {
+    func loadData(
+        _ data: Data,
+        filename: String,
+        songNumber: Int? = nil,
+        onUploadStarted: (() -> Void)? = nil,
+        mountBehavior: MountBehavior = .mountOnly
+    ) async -> LoadOutcome? {
         let ext = (filename as NSString).pathExtension.lowercased()
         transferStatus = .uploading(filename)
+        onUploadStarted?()
         let outcome: LoadOutcome
         do {
             switch ext {
@@ -1455,12 +1461,20 @@ final class DeviceSession: ObservableObject {
                 // add multi-SID metadata, and PSID64's relocated real-C64
                 // driver is safer for both PSID and RSID execution.
                 if header.version >= 3 {
+                    if let songNumber, songNumber != header.startSong {
+                        transferStatus = .failed(
+                            "\(filename): PSID64 cannot yet select subtune \(songNumber).")
+                        return nil
+                    }
                     transferStatus = .uploading("Converting \(filename) with PSID64")
                     let prg = try await psid64.convert(data, filename: filename)
                     try await client.runPRG(data: prg)
                     transferStatus = .done("Playing \(filename) via PSID64")
                 } else {
-                    try await client.playSID(data: data, filename: filename)
+                    try await client.playSID(
+                        data: data,
+                        filename: filename,
+                        songNumber: songNumber)
                     transferStatus = .done("Playing \(filename)")
                 }
                 outcome = .playing(filename)
