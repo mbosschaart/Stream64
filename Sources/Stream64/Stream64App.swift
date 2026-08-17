@@ -441,6 +441,7 @@ struct Stream64App: App {
                 .environmentObject(settings)
                 .environmentObject(sessionManager)
                 .environmentObject(updateService)
+                .environmentObject(sidFlowRecommendations)
                 .independentFullScreenWindow()
         }
     }
