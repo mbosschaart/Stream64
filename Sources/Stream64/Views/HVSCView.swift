@@ -22,6 +22,7 @@ struct HVSCView: View {
     @State private var detail: HVSCClient.TuneDetail?
     @State private var searchStatus = "Enter at least three characters to search HVSC."
     @State private var isSearching = false
+    @State private var canRetrySearch = false
     @State private var isLoadingDetail = false
     @State private var isPlaying = false
     @State private var playbackStatus: String?
@@ -273,6 +274,14 @@ struct HVSCView: View {
                     Text("Searching HVSC…")
                 } else {
                     Text(searchStatus)
+                    if canRetrySearch {
+                        Button("Retry") {
+                            scheduleSearch(
+                                immediately: true,
+                                reloadCollection: true)
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
                 Spacer()
                 if let version = collectionVersion {
@@ -560,6 +569,7 @@ struct HVSCView: View {
         reloadCollection: Bool
     ) {
         searchTask?.cancel()
+        canRetrySearch = false
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let filters = filters
         let collection = filters.collection
@@ -591,6 +601,7 @@ struct HVSCView: View {
                     loadedCollection = nil
                     clearSelectedResult()
                     searchStatus = error.localizedDescription
+                    canRetrySearch = isTemporaryServiceError(error)
                 }
             }
             return
@@ -622,8 +633,17 @@ struct HVSCView: View {
                 guard !Task.isCancelled else { return }
                 results = []
                 searchStatus = error.localizedDescription
+                canRetrySearch = isTemporaryServiceError(error)
             }
         }
+    }
+
+    private func isTemporaryServiceError(_ error: Error) -> Bool {
+        guard let error = error as? HVSCClient.ClientError,
+              case .httpError(let code) = error else {
+            return false
+        }
+        return code == 503
     }
 
     private func applyCollectionResults(

@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.125b-purple)
+![Version](https://img.shields.io/badge/version-0.126b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -26,8 +26,11 @@ Designed by Martijn Bosschaart, 2026.
 - **Audio output device picker** — choose which Mac speaker/headphones Stream64 uses locally (independent of the system default and of AirPlay)
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — a simplified Discover-first library with native Demo, Games, Graphics, Music, OneFile Demos, and Tools Top 200 lists, Recent Releases, rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
-- **HVSC SID browser** — interactive, rate-limited search of High Voltage SID Collection’s web session; browse dedicated 2-SID and 3-SID collections, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download-and-play a SID on one Ultimate or **All Connected C64s**; persistent playlists, plus optional `Songlengths.md5` updates, provide validated per-subtune durations
-- **SID Station** — a random-playing personal station built from your liked HVSC SIDs and the published SIDFlow similarity data; it fetches each SID just in time, uses Songlengths.md5 (with a configurable fallback) to advance the queue, and can fade local output before switching tracks to avoid abrupt transitions
+- **HVSC SID browser** — interactive, rate-limited search of High Voltage SID Collection’s web session; browse dedicated 2-SID and 3-SID collections, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download-and-play a SID on one Ultimate or **All Connected C64s**; persistent playlists, optional `Songlengths.md5` updates, validated per-subtune durations, and transient-503 retry support
+- **SID Station** — a random-playing personal station built from your liked HVSC SIDs and published SIDFlow similarity data; its persistent history and diversity-aware queue avoid immediate repeats, it fetches each SID just in time, uses Songlengths.md5 (with a configurable fallback) to advance, and can fade local output before switching tracks
+- **Movie recording** — save QuickTime `.mov` recordings with AAC audio from either the received indexed source stream or the active Metal-filtered viewer. Filtered exports can use fixed 4:3 or viewer-matched geometry and compact H.264 or high-gradient-quality ProRes 422 HQ; if no active Metal viewer can provide a capture target, recording safely falls back to Source
+- **Stream Health diagnostics** — an optional overlay shows video/audio receive rates and rejects, audio buffering/underruns, renderer queue/GPU pressure, and recording queue/drop state without disturbing the live viewer
+- **Palette Library** — create, name, edit, and delete shared custom 16-colour C64 palettes; select one per device alongside Pepto, Colodore, and VICE
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
 - **Machine control** — reset, reboot, pause/resume, and power off; the toolbar's Menu button opens the Ultimate Menu (U64/Elite only — see below) rather than pressing the physical menu button, since it doesn't interrupt whatever's running on the C64 the way the physical button does
 - **Menu-bar Stream menu** — same per-stream controls as the video right-click menu, always targeting the sidebar-selected device (works across Mission Control Spaces)
@@ -249,8 +252,8 @@ seen on a 6510-capable Debug Trace, since there's no way to read individual \
 voices off the wire (the audio stream is only the final post-mix output), \
 through a small approximate SID emulation core (oscillator shapes, a \
 standard-timing-table ADSR envelope, a noise LFSR, and a simplified \
-ring-modulation approximation — not cycle-exact; see `HANDOVER.md` §15-16 \
-for specifics worth knowing before treating any of it as reference-accurate):
+ring-modulation approximation — not cycle-exact, so it should not be treated \
+as reference-accurate):
 
 - **Oscilloscope** — the original per-channel scrolling waveform, with waveform combination, frequency, note name, and gate state
 - **ADSR Envelope** — the same per-channel grid, plotting the envelope curve instead of the waveform
@@ -325,10 +328,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.125b BUILD_NUMBER=125 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.126b BUILD_NUMBER=126 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.125b BUILD_NUMBER=125 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.126b BUILD_NUMBER=126 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -435,7 +438,8 @@ Sources/Stream64/
 ├── Resources/
 │   ├── dirty-glass-mask.png     Photographic RGBA glass-contamination material
 │   ├── logofactuur.png          Branded application logo
-│   └── Stream64logo.png         Branded splash/About logo
+│   ├── Stream64logo.png         Branded splash/About logo
+│   └── kaos-*.png               KAOS visualization line-art assets
 └── Views/
     ├── ContentView.swift, VideoView.swift
     │                            Main viewer, grid, MTKView, and keyboard capture
@@ -481,7 +485,7 @@ The scaling math targets a **4:3 display aspect** (the C64's pixels are not squa
 
 The audio stream is 16-bit stereo at 47983 Hz (the Ultimate's actual PAL-derived rate), 192 sample pairs per packet. `AudioReceiver` uses a **pull model**: an `AVAudioSourceNode` render callback pulls from a lock-guarded ring buffer. A jitter buffer (default 60 ms, configurable) absorbs network variance; backlog beyond the target is trimmed so latency is bounded and can never ratchet upward — network hiccups produce a brief silence, not permanent delay.
 
-By default the engine's output is pinned to the current system default output device (rather than left to `AVAudioEngine`'s own default selection) and re-pinned whenever CoreAudio's device graph changes — see `HANDOVER.md` §17 for why this matters when the default output is a multi-output/aggregate device. Settings → Audio can instead lock local playback to a specific output device; that choice is independent of AirPlay.
+By default the engine's output is pinned to the current system default output device (rather than left to `AVAudioEngine`'s own default selection) and re-pinned whenever CoreAudio's device graph changes. This avoids `AVAudioEngine` selecting a constituent hardware device instead of an aggregate/multi-output device. Settings → Audio can instead lock local playback to a specific output device; that choice is independent of AirPlay.
 
 App-only AirPlay uses a separate global path because macOS's public `AVRoutePickerView` routes an `AVPlayer`, not an arbitrary `AVAudioEngine`. Stream64 converts the currently audible session's live 47983 Hz PCM to 48 kHz AAC, publishes a short bounded audio-only HLS window through an authenticated temporary LAN server, and assigns that one app-wide player to the system picker. Once external playback activates, the app remains locked to that route until the user explicitly chooses **This Mac**/Stop AirPlay: typing, changing views, switching C64s, resets/reboots and temporary source/transport gaps can produce silence or “Connecting…” but never re-enable local output. A real-time silence heartbeat keeps the HLS timeline alive between sources, and switching C64s swaps PCM on that same timeline without changing the AirPlay destination.
 
@@ -559,7 +563,7 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 - **Occluded windows stop MTKView's display link.** A timer-driven `draw()` fallback keeps background playback smooth (e.g. grid + overlapping window).
 - **One audible device at a time**, enforced centrally by the session manager on selection/mode changes — per-tile mute juggling left orphaned unmuted streams after view teardown.
 - **Closing a viewer means full termination.** SwiftUI root-view disappearance and AppKit termination both close every Assembly64/Help/Settings/extra-viewer window before exit.
-- **`AVAudioEngine`'s automatic output-device selection isn't trustworthy when the system default output is a multi-output/aggregate device** — it can silently bind to one real hardware device inside it instead of the multi-output device itself, so anything else relying on that same default output (e.g. a separate recording device) gets nothing, even though normal playback sounds completely correct. `AudioReceiver` now explicitly pins to the current default device via `kAudioOutputUnitProperty_CurrentDevice` and re-pins on `AVAudioEngineConfigurationChange` instead of trusting the engine's default. See `HANDOVER.md` §17.
+- **`AVAudioEngine`'s automatic output-device selection isn't trustworthy when the system default output is a multi-output/aggregate device** — it can silently bind to one real hardware device inside it instead of the multi-output device itself, so anything else relying on that same default output (e.g. a separate recording device) gets nothing, even though normal playback sounds completely correct. `AudioReceiver` explicitly pins to the current default device via `kAudioOutputUnitProperty_CurrentDevice` and re-pins on `AVAudioEngineConfigurationChange` instead of trusting the engine's default.
 
 ## The Ultimate REST API (as used)
 
@@ -572,7 +576,7 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 | `POST /v1/machine:input` | Upcoming 3.15+: matrix keyboard/joystick press, release, tap, and release-all |
 | `GET /v1/machine:menu_screen` | Upcoming 3.15+: 40×25 menu character and colour matrices |
 | `GET/PUT /v1/machine:debugreg` | U64/Elite only: read/write the debug register ($D7FF) that selects the bus-trace source |
-| `PUT /v1/streams/debug:start` / `:stop` | U64/Elite only: 6510/VIC/1541 cycle-accurate bus-trace stream (mutually exclusive with video) |
+| `PUT /v1/streams/debug:start` / `:stop` | U64/Elite only: 6510/VIC/1541 cycle-accurate bus-trace stream; tested alongside live video/audio |
 | `GET/PUT /v1/configs/...` | Verify and automatically enable/save required network services |
 | `POST /v1/runners:run_prg` | Upload + run a PRG (binary body) |
 | `POST /v1/drives/a:mount` | Upload + mount a disk image (multipart) |

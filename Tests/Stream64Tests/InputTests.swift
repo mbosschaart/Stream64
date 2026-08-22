@@ -261,6 +261,35 @@ final class InputTests: XCTestCase {
     }
 
     @MainActor
+    func testCancelAndReleaseDefersNewInputUntilAfterReleaseAll() async throws {
+        let transport = DelayedInputTransport()
+        let device = UltimateDevice(name: "Delay", host: "192.0.2.1")
+        let controller = C64InputController(
+            device: device, transport: transport, maximumQueueDepth: 16)
+        controller.settings.updateCapability(.supported)
+
+        controller.keyDown(
+            hostKeyCode: 0, inputs: ["a"], fallback: 0x41, holdable: true)
+        try await Task.sleep(for: .milliseconds(50))
+        let releaseTask = Task { await controller.cancelAndRelease() }
+        try await Task.sleep(for: .milliseconds(30))
+        controller.keyDown(
+            hostKeyCode: 11, inputs: ["b"], fallback: 0x42, holdable: true)
+        let initialOrder = await transport.recordedCommandOrder()
+        XCTAssertEqual(initialOrder, ["press"])
+
+        await transport.releaseDelayedRequest()
+        for _ in 0..<100 {
+            if await transport.recordedCommandOrder().count == 3 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let finalOrder = await transport.recordedCommandOrder()
+        XCTAssertEqual(finalOrder, ["press", "release_all", "press"])
+        await transport.releaseDelayedRequest()
+        await releaseTask.value
+    }
+
+    @MainActor
     func testInputFailureTriggersReleaseAllRecovery() async throws {
         let transport = FailingPressInputTransport()
         let device = UltimateDevice(

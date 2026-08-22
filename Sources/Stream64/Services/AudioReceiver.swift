@@ -133,9 +133,26 @@ final class AudioReceiver: @unchecked Sendable {
     /// a per-connect baseline rather than comparing this value with zero.
     /// Written on the receive queue; racy polling reads are fine.
     private var packetCount = 0
+    /// Cumulative counter sampled at one hertz by DeviceSession. It is
+    /// queue-confined and never publishes from the UDP receive callback.
+    private var rejectedPacketCount = 0
 
     var packetsReceived: Int {
         queue.sync { packetCount }
+    }
+
+    func diagnosticsSnapshot() -> AudioReceiverDiagnostics {
+        let packetCounts = queue.sync { (packetCount, rejectedPacketCount) }
+        os_unfair_lock_lock(lock)
+        let snapshot = AudioReceiverDiagnostics(
+            packets: packetCounts.0,
+            rejectedPackets: packetCounts.1,
+            bufferedMilliseconds: Int(
+                (Double(framesAvailable) / Self.sampleRate) * 1_000),
+            underruns: renderUnderrunCount,
+            droppedFrames: droppedInputFrameCount)
+        os_unfair_lock_unlock(lock)
+        return snapshot
     }
 
     /// RF mode: filter playback like a TV speaker fed from the antenna —
@@ -176,6 +193,8 @@ final class AudioReceiver: @unchecked Sendable {
     private var writeIndex = 0       // frames
     private var framesAvailable = 0
     private var primed = false
+    private var renderUnderrunCount = 0
+    private var droppedInputFrameCount = 0
     private let lock: UnsafeMutablePointer<os_unfair_lock> = {
         let pointer = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
         pointer.initialize(to: os_unfair_lock())
@@ -279,17 +298,25 @@ final class AudioReceiver: @unchecked Sendable {
             }
         }
 
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
-        let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
-            self.register(connection)
-            connection.start(queue: self.queue)
-            self.receive(on: connection)
+        do {
+            let params = NWParameters.udp
+            params.allowLocalEndpointReuse = true
+            let listener = try NWListener(
+                using: params, on: NWEndpoint.Port(rawValue: port)!)
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                self.register(connection)
+                connection.start(queue: self.queue)
+                self.receive(on: connection)
+            }
+            listener.start(queue: queue)
+            self.listener = listener
+        } catch {
+            // The engine and configuration observer are live before the UDP
+            // listener is constructed. Roll both back if binding fails.
+            stop()
+            throw error
         }
-        listener.start(queue: queue)
-        self.listener = listener
     }
 
     /// Synchronous setup for `start` — keeps lock usage out of the async
@@ -434,7 +461,11 @@ final class AudioReceiver: @unchecked Sendable {
         // Ultimate audio packets contain a 2-byte sequence plus exactly
         // 192 stereo Int16 frames (768 bytes). Do not let unrelated or
         // truncated UDP traffic satisfy DeviceSession's live-stream probe.
-        guard started, Self.isStructurallyValidPacket(data) else { return }
+        guard started else { return }
+        guard Self.isStructurallyValidPacket(data) else {
+            rejectedPacketCount += 1
+            return
+        }
         packetCount += 1
         let payload = data.dropFirst(2)
         let frameCount = payload.count / 4 // 2 channels × 2 bytes
@@ -454,6 +485,7 @@ final class AudioReceiver: @unchecked Sendable {
                 if framesAvailable == Self.capacityFrames {
                     readIndex = (readIndex + 1) % Self.capacityFrames
                     framesAvailable -= 1
+                    droppedInputFrameCount += 1
                 }
                 let l = base.loadUnaligned(fromByteOffset: i * 4, as: Int16.self)
                 let r = base.loadUnaligned(fromByteOffset: i * 4 + 2, as: Int16.self)
@@ -521,6 +553,7 @@ final class AudioReceiver: @unchecked Sendable {
         if toCopy < frames {
             // Underrun: fill with silence and re-prime so we rebuild the
             // jitter buffer instead of crackling packet by packet.
+            renderUnderrunCount += 1
             left.advanced(by: toCopy).update(repeating: 0, count: frames - toCopy)
             right.advanced(by: toCopy).update(repeating: 0, count: frames - toCopy)
             primed = false

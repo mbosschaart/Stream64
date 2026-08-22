@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.126b — 2026-08-22
+
+### Added
+
+- **SID Station queue intelligence.** The personal SID station now keeps a persistent playback history and uses liked-tune/SIDFlow similarity data to diversify its queue, avoiding immediate repeats while retaining shuffle, loop, previous, and next controls.
+- **Movie recording.** Record QuickTime movies with AAC audio from either the received indexed source stream or the active Metal-filtered viewer. Filtered recordings can use a fixed 4:3 canvas or match the viewer, and offer compact H.264 or high-gradient-quality ProRes 422 HQ output.
+- **Stream Health diagnostics.** An optional low-frequency overlay reports video/audio receive health, buffering, renderer pressure, and recording queue/drop state without making the live video host observe transport churn.
+- **Palette Library.** Create, name, edit, and delete custom 16-colour C64 palettes shared by all devices; each device retains its own selected custom palette.
+
+### Improved
+
+- **HVSC resilience.** Interactive HVSC requests recover more reliably from transient service-unavailable responses.
+- **Recording visibility.** Recording state distinguishes source and filtered capture, including queued work and dropped video/audio packets.
+
+### Fixed
+
+- **Streaming reliability.** Hardened video/audio receiver, renderer, session, input, and update paths against stale work, reconnect races, and transient transport failures.
+- **Filtered recording fallback.** Filtered capture is used only while an active Metal viewer can provide its capture target; otherwise Stream64 records the source stream rather than implying that viewer effects were captured.
+
 ## 0.125b — 2026-08-18
 
 ### Added

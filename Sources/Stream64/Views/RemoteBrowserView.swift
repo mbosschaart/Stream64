@@ -658,8 +658,8 @@ struct RemoteBrowserView: View {
                             "Stream64Promises", isDirectory: true)
                     try FileManager.default.createDirectory(
                         at: directory, withIntermediateDirectories: true)
-                    let target = directory.appendingPathComponent(item.name)
-                    try? FileManager.default.removeItem(at: target)
+                    let target = directory.appendingPathComponent(
+                        "\(UUID().uuidString)-\(item.name)")
                     try await UltimateFTPClient(device: device).download(
                         item.path, to: target
                     ) { completed, total in

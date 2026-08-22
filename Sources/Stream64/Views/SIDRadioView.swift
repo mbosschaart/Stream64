@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// A native, on-demand player for recommendations from the separately
@@ -16,6 +17,7 @@ struct SIDRadioView: View {
     @State private var queue: [SIDFlowRecommendation] = []
     @State private var currentIndex: Int?
     @State private var advanceTask: Task<Void, Never>?
+    @State private var refillTask: Task<Void, Never>?
     @State private var shuffle = false
     @State private var loop = false
     @State private var isPlaying = false
@@ -25,6 +27,7 @@ struct SIDRadioView: View {
     @State private var nowPlayingHeader: SIDHeader?
     @State private var nowPlayingDurationMilliseconds: Int?
     @State private var nowPlayingUsesFallbackDuration = false
+    @State private var showingHistory = false
 
     private var targetDevice: UltimateDevice? { deviceStore.selectedDevice }
     private var targetLabel: String { targetDevice?.name ?? "No Selected C64" }
@@ -55,9 +58,12 @@ struct SIDRadioView: View {
         .navigationTitle("SID Station")
         .toolbar { toolbar }
         .task {
-            if queue.isEmpty { queue = store.recommendations }
+            if queue.isEmpty {
+                queue = Array(store.recommendations.prefix(settings.sidRadioQueueSize))
+            }
         }
         .onDisappear { stop() }
+        .sheet(isPresented: $showingHistory) { historySheet }
         .frame(minWidth: 760, minHeight: 500)
     }
 
@@ -71,6 +77,13 @@ struct SIDRadioView: View {
                 Label("Update Data", systemImage: "arrow.down.circle")
             }
             .disabled(store.isLoading)
+        }
+        ToolbarItem {
+            Button {
+                showingHistory = true
+            } label: {
+                Label("Playback History", systemImage: "clock.arrow.circlepath")
+            }
         }
     }
 
@@ -87,7 +100,19 @@ struct SIDRadioView: View {
                     systemImage: "music.note.slash",
                     description: Text("Skipped and recently played tunes are excluded. Like another HVSC tune to widen the station."))
             } else {
-                List(queue) { recommendation in
+                if !upNextRecommendations.isEmpty {
+                    HStack {
+                        Label("Up Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                            .font(.headline)
+                        Text(upNextRecommendations.map(\.key.filename).joined(separator: " · "))
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                List(Array(queue.enumerated()), id: \.element.id) { _, recommendation in
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(recommendation.key.filename)
@@ -116,12 +141,39 @@ struct SIDRadioView: View {
                         }
                         .buttonStyle(.borderless)
                         .help("Skip this tune")
+                        Button {
+                            playNext(recommendation)
+                        } label: {
+                            Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Play next")
+                        Button {
+                            removeFromQueue(recommendation)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove from queue")
                         Button(currentRecommendation?.id == recommendation.id ? "Playing" : "Play") {
                             start(at: recommendation)
                         }
                         .disabled(isLoadingTrack || targetDevice == nil)
                     }
                     .padding(.vertical, 3)
+                }
+                .background(
+                    ScrollEndNudgeDetector { scheduleQueueRefill() })
+                if refillTask != nil {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Finding the next tune…")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                 }
             }
             Divider()
@@ -148,8 +200,58 @@ struct SIDRadioView: View {
         }
     }
 
+    private var historySheet: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("SID Station History").font(.headline)
+                Spacer()
+                Button("Clear", role: .destructive) {
+                    store.clearHistory()
+                }
+                .disabled(store.history.isEmpty)
+            }
+            .padding()
+            if store.history.isEmpty {
+                ContentUnavailableView(
+                    "No Playback History",
+                    systemImage: "clock",
+                    description: Text("Played SID Station tracks appear here."))
+            } else {
+                List(store.history) { entry in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(entry.key.filename)
+                            Text(entry.completion.rawValue.capitalized)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Replay") {
+                            if let recommendation = queue.first(where: {
+                                $0.key == entry.key
+                            }) {
+                                start(at: recommendation)
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .frame(width: 460, height: 420)
+    }
+
     private var currentRecommendation: SIDFlowRecommendation? {
         currentIndex.flatMap { queue.indices.contains($0) ? queue[$0] : nil }
+    }
+
+    private var upNextRecommendations: [SIDFlowRecommendation] {
+        guard let currentIndex else {
+            return Array(queue.prefix(settings.sidRadioQueueSize))
+        }
+        let start = queue.index(after: currentIndex)
+        guard start < queue.endIndex else { return [] }
+        return Array(queue[start...].prefix(settings.sidRadioQueueSize))
     }
 
     private var nowPlayingTitle: String {
@@ -199,6 +301,10 @@ struct SIDRadioView: View {
                 .help("Like the current tune")
                 Button {
                     store.skip(currentRecommendation.key)
+                    store.finishPlaying(
+                        currentRecommendation.key,
+                        listenedMilliseconds: 0,
+                        completion: .skipped)
                     playbackStatus = "Disliked \(currentRecommendation.key.filename)."
                     next()
                 } label: {
@@ -250,6 +356,12 @@ struct SIDRadioView: View {
                 }
                 isLoadingTrack = false
                 store.recordPlayed(recommendation.key)
+                // Start ranking the successor while the final visible tune is
+                // still playing. `next()` remains after `fadeOut`, so this
+                // cannot cut the current tune short.
+                if index == queue.index(before: queue.endIndex) {
+                    scheduleQueueRefill()
+                }
                 let duration = library.durations(for: sid)?
                     .dropFirst(max(0, recommendation.key.songIndex - 1)).first
                     .map(Double.init)
@@ -262,6 +374,10 @@ struct SIDRadioView: View {
                     session: session,
                     totalDurationMilliseconds: Int(duration))
                 guard !Task.isCancelled else { return }
+                store.finishPlaying(
+                    recommendation.key,
+                    listenedMilliseconds: Int(duration),
+                    completion: .completed)
                 next()
             } catch {
                 session.audioReceiver.volume = Float(settings.volume)
@@ -278,10 +394,71 @@ struct SIDRadioView: View {
         var index = (currentIndex ?? -1) + 1
         if shuffle { index = queue.indices.randomElement() ?? 0 }
         if index >= queue.count {
-            guard loop else { currentIndex = nil; return }
-            index = 0
+            fetchNextTuneAtQueueEnd()
+            return
         }
         start(at: queue[index])
+    }
+
+    private func playNext(_ recommendation: SIDFlowRecommendation) {
+        guard let from = queue.firstIndex(of: recommendation) else { return }
+        let item = queue.remove(at: from)
+        let destination = min(
+            queue.count, (currentIndex.map { $0 + 1 } ?? 0))
+        queue.insert(item, at: destination)
+        if let currentIndex, from < currentIndex {
+            self.currentIndex = max(0, currentIndex - 1)
+        }
+    }
+
+    private func removeFromQueue(_ recommendation: SIDFlowRecommendation) {
+        guard let index = queue.firstIndex(of: recommendation) else { return }
+        if index == currentIndex {
+            next()
+        }
+        queue.removeAll { $0.id == recommendation.id }
+        if let currentIndex, index < currentIndex {
+            self.currentIndex = currentIndex - 1
+        }
+    }
+
+    /// Adds one unseen recommendation when the user reaches the final row,
+    /// keeping the station list continuous without growing it in bulk.
+    private func scheduleQueueRefill() {
+        guard refillTask == nil else { return }
+        let queuedKeys = Set(queue.map(\.key))
+        refillTask = Task {
+            let additions = await store.freshRecommendations(
+                excluding: queuedKeys, limit: 1,
+                diversity: settings.sidRadioDiversity,
+                pathCooldown: settings.sidRadioPathCooldown)
+            guard !Task.isCancelled else {
+                refillTask = nil
+                return
+            }
+            queue.append(contentsOf: additions)
+            refillTask = nil
+        }
+    }
+
+    private func fetchNextTuneAtQueueEnd() {
+        scheduleQueueRefill()
+        guard let refillTask else {
+            currentIndex = nil
+            return
+        }
+        advanceTask = Task {
+            await refillTask.value
+            guard !Task.isCancelled else { return }
+            if let index = currentIndex.map({ $0 + 1 }),
+               queue.indices.contains(index) {
+                start(at: queue[index])
+            } else if loop, let first = queue.first {
+                start(at: first)
+            } else {
+                currentIndex = nil
+            }
+        }
     }
 
     private func previous() {
@@ -343,5 +520,60 @@ struct SIDRadioView: View {
                     + "\(seconds / 60):" + String(format: "%02d", seconds % 60))
         }
         return values.joined(separator: " · ")
+    }
+}
+
+/// SwiftUI creates offscreen `List` rows eagerly, so an `onAppear` handler on
+/// the final row is not a reliable scrolling signal. Watch the actual wheel
+/// event instead and request another item only when the user nudges downward
+/// at the bottom of this list.
+private struct ScrollEndNudgeDetector: NSViewRepresentable {
+    let onNudge: () -> Void
+
+    func makeNSView(context: Context) -> ScrollEndNudgeView {
+        let view = ScrollEndNudgeView()
+        view.onNudge = onNudge
+        return view
+    }
+
+    func updateNSView(_ view: ScrollEndNudgeView, context: Context) {
+        view.onNudge = onNudge
+    }
+}
+
+private final class ScrollEndNudgeView: NSView {
+    var onNudge: (() -> Void)?
+    private var scrollMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+            self.scrollMonitor = nil
+        }
+        guard window != nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .scrollWheel
+        ) { [weak self] event in
+            self?.handleScroll(event)
+            return event
+        }
+    }
+
+    deinit {
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+        }
+    }
+
+    private func handleScroll(_ event: NSEvent) {
+        guard event.window === window,
+              abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX),
+              let contentView = window?.contentView,
+              let hitView = contentView.hitTest(event.locationInWindow),
+              let scrollView = hitView.enclosingScrollView,
+              (scrollView.verticalScroller?.floatValue ?? 0) >= 0.999
+        else { return }
+        onNudge?()
     }
 }

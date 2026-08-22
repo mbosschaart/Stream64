@@ -60,6 +60,9 @@ final class DebugTraceViewModel: ObservableObject {
     /// same trace at the same time — and start the UI refresh timer. Call
     /// once when the window opens.
     func start() {
+        guard entriesObserverID == nil,
+              statsObserverID == nil,
+              flushTimer == nil else { return }
         entriesObserverID = session.debugStreamReceiver.addEntriesObserver { [weak self] entries in
             guard let self else { return }
             if !self.isPaused {
@@ -97,9 +100,11 @@ final class DebugTraceViewModel: ObservableObject {
         flushTimer = nil
         if let entriesObserverID {
             session.debugStreamReceiver.removeEntriesObserver(entriesObserverID)
+            self.entriesObserverID = nil
         }
         if let statsObserverID {
             session.debugStreamReceiver.removeStatsObserver(statsObserverID)
+            self.statsObserverID = nil
         }
         if let debugTraceLease {
             self.debugTraceLease = nil

@@ -267,8 +267,39 @@ struct GeneralSettingsTab: View {
             }
             sidRadioSection
             psid64Section
+            recordingSection
         }
         .formStyle(.grouped)
+    }
+
+    private var recordingSection: some View {
+        Section {
+            Picker("Video", selection: $settings.recordingMode) {
+                ForEach(RecordingMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            Picker("Filtered output", selection: $settings.filteredRecordingSize) {
+                ForEach(FilteredRecordingSize.allCases) { size in
+                    Text(size.rawValue).tag(size)
+                }
+            }
+            .disabled(settings.recordingMode != .filtered)
+            Picker(
+                "Filtered quality",
+                selection: $settings.filteredRecordingQuality
+            ) {
+                ForEach(FilteredRecordingQuality.allCases) { quality in
+                    Text(quality.rawValue).tag(quality)
+                }
+            }
+            .disabled(settings.recordingMode != .filtered)
+        } header: {
+            Text("Movie Recording")
+        } footer: {
+            Text("Source preserves the received indexed stream. Filtered records the active palette, signal simulation, picture controls, CRT effects, and viewer scaling. High Gradient Quality uses 10-bit ProRes and creates much larger MOV files. Filtered falls back to Source if no Metal viewer is available.")
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var psid64Section: some View {
@@ -337,6 +368,21 @@ struct GeneralSettingsTab: View {
             Toggle(
                 "Fade out at the end of SID Station tracks",
                 isOn: $settings.sidRadioFadeOutEnabled)
+            Stepper(
+                "Up Next queue: \(settings.sidRadioQueueSize) tunes",
+                value: $settings.sidRadioQueueSize,
+                in: 3...10)
+            HStack {
+                Text("Recommendation diversity")
+                Slider(value: $settings.sidRadioDiversity, in: 0...1, step: 0.05)
+                Text("\(Int(settings.sidRadioDiversity * 100))%")
+                    .monospacedDigit()
+                    .frame(width: 40)
+            }
+            Stepper(
+                "Avoid recent path families: \(settings.sidRadioPathCooldown)",
+                value: $settings.sidRadioPathCooldown,
+                in: 0...30)
             Text(sidFlowRecommendations.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -493,10 +539,12 @@ private struct DeviceVideoSettings: View {
                         Text(mode.rawValue).tag(mode)
                     }
                 }
-                Picker("Palette", selection: $display.palette) {
-                    ForEach(PaletteChoice.allCases) { palette in
-                        Text(palette.rawValue).tag(palette)
-                    }
+                HStack {
+                    Text("Palette")
+                    Spacer()
+                    PaletteSelectionMenu(
+                        choice: $display.palette,
+                        customPaletteID: $display.selectedCustomPaletteID)
                 }
                 Picker("CRT input signal", selection: $display.tubeInput) {
                     ForEach(TubeInput.allCases) { input in
@@ -522,6 +570,26 @@ private struct DeviceVideoSettings: View {
                     }
                 }
                 .disabled(!isCRTTube)
+                HStack {
+                    Text("Scanlines")
+                    Slider(value: $display.crtScanlineStrength, in: 0...1)
+                }
+                .disabled(!isCRTFilter)
+                HStack {
+                    Text("Bloom")
+                    Slider(value: $display.crtBloomAmount, in: 0...1)
+                }
+                .disabled(!isCRTFilter)
+                HStack {
+                    Text("Phosphor mask")
+                    Slider(value: $display.crtMaskIntensity, in: 0...1)
+                }
+                .disabled(!isCRTFilter)
+                HStack {
+                    Text("Tube curvature")
+                    Slider(value: $display.crtBarrelDistortion, in: 0...1)
+                }
+                .disabled(!isCRTTube)
             } header: {
                 Text("Rendering")
             } footer: {
@@ -535,7 +603,9 @@ private struct DeviceVideoSettings: View {
 
             Section("Overlay") {
                 Toggle("Show frame rate", isOn: $display.showFPS)
+                Toggle("Show stream health", isOn: $display.showStreamDiagnostics)
             }
+            PaletteLibraryEditor()
         }
         .formStyle(.grouped)
     }

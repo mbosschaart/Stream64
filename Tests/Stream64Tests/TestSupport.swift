@@ -116,8 +116,10 @@ actor FailingPressInputTransport: HTTPTransport {
 actor DelayedInputTransport: HTTPTransport {
     private var delayedRequest: CheckedContinuation<Void, Never>?
     private(set) var sawReleaseAll = false
+    private var commandOrder: [String] = []
 
     func hasReleaseAll() -> Bool { sawReleaseAll }
+    func recordedCommandOrder() -> [String] { commandOrder }
 
     func releaseDelayedRequest() {
         delayedRequest?.resume()
@@ -131,6 +133,14 @@ actor DelayedInputTransport: HTTPTransport {
         let events = (try? JSONDecoder().decode(
             C64MachineInputEnvelope.self,
             from: body).events) ?? []
+        if events.contains(where: {
+            $0.kind == .keyboard && $0.transition == .press
+        }) {
+            commandOrder.append("press")
+        }
+        if events.contains(where: { $0.kind == .releaseAll }) {
+            commandOrder.append("release_all")
+        }
         if events.contains(where: {
             $0.kind == .keyboard && $0.transition == .press
         }) {

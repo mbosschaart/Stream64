@@ -119,6 +119,32 @@ final class SIDFlowRecommendationTests: XCTestCase {
             atPath: directory.appendingPathComponent("Second.sid").path))
     }
 
+    @MainActor
+    func testStationHistoryPersistsCompletionAndFeedback() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = SIDFlowTrackKey(
+            sidPath: "MUSICIANS/A/Artist/Track.sid", songIndex: 1)
+
+        let store = SIDFlowRecommendationStore(cacheDirectory: directory)
+        store.recordPlayed(key)
+        store.finishPlaying(
+            key, listenedMilliseconds: 12_000, completion: .completed)
+        store.like(key)
+
+        let restored = SIDFlowRecommendationStore(cacheDirectory: directory)
+        XCTAssertEqual(restored.history.count, 1)
+        XCTAssertEqual(restored.history.first?.key, key)
+        XCTAssertEqual(restored.history.first?.listenedMilliseconds, 12_000)
+        XCTAssertEqual(restored.history.first?.completion, .completed)
+        XCTAssertEqual(restored.feedback[key], .liked)
+
+        restored.undoFeedback(for: key)
+        XCTAssertNil(restored.feedback[key])
+        XCTAssertFalse(restored.likedKeys.contains(key))
+    }
+
     private func makeManifest(bundleBytes: Int) -> SIDFlowLiteManifest {
         .init(
             schemaVersion: "sidcorr-lite-1",

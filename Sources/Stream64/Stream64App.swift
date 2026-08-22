@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.125b"
+            ?? "0.126b"
     }
 }
 
@@ -402,6 +402,10 @@ struct Stream64App: App {
                     NotificationCenter.default.post(name: .saveScreenshotRequested, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("Record Movie…") {
+                    NotificationCenter.default.post(name: .toggleRecordingRequested, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
             }
             // Full per-stream control set (mirrors the video right-click menu).
             // Uses DeviceStore selection — not focusedSceneObject — so the
@@ -450,6 +454,7 @@ struct Stream64App: App {
 extension Notification.Name {
     static let addDeviceRequested = Notification.Name("addDeviceRequested")
     static let saveScreenshotRequested = Notification.Name("saveScreenshotRequested")
+    static let toggleRecordingRequested = Notification.Name("toggleRecordingRequested")
     /// Posted by the Stream menu bar / shared menu; `object` is the
     /// `DeviceSession` to power off (host shows confirmation when needed).
     static let powerOffRequested = Notification.Name("powerOffRequested")

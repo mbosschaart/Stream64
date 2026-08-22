@@ -25,6 +25,26 @@ final class VideoReceiver {
     /// row-major, `width * frameHeight` bytes (272 PAL or 240 NTSC).
     var onFrame: ((Data) -> Void)?
     var onStats: ((_ fps: Double) -> Void)?
+    /// Additional complete-frame consumers. Unlike `onFrame`, these are
+    /// tokenized so recording and other non-rendering consumers can coexist
+    /// with the video view that owns the legacy callback.
+    private let frameObserversLock = NSLock()
+    private var frameObservers: [UUID: (Data) -> Void] = [:]
+
+    @discardableResult
+    func addFrameObserver(_ observer: @escaping (Data) -> Void) -> UUID {
+        let id = UUID()
+        frameObserversLock.lock()
+        frameObservers[id] = observer
+        frameObserversLock.unlock()
+        return id
+    }
+
+    func removeFrameObserver(_ id: UUID) {
+        frameObserversLock.lock()
+        frameObservers.removeValue(forKey: id)
+        frameObserversLock.unlock()
+    }
 
     /// Lifetime packet count for this receiver instance. Connection pickup
     /// snapshots a baseline and looks for increases; the value deliberately
@@ -44,6 +64,11 @@ final class VideoReceiver {
     private var assemblingSequence: UInt16?
     private var frameCount = 0
     private var lastStatsTime = DispatchTime.now()
+    /// Cumulative, queue-confined diagnostics sampled by DeviceSession once
+    /// per second. These never notify SwiftUI from the UDP receive path.
+    private var rejectedPacketCount = 0
+    private var completedFrameCount = 0
+    private var lastCompletedFrameHeight = 0
     /// Ring of publish buffers so each assembled frame does not allocate a
     /// fresh ~100 KB `Data`. Sized above `MetalFrameRenderer.maxPendingFrames`.
     private var publishPool: [Data] = (0..<4).map { _ in
@@ -53,6 +78,16 @@ final class VideoReceiver {
 
     var packetsReceived: Int {
         queue.sync { packetCount }
+    }
+
+    func diagnosticsSnapshot() -> VideoReceiverDiagnostics {
+        queue.sync {
+            VideoReceiverDiagnostics(
+                packets: packetCount,
+                rejectedPackets: rejectedPacketCount,
+                completedFrames: completedFrameCount,
+                frameHeight: lastCompletedFrameHeight)
+        }
     }
 
     func start(port: UInt16) throws {
@@ -163,6 +198,7 @@ final class VideoReceiver {
     /// invoke it only from the receiver's serial queue.
     func ingest(_ data: Data) {
         guard Self.isStructurallyValidPacket(data) else {
+            rejectedPacketCount += 1
             if Self.debug { dbgRejected += 1 }
             return
         }
@@ -183,6 +219,7 @@ final class VideoReceiver {
                 // A late/out-of-order packet from this frame is safe to
                 // ignore: newer rows already won, and it must not roll the
                 // assembler back to stale content.
+                rejectedPacketCount += 1
                 return
             }
             assemblingSequence = sequence
@@ -222,6 +259,8 @@ final class VideoReceiver {
                 if complete {
                     if Self.debug { dbgFrames += 1 }
                     publishFrame(height: frameHeight)
+                    completedFrameCount += 1
+                    lastCompletedFrameHeight = frameHeight
                 } else if Self.debug {
                     dbgRejected += 1
                 }
@@ -264,6 +303,12 @@ final class VideoReceiver {
         // frame still held in the renderer's pending queue.
         let frame = Data(publishPool[publishPoolIndex].prefix(byteCount))
         onFrame?(frame)
+        frameObserversLock.lock()
+        let observers = Array(frameObservers.values)
+        frameObserversLock.unlock()
+        for observer in observers {
+            observer(frame)
+        }
 
         frameCount += 1
         let now = DispatchTime.now()

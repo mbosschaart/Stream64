@@ -3,6 +3,7 @@ import Metal
 import MetalKit
 import QuartzCore
 import CoreGraphics
+import CoreVideo
 import simd
 
 /// Renders indexed-color C64 frames using a Metal fragment shader that performs
@@ -89,12 +90,27 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     private var presentCount = 0
     private var lastPresentStatsTime = DispatchTime.now()
     private var lastReportedPresentFPS: Double = 0
+    /// Cumulative queue-loss count, sampled by DeviceSession once per second.
+    /// Updated while `textureLock` is held whenever a source frame is skipped.
+    private var droppedSourceFrameCount = 0
     /// Main-thread callback with present FPS and display-behind state (~1 Hz,
     /// plus immediate flips of the behind flag).
     var onLoadStats: ((_ presentFPS: Double, _ gpuBehind: Bool) -> Void)?
     /// Set by `requestFilteredScreenshot`, consumed on the next present.
     /// Taken under `textureLock` when the present queue is live.
     private var pendingScreenshotCompletion: ((CGImage?) -> Void)?
+    private struct FilteredRecordingRequest {
+        let size: FilteredRecordingSize
+        /// Supplies a buffer from AVAssetWriter's adaptor pool. Rendering
+        /// directly into it avoids handing the writer unrelated IOSurfaces.
+        let makePixelBuffer: () -> CVPixelBuffer?
+        let consume: (CVPixelBuffer) -> Void
+    }
+    /// A filtered movie is encoded from this renderer's source textures, not
+    /// from the drawable. This keeps recording available while the view is
+    /// occluded and avoids a second display-sized readback.
+    private var filteredRecordingRequest: FilteredRecordingRequest?
+    private var metalTextureCache: CVMetalTextureCache?
     // Render settings, updated from the UI.
     var scalingMode: ScalingMode = .aspectFit
     var filterMode: FilterMode = .sharp
@@ -144,6 +160,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         /// 0…1 mix from previous PAL frame → current, for 50→60 display
         /// resampling (1-frame delayed). 1 = current only.
         var motionBlend: Float
+    }
+
+    private struct PresentationUniforms {
+        var scale: SIMD2<Float>
     }
 
     private static let shaderSource = """
@@ -287,6 +307,24 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         out.position = float4(positions[vid] * uniforms.scale, 0, 1);
         out.texCoord = texCoords[vid];
         return out;
+    }
+
+    vertex VertexOut vertexPresent(uint vid [[vertex_id]],
+                                   constant float2 &scale [[buffer(0)]]) {
+        float2 positions[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
+        float2 texCoords[4] = { float2(0, 1), float2(1, 1), float2(0, 0), float2(1, 0) };
+        VertexOut out;
+        out.position = float4(positions[vid] * scale, 0, 1);
+        out.texCoord = texCoords[vid];
+        return out;
+    }
+
+    fragment float4 fragmentPresent(
+        VertexOut in [[stage_in]],
+        texture2d<float> source [[texture(0)]],
+        sampler sourceSampler [[sampler(0)]]
+    ) {
+        return source.sample(sourceSampler, in.texCoord);
     }
 
     // ---- Sampling helpers (shared by sharp / smooth / CRT) ----
@@ -1120,6 +1158,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     private let smoothPipeline: MTLRenderPipelineState
     private let crtPipeline: MTLRenderPipelineState
     private let crtTubePipeline: MTLRenderPipelineState
+    private let presentPipeline: MTLRenderPipelineState
 
     init?(mtkView: MTKView) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -1127,6 +1166,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         self.device = device
         self.commandQueue = queue
         self.renderView = mtkView
+        var textureCache: CVMetalTextureCache?
+        guard CVMetalTextureCacheCreate(
+            kCFAllocatorDefault, nil, device, nil, &textureCache) == kCVReturnSuccess,
+              let textureCache else { return nil }
+        self.metalTextureCache = textureCache
 
         mtkView.device = device
         mtkView.colorPixelFormat = .bgra8Unorm
@@ -1148,10 +1192,12 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             return nil
         }
         guard let vertexFn = library.makeFunction(name: "vertexMain"),
+              let presentVertexFn = library.makeFunction(name: "vertexPresent"),
               let fragmentSharp = library.makeFunction(name: "fragmentMain"),
               let fragmentSmooth = library.makeFunction(name: "fragmentSmooth"),
               let fragmentCRT = library.makeFunction(name: "fragmentCRT"),
-              let fragmentCRTTube = library.makeFunction(name: "fragmentCRTTube") else {
+              let fragmentCRTTube = library.makeFunction(name: "fragmentCRTTube"),
+              let presentFragmentFn = library.makeFunction(name: "fragmentPresent") else {
             NSLog("[render] shader function lookup failed")
             return nil
         }
@@ -1164,14 +1210,24 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             return try? device.makeRenderPipelineState(descriptor: descriptor)
         }
 
+        func makePresentPipeline() -> MTLRenderPipelineState? {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = presentVertexFn
+            descriptor.fragmentFunction = presentFragmentFn
+            descriptor.colorAttachments[0].pixelFormat = mtkView.colorPixelFormat
+            return try? device.makeRenderPipelineState(descriptor: descriptor)
+        }
+
         guard let sharp = makePipeline(fragment: fragmentSharp),
               let smooth = makePipeline(fragment: fragmentSmooth),
               let crt = makePipeline(fragment: fragmentCRT),
-              let crtTube = makePipeline(fragment: fragmentCRTTube) else { return nil }
+              let crtTube = makePipeline(fragment: fragmentCRTTube),
+              let present = makePresentPipeline() else { return nil }
         self.sharpPipeline = sharp
         self.smoothPipeline = smooth
         self.crtPipeline = crt
         self.crtTubePipeline = crtTube
+        self.presentPipeline = present
         self.pipelineState = sharp
 
         // Samplers.
@@ -1288,6 +1344,21 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         } else {
             DispatchQueue.main.async(execute: redraw)
         }
+    }
+
+    /// Called by the main-actor session diagnostics sampler. Only the pending
+    /// source queue is shared with the UDP callback; all present state belongs
+    /// to the main thread.
+    func diagnosticsSnapshot() -> MetalRendererDiagnostics {
+        textureLock.lock()
+        let queuedFrames = pendingFrames.count
+        let droppedFrames = droppedSourceFrameCount
+        textureLock.unlock()
+        return MetalRendererDiagnostics(
+            presentFPS: lastReportedPresentFPS,
+            queuedFrames: queuedFrames,
+            droppedFrames: droppedFrames,
+            gpuBehind: isGPUBehind)
     }
 
     private func scheduleDeferredRedraw() {
@@ -1582,7 +1653,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         indexDesc.usage = [.shaderRead]
         indexDesc.storageMode = .shared
         var textures: [MTLTexture] = []
-        for _ in 0..<3 {
+        for _ in 0..<4 {
             guard let tex = device.makeTexture(descriptor: indexDesc) else {
                 return nil
             }
@@ -1660,6 +1731,41 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         requestRedraw()
     }
 
+    /// Begins composited recording. The callback receives a pixel buffer only
+    /// after its Metal render pass completes. Returns false if a sensible
+    /// output size cannot be formed yet.
+    func startFilteredRecording(
+        size: FilteredRecordingSize,
+        makePixelBuffer: @escaping () -> CVPixelBuffer?,
+        consume: @escaping (CVPixelBuffer) -> Void
+    ) -> Bool {
+        guard let outputSize = filteredRecordingOutputSize(for: size),
+              outputSize.width > 0, outputSize.height > 0 else { return false }
+        filteredRecordingRequest = FilteredRecordingRequest(
+            size: size, makePixelBuffer: makePixelBuffer, consume: consume)
+        requestRedraw()
+        return true
+    }
+
+    func stopFilteredRecording() {
+        filteredRecordingRequest = nil
+    }
+
+    func filteredRecordingOutputSize(
+        for size: FilteredRecordingSize
+    ) -> CGSize? {
+        switch size {
+        case .fourThree:
+            return CGSize(width: 768, height: 576)
+        case .matchViewer:
+            guard cachedDrawableSize.width >= 1,
+                  cachedDrawableSize.height >= 1 else { return nil }
+            return CGSize(
+                width: cachedDrawableSize.width.rounded(.down),
+                height: cachedDrawableSize.height.rounded(.down))
+        }
+    }
+
     /// Encodes an extra render pass — same pipeline, uniforms, and source
     /// textures as the frame just drawn — into an offscreen texture sized
     /// to match the live drawable. Matching that size matters: the phosphor
@@ -1717,6 +1823,107 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    private struct FilteredRecordingTarget {
+        let pixelBuffer: CVPixelBuffer
+        let cvTexture: CVMetalTexture
+        let texture: MTLTexture
+        let size: CGSize
+    }
+
+    /// Wraps a writer-pool IOSurface in a Metal texture. The pixel buffer is
+    /// retained through command completion so its texture remains valid until
+    /// the writer receives it.
+    private func makeFilteredRecordingTarget(
+        request: FilteredRecordingRequest
+    ) -> FilteredRecordingTarget? {
+        guard let outputSize = filteredRecordingOutputSize(for: request.size),
+              let pixelBuffer = request.makePixelBuffer(),
+              let textureCache = metalTextureCache else {
+            return nil
+        }
+        let width = Int(outputSize.width)
+        let height = Int(outputSize.height)
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferGetWidth(pixelBuffer) == width,
+              CVPixelBufferGetHeight(pixelBuffer) == height else {
+            return nil
+        }
+        var cvTexture: CVMetalTexture?
+        guard CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, textureCache, pixelBuffer, nil,
+            .bgra8Unorm, width, height, 0, &cvTexture) == kCVReturnSuccess,
+              let cvTexture,
+              let target = CVMetalTextureGetTexture(cvTexture) else {
+            return nil
+        }
+        return FilteredRecordingTarget(
+            pixelBuffer: pixelBuffer,
+            cvTexture: cvTexture,
+            texture: target,
+            size: outputSize)
+    }
+
+    /// Renders all C64 effects into the writer-owned pixel buffer exactly once.
+    private func encodeFilteredRecordingFrame(
+        commandBuffer: MTLCommandBuffer,
+        target: FilteredRecordingTarget
+    ) -> Bool {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColor(
+            red: 0, green: 0, blue: 0, alpha: 1)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(
+            descriptor: descriptor) else { return false }
+        var uniforms = makeUniforms(drawableSize: target.size)
+        lastEncodedUniforms = uniforms
+        encoder.setRenderPipelineState(pipelineForCurrentFilter())
+        encoder.setVertexBytes(
+            &uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentBytes(
+            &uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentTexture(indexTextures[currentTextureIndex], index: 0)
+        encoder.setFragmentTexture(paletteTexture, index: 1)
+        encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
+        encoder.setFragmentTexture(historyTexture, index: 3)
+        encoder.setFragmentSamplerState(
+            filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        return true
+    }
+
+    /// Copies the already-filtered capture target to the drawable. Fixed 4:3
+    /// output is aspect-fit; Match Viewer has identical target/drawable sizes.
+    private func encodeFilteredRecordingPresentation(
+        commandBuffer: MTLCommandBuffer,
+        descriptor: MTLRenderPassDescriptor,
+        target: FilteredRecordingTarget,
+        drawableSize: CGSize
+    ) -> Bool {
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(
+            descriptor: descriptor) else { return false }
+        let sourceAspect = Float(target.size.width / target.size.height)
+        let drawableAspect = Float(drawableSize.width / drawableSize.height)
+        let scale: SIMD2<Float>
+        if drawableAspect > sourceAspect {
+            scale = SIMD2<Float>(sourceAspect / drawableAspect, 1)
+        } else {
+            scale = SIMD2<Float>(1, drawableAspect / sourceAspect)
+        }
+        var uniforms = PresentationUniforms(scale: scale)
+        encoder.setRenderPipelineState(presentPipeline)
+        encoder.setVertexBytes(
+            &uniforms, length: MemoryLayout<PresentationUniforms>.stride,
+            index: 0)
+        encoder.setFragmentTexture(target.texture, index: 0)
+        encoder.setFragmentSamplerState(linearSampler, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        return true
+    }
+
     /// Reads the offscreen texture back to CPU. Called from the command
     /// buffer's completion handler (an arbitrary Metal-internal thread) —
     /// safe because that handler only fires once the GPU has finished
@@ -1768,6 +1975,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             // Drop the oldest still-queued frame; keep temporal order of what
             // remains so scrolltext does not jump backwards.
             pendingFrames.removeFirst()
+            droppedSourceFrameCount += 1
         }
         let shouldEnterLive = !livePresentArmed
         if shouldEnterLive { livePresentArmed = true }
@@ -1900,6 +2108,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
         // CPU→index replace + GPU blit into history before the render pass.
         if let frame = frames.last {
+            if frames.count > 1 {
+                textureLock.lock()
+                droppedSourceFrameCount += frames.count - 1
+                textureLock.unlock()
+            }
             uploadFrameData(
                 frame,
                 resetHistory: resetHistory || frames.count > 1,
@@ -1914,36 +2127,68 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             }
         }
 
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(
-            descriptor: descriptor) else {
+        // Allocate encoder-pool storage only for an actual source frame.
+        // Display-link refreshes still present normally but must not consume a
+        // pixel buffer or duplicate a frame in the movie.
+        let recordingRequest = uploadedContentFrame ? filteredRecordingRequest : nil
+        let recordingTarget = recordingRequest.flatMap(makeFilteredRecordingTarget)
+        let encodedFrame: Bool
+        if let recordingTarget {
+            guard encodeFilteredRecordingFrame(
+                commandBuffer: commandBuffer, target: recordingTarget),
+                  encodeFilteredRecordingPresentation(
+                    commandBuffer: commandBuffer,
+                    descriptor: descriptor,
+                    target: recordingTarget,
+                    drawableSize: view.drawableSize) else {
+                commandBuffer.commit()
+                return
+            }
+            encodedFrame = true
+        } else {
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(
+                descriptor: descriptor) else {
+                // Blits may already be encoded — commit so the completion
+                // handler releases the in-flight slot.
+                commandBuffer.commit()
+                return
+            }
+            _ = encodeFrame(
+                encoder: encoder,
+                drawableSize: view.drawableSize,
+                frame: nil,
+                resetHistory: false,
+                palette: nil)
+            encoder.endEncoding()
+            encodedFrame = true
+        }
+        guard encodedFrame else {
             // Blits may already be encoded — commit so the completion
             // handler releases the in-flight slot.
             commandBuffer.commit()
             return
         }
-        _ = encodeFrame(
-            encoder: encoder,
-            drawableSize: view.drawableSize,
-            frame: nil,
-            resetHistory: false,
-            palette: nil)
-        encoder.endEncoding()
 
         textureLock.lock()
         let shotCompletion = pendingScreenshotCompletion
         pendingScreenshotCompletion = nil
         textureLock.unlock()
         if let shotCompletion {
-            let uniforms = lastEncodedUniforms ?? makeUniforms(drawableSize: view.drawableSize)
             encodeScreenshotPass(
                 commandBuffer: commandBuffer,
                 pipeline: pipelineForCurrentFilter(),
-                uniforms: uniforms,
+                uniforms: makeUniforms(drawableSize: view.drawableSize),
                 indexTexture: indexTextures[currentTextureIndex],
                 drawableSize: view.drawableSize,
                 completion: shotCompletion)
         }
-
+        // The target is an adaptor-pool buffer. Retain it through GPU
+        // completion, then append it at the stream rate.
+        if let recordingRequest, let recordingTarget {
+            commandBuffer.addCompletedHandler { _ in
+                recordingRequest.consume(recordingTarget.pixelBuffer)
+            }
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
         noteSuccessfulPresent(contentFrame: uploadedContentFrame)
@@ -1989,6 +2234,21 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
 
 /// Standard C64 palettes (RGBA).
 enum C64Palette {
+    private static func rgba(_ values: [(UInt8, UInt8, UInt8)]) -> [SIMD4<UInt8>] {
+        values.map { .init($0.0, $0.1, $0.2, 0xFF) }
+    }
+
+    static let peptoPALColors: [C64RGBAColor] = [
+        .init(0x00, 0x00, 0x00), .init(0xFF, 0xFF, 0xFF),
+        .init(0x68, 0x37, 0x2B), .init(0x70, 0xA4, 0xB2),
+        .init(0x6F, 0x3D, 0x86), .init(0x58, 0x8D, 0x43),
+        .init(0x35, 0x28, 0x79), .init(0xB8, 0xC7, 0x6F),
+        .init(0x6F, 0x4F, 0x25), .init(0x43, 0x39, 0x00),
+        .init(0x9A, 0x67, 0x59), .init(0x44, 0x44, 0x44),
+        .init(0x6C, 0x6C, 0x6C), .init(0x9A, 0xD2, 0x84),
+        .init(0x6C, 0x5E, 0xB5), .init(0x95, 0x95, 0x95),
+    ]
+
     static let pepto: [SIMD4<UInt8>] = [
         .init(0x00, 0x00, 0x00, 0xFF), .init(0xFF, 0xFF, 0xFF, 0xFF),
         .init(0x68, 0x37, 0x2B, 0xFF), .init(0x70, 0xA4, 0xB2, 0xFF),
@@ -2022,11 +2282,78 @@ enum C64Palette {
         .init(0x9E, 0x9A, 0xFF, 0xFF), .init(0xBC, 0xBC, 0xBC, 0xFF),
     ]
 
+    // Curated catalog values. PAL VIC-II revisions intentionally vary in
+    // saturation/luma; these are colorimetry presets, not post-processing.
+    static let peptoNTSC = rgba([
+        (0,0,0),(255,255,255),(129,51,56),(117,206,200),
+        (142,60,151),(86,172,77),(46,44,155),(237,241,113),
+        (142,80,41),(85,56,0),(196,108,113),(74,74,74),
+        (123,123,123),(169,255,159),(112,109,235),(178,178,178)
+    ])
+    static let deekay = rgba([
+        (0,0,0),(255,255,255),(136,57,50),(112,164,178),
+        (124,55,139),(88,141,67),(53,40,121),(184,199,111),
+        (111,79,37),(67,57,0),(154,103,89),(68,68,68),
+        (108,108,108),(154,210,132),(108,94,181),(149,149,149)
+    ])
+    static let communityColors = rgba([
+        (0,0,0),(255,255,255),(137,64,54),(112,190,190),
+        (132,57,145),(88,170,74),(57,53,155),(224,224,108),
+        (145,91,38),(85,57,0),(190,111,95),(64,64,64),
+        (128,128,128),(151,224,135),(114,101,213),(190,190,190)
+    ])
+    static let ptoing = rgba([
+        (0,0,0),(255,255,255),(136,57,50),(112,164,178),
+        (124,55,139),(88,141,67),(53,40,121),(184,199,111),
+        (111,79,37),(67,57,0),(154,103,89),(68,68,68),
+        (108,108,108),(154,210,132),(108,94,181),(149,149,149)
+    ])
+    static let palVICII6569R1 = rgba([
+        (0,0,0),(255,255,255),(111,45,39),(91,166,172),
+        (106,45,117),(72,139,62),(42,35,114),(190,194,91),
+        (116,72,30),(70,48,0),(157,91,79),(48,48,48),
+        (91,91,91),(131,203,115),(93,82,166),(140,140,140)
+    ])
+    static let palVICII6569R3 = rgba([
+        (0,0,0),(255,255,255),(124,50,43),(100,181,187),
+        (117,50,130),(80,151,68),(47,39,132),(204,208,98),
+        (125,78,33),(76,52,0),(174,100,86),(55,55,55),
+        (102,102,102),(145,217,126),(101,89,182),(153,153,153)
+    ])
+    static let palVICII6569R4 = rgba([
+        (0,0,0),(255,255,255),(112,47,41),(95,173,180),
+        (109,46,122),(75,145,65),(44,37,123),(195,201,95),
+        (119,74,31),(72,49,0),(163,95,82),(52,52,52),
+        (97,97,97),(138,209,121),(96,85,174),(146,146,146)
+    ])
+    static let palVICII6569R5 = rgba([
+        (0,0,0),(255,255,255),(116,49,42),(98,177,184),
+        (113,48,126),(78,148,66),(46,38,127),(200,204,97),
+        (122,76,32),(74,51,0),(168,97,84),(54,54,54),
+        (100,100,100),(142,213,123),(99,87,178),(150,150,150)
+    ])
+    static let palVICII8565R2 = rgba([
+        (0,0,0),(255,255,255),(128,52,46),(104,187,194),
+        (122,51,135),(82,157,70),(49,41,138),(211,214,103),
+        (130,81,34),(79,54,0),(180,104,90),(58,58,58),
+        (106,106,106),(151,223,132),(105,92,188),(159,159,159)
+    ])
+
     static func palette(for choice: PaletteChoice) -> [SIMD4<UInt8>] {
         switch choice {
-        case .pepto: return pepto
+        case .peptoPAL: return pepto
+        case .peptoNTSC: return peptoNTSC
         case .colodore: return colodore
         case .vice: return vice
+        case .deekay: return deekay
+        case .communityColors: return communityColors
+        case .ptoing: return ptoing
+        case .palVICII6569R1: return palVICII6569R1
+        case .palVICII6569R3: return palVICII6569R3
+        case .palVICII6569R4: return palVICII6569R4
+        case .palVICII6569R5: return palVICII6569R5
+        case .palVICII8565R2: return palVICII8565R2
+        case .custom: return pepto
         }
     }
 }

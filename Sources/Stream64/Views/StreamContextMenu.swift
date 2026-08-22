@@ -106,6 +106,14 @@ struct StreamContextMenu: View {
         }
         .disabled(!session.isConnected)
 
+        Button(
+            session.isRecording ? "Stop Recording" : "Record Movie…",
+            systemImage: session.isRecording ? "stop.circle.fill" : "record.circle"
+        ) {
+            session.toggleRecording()
+        }
+        .disabled(!session.isConnected)
+
         Button("Assembly64…", systemImage: "books.vertical") {
             Stream64ToolWindows.showAssembly64()
         }
@@ -202,16 +210,11 @@ struct StreamContextMenu: View {
             .disabled(!isCRTFilter)
 
         Menu("Palette", systemImage: "paintpalette") {
-            Picker("Palette", selection: bind(\.palette)) {
-                ForEach(PaletteChoice.allCases) { palette in
-                    Text(palette.rawValue).tag(palette)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
+            PaletteContextPicker(display: display)
         }
 
         Toggle("Show Frame Rate", isOn: bind(\.showFPS))
+        Toggle("Show Stream Health", isOn: bind(\.showStreamDiagnostics))
 
         if isCRTFilter && !monitorCaseVisible {
             Button("Picture Controls…", systemImage: "slider.horizontal.3") {
@@ -255,6 +258,43 @@ struct StreamContextMenu: View {
 
     private var isCRTFilter: Bool {
         display.filterMode == .crt || display.filterMode == .crtTube
+    }
+}
+
+private struct PaletteContextPicker: View {
+    let display: DisplaySettings
+    @ObservedObject private var library = PaletteLibrary.shared
+
+    var body: some View {
+        Section("Built-in") {
+            ForEach(PaletteChoice.builtInCases) { palette in
+                Button {
+                    display.palette = palette
+                } label: {
+                    Label(
+                        palette.rawValue,
+                        systemImage: display.palette == palette ? "checkmark" : "")
+                }
+            }
+        }
+        Section("Custom") {
+            if library.palettes.isEmpty {
+                Text("No custom palettes")
+            } else {
+                ForEach(library.palettes) { palette in
+                    Button {
+                        display.palette = .custom
+                        display.selectedCustomPaletteID = palette.id
+                    } label: {
+                        Label(
+                            palette.name,
+                            systemImage: display.palette == .custom
+                                && display.selectedCustomPaletteID == palette.id
+                                ? "checkmark" : "")
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -12,6 +12,7 @@ struct VideoView: NSViewRepresentable {
     /// so the view must re-render when they change — regardless of whether
     /// the host view (pane, grid tile) observes them.
     @ObservedObject var display: DisplaySettings
+    @ObservedObject private var paletteLibrary = PaletteLibrary.shared
     @EnvironmentObject var settings: AppSettings
     let monitorCaseVisible: Bool
 
@@ -34,6 +35,9 @@ struct VideoView: NSViewRepresentable {
                 session?.reportVideoRenderLoad(
                     presentFPS: presentFPS, gpuBehind: gpuBehind)
             }
+        }
+        context.coordinator.session.attachRendererDiagnostics { [weak renderer] in
+            renderer?.diagnosticsSnapshot()
         }
         view.onKeyDown = { input in
             MainActor.assumeIsolated {
@@ -75,6 +79,20 @@ struct VideoView: NSViewRepresentable {
                 return
             }
             renderer.requestFilteredScreenshot(completion: completion)
+        }
+        context.coordinator.session.filteredRecordingOutputSize = {
+            [weak renderer] size in
+            renderer?.filteredRecordingOutputSize(for: size)
+        }
+        context.coordinator.session.startFilteredRecording = {
+            [weak renderer] size, makePixelBuffer, consume in
+            renderer?.startFilteredRecording(
+                size: size,
+                makePixelBuffer: makePixelBuffer,
+                consume: consume) ?? false
+        }
+        context.coordinator.session.stopFilteredRecording = { [weak renderer] in
+            renderer?.stopFilteredRecording()
         }
         context.coordinator.session.beginPowerOffVisualEffect = {
             [weak renderer] in
@@ -148,9 +166,10 @@ struct VideoView: NSViewRepresentable {
         if renderer.optics !== display.optics {
             renderer.optics = display.optics
         }
-        if context.coordinator.appliedPalette != display.palette {
-            renderer.setPalette(C64Palette.palette(for: display.palette))
-            context.coordinator.appliedPalette = display.palette
+        let palette = display.resolvedPalette
+        if context.coordinator.appliedPalette != palette {
+            renderer.setPalette(palette)
+            context.coordinator.appliedPalette = palette
             needsRedraw = true
         }
 
@@ -176,7 +195,7 @@ struct VideoView: NSViewRepresentable {
         var appliedCRTDirtyGlass: Bool?
         var appliedDotPitch: Float?
         var appliedBezelSurfaceMode: Float?
-        var appliedPalette: PaletteChoice?
+        var appliedPalette: [SIMD4<UInt8>]?
 
         init(session: DeviceSession) {
             self.session = session

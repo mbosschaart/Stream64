@@ -2,7 +2,9 @@ import Foundation
 import Combine
 import Network
 import AppKit
+import AVFoundation
 import CoreGraphics
+import CoreVideo
 import UniformTypeIdentifiers
 
 /// Stream / present rates for the FPS overlay. Kept off `DeviceSession`'s
@@ -36,7 +38,13 @@ final class DeviceSession: ObservableObject {
     private(set) var presentFPS: Double = 0
     /// Observable FPS overlay source — only FPS labels should observe this.
     let videoFrameStats = VideoFrameStats()
+    /// Low-rate transport/render observability. Kept off this session's
+    /// `objectWillChange` so opening diagnostics cannot disturb the video host.
+    let streamDiagnostics = StreamDiagnostics()
     @Published private(set) var isPaused = false
+    /// Movie capture state. Source recording observes decoded UDP frames;
+    /// filtered recording is supplied by the owning Metal renderer.
+    @Published private(set) var isRecording = false
     /// True while video packets are actually arriving (measured, not
     /// assumed from API acknowledgements).
     @Published private(set) var isStreaming = false
@@ -93,6 +101,7 @@ final class DeviceSession: ObservableObject {
     let videoReceiver = VideoReceiver()
     let audioReceiver = AudioReceiver()
     let debugStreamReceiver = DebugStreamReceiver()
+    private let recordingController = RecordingController()
     /// How this stream looks — per-device, persisted by device ID.
     let display: DisplaySettings
     let input: C64InputController
@@ -109,9 +118,22 @@ final class DeviceSession: ObservableObject {
     /// capturing the actual filtered picture requires an extra GPU render
     /// pass on the next draw() — see MetalFrameRenderer.requestFilteredScreenshot.
     var captureFrame: ((@escaping (CGImage?) -> Void) -> Void)?
+    /// Installed by the active VideoView. A filtered recording must be owned
+    /// by a renderer because its active effects/palette live on that renderer.
+    var filteredRecordingOutputSize: ((FilteredRecordingSize) -> CGSize?)?
+    var startFilteredRecording: (
+        (_ size: FilteredRecordingSize,
+         _ makePixelBuffer: @escaping () -> CVPixelBuffer?,
+         _ consume: @escaping (CVPixelBuffer) -> Void) -> Bool
+    )?
+    var stopFilteredRecording: (() -> Void)?
+    private var activeRecordingMode: RecordingMode?
     /// Renderer hooks for the CRT Tube power-down sequence.
     var beginPowerOffVisualEffect: (() -> Void)?
     var cancelPowerOffVisualEffect: (() -> Void)?
+    /// Owned by the currently mounted `VideoView`; weak capture means an old
+    /// renderer naturally falls out of diagnostics after its view is removed.
+    private var rendererDiagnosticsProvider: (() -> MetalRendererDiagnostics?)?
 
     init(device: UltimateDevice, settings: AppSettings) {
         self.display = DisplaySettings.shared(for: device.id)
@@ -119,6 +141,13 @@ final class DeviceSession: ObservableObject {
         self.device = device
         self.settings = settings
         self.client = UltimateAPIClient(device: device, timeout: settings.connectTimeoutSeconds)
+
+        videoReceiver.addFrameObserver { [weak recordingController] frame in
+            recordingController?.enqueue(frame: frame)
+        }
+        audioReceiver.addSampleObserver { [weak recordingController] samples in
+            recordingController?.enqueue(audioSamples: samples)
+        }
 
         // Keep the RF audio filter in sync with this device's display
         // settings from any control surface (toolbar, context menu, prefs).
@@ -151,6 +180,13 @@ final class DeviceSession: ObservableObject {
         }
         startStreamStalenessMonitor()
         startHealthMonitor()
+        startDiagnosticsMonitor()
+    }
+
+    func attachRendererDiagnostics(
+        _ provider: @escaping () -> MetalRendererDiagnostics?
+    ) {
+        rendererDiagnosticsProvider = provider
     }
 
     /// Called on the main thread from `MetalFrameRenderer` after presents /
@@ -166,6 +202,12 @@ final class DeviceSession: ObservableObject {
     private var lastStatsAt = Date.distantPast
     private var stalenessMonitor: Task<Void, Never>?
     private var streamRecoveryTask: Task<Void, Never>?
+    private var diagnosticsMonitor: Task<Void, Never>?
+    private var previousVideoDiagnostics = VideoReceiverDiagnostics()
+    private var previousAudioDiagnostics = AudioReceiverDiagnostics()
+    private var previousRendererDiagnostics = MetalRendererDiagnostics()
+    private var previousRecordingDiagnostics = RecordingDiagnostics()
+    private var lastDiagnosticsSample = Date()
     /// Single generation-scoped silent-stream watchdog. Replaced on each
     /// schedule so connect/recovery/restart cannot stack overlapping
     /// stop/settle/start cycles.
@@ -195,6 +237,68 @@ final class DeviceSession: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Samples queue-confined receiver counters and main-thread renderer state
+    /// once per second. The resulting observable is intentionally the only
+    /// diagnostics publication point.
+    private func startDiagnosticsMonitor() {
+        diagnosticsMonitor?.cancel()
+        diagnosticsMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self else { return }
+                self.publishDiagnostics()
+            }
+        }
+    }
+
+    private func publishDiagnostics() {
+        let now = Date()
+        let elapsed = max(0.001, now.timeIntervalSince(lastDiagnosticsSample))
+        let video = videoReceiver.diagnosticsSnapshot()
+        let audio = audioReceiver.diagnosticsSnapshot()
+        let renderer = rendererDiagnosticsProvider?() ?? MetalRendererDiagnostics()
+        let recording = recordingController.diagnosticsSnapshot()
+        func rate(_ current: Int, _ previous: Int) -> Double {
+            Double(max(0, current - previous)) / elapsed
+        }
+        streamDiagnostics.publish(StreamDiagnosticsSnapshot(
+            video: .init(
+                packetsPerSecond: rate(video.packets, previousVideoDiagnostics.packets),
+                framesPerSecond: rate(video.completedFrames, previousVideoDiagnostics.completedFrames),
+                rejectedPacketsPerSecond: rate(
+                    video.rejectedPackets, previousVideoDiagnostics.rejectedPackets),
+                frameHeight: video.frameHeight),
+            audio: .init(
+                packetsPerSecond: rate(audio.packets, previousAudioDiagnostics.packets),
+                rejectedPacketsPerSecond: rate(
+                    audio.rejectedPackets, previousAudioDiagnostics.rejectedPackets),
+                bufferedMilliseconds: audio.bufferedMilliseconds,
+                underrunsPerSecond: rate(audio.underruns, previousAudioDiagnostics.underruns),
+                droppedFramesPerSecond: rate(
+                    audio.droppedFrames, previousAudioDiagnostics.droppedFrames)),
+            renderer: .init(
+                presentFPS: renderer.presentFPS,
+                queuedFrames: renderer.queuedFrames,
+                droppedFramesPerSecond: rate(
+                    renderer.droppedFrames, previousRendererDiagnostics.droppedFrames),
+                gpuBehind: renderer.gpuBehind),
+            recording: .init(
+                active: isRecording,
+                filtered: activeRecordingMode == .filtered,
+                queuedVideoFrames: recording.queuedVideoFrames,
+                droppedVideoFramesPerSecond: rate(
+                    recording.droppedVideoFrames,
+                    previousRecordingDiagnostics.droppedVideoFrames),
+                droppedAudioPacketsPerSecond: rate(
+                    recording.droppedAudioPackets,
+                    previousRecordingDiagnostics.droppedAudioPackets))))
+        previousVideoDiagnostics = video
+        previousAudioDiagnostics = audio
+        previousRendererDiagnostics = renderer
+        previousRecordingDiagnostics = recording
+        lastDiagnosticsSample = now
     }
 
     // MARK: - Mid-session disconnect detection & automatic reconnect
@@ -237,6 +341,14 @@ final class DeviceSession: ObservableObject {
     /// automatic reconnect loop or surface an error for the user to retry.
     private func handleConnectionLost() {
         guard isConnected else { return }
+        // `startDebugTrace` can be suspended in a REST request or its
+        // stop/settle/start delay. Invalidate that work before changing to
+        // `.connecting`, because debug startup otherwise treats reconnecting
+        // as a valid state and can reopen its receiver against a stale link.
+        connectionGeneration &+= 1
+        debugPrewarmTask?.cancel()
+        debugPrewarmTask = nil
+        stopRecording()
         videoReceiver.stop()
         audioReceiver.stop()
         debugStreamReceiver.stop()
@@ -735,6 +847,7 @@ final class DeviceSession: ObservableObject {
     /// control, keyboard, file loading) alive. Counterpart of
     /// restartStreams; the picture freezes on the last received frame.
     func stopStreams() async {
+        stopRecording()
         streamsStoppedByUser = true
         cancelStreamLifecycleTasks()
         try? await client.stopVideoStream()
@@ -780,6 +893,7 @@ final class DeviceSession: ObservableObject {
     /// asynchronous `disconnect()` tail. Idempotent: a second call after
     /// locals are already down does not bump `connectionGeneration` again.
     func prepareForEviction() {
+        stopRecording()
         let needsInvalidate = state != .disconnected
             || streamingOp != nil
             || reconnectTask != nil
@@ -794,6 +908,8 @@ final class DeviceSession: ObservableObject {
         reconnectTask = nil
         healthMonitor?.cancel()
         healthMonitor = nil
+        diagnosticsMonitor?.cancel()
+        diagnosticsMonitor = nil
         stalenessMonitor?.cancel()
         stalenessMonitor = nil
         cancelStreamLifecycleTasks()
@@ -1576,6 +1692,120 @@ final class DeviceSession: ObservableObject {
     private static func pngData(from image: CGImage) -> Data? {
         let rep = NSBitmapImageRep(cgImage: image)
         return rep.representation(using: .png, properties: [:])
+    }
+
+    // MARK: - Movie recording
+
+    /// Prompts for a destination and records either the source stream or the
+    /// active Metal-filtered viewer as H.264/AAC in a QuickTime movie.
+    func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            presentRecordingSavePanel()
+        }
+    }
+
+    private func presentRecordingSavePanel() {
+        guard isConnected else {
+            transferStatus = .failed("Connect before starting a recording.")
+            scheduleClearTransferStatus()
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.quickTimeMovie]
+        panel.nameFieldStringValue = Self.recordingFilename(for: device.name)
+        panel.begin { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            do {
+                let requestedMode = self.settings.recordingMode
+                let filteredSize = requestedMode == .filtered
+                    ? self.filteredRecordingOutputSize?(self.settings.filteredRecordingSize)
+                    : nil
+                let activeMode: RecordingMode = filteredSize == nil ? .source : .filtered
+                let outputSize: CGSize
+                if let filteredSize {
+                    outputSize = filteredSize
+                } else {
+                    // Source remains a reliable fallback when a view has not
+                    // mounted yet (or Metal cannot allocate a target).
+                    outputSize = CGSize(
+                        width: VideoReceiver.width,
+                        height: VideoReceiver.palHeight)
+                }
+                do {
+                    let filteredHighQuality = activeMode == .filtered
+                        && self.settings.filteredRecordingQuality == .proRes422HQ
+                    try self.recordingController.start(
+                        url: url, palette: self.display.resolvedPalette,
+                        outputSize: outputSize,
+                        videoBitRate: activeMode == .filtered
+                            ? RecordingController.filteredVideoBitRate
+                            : RecordingController.sourceVideoBitRate,
+                        videoCodec: filteredHighQuality ? .proRes422HQ : .h264,
+                        acceptsIndexedFrames: activeMode == .source,
+                        requiresMetalCompatiblePixelBuffers: activeMode == .filtered)
+                    if activeMode == .filtered {
+                        guard let startFiltered = self.startFilteredRecording,
+                              startFiltered(
+                                self.settings.filteredRecordingSize,
+                                { [weak recorder = self.recordingController] in
+                                    recorder?.makeFilteredPixelBuffer()
+                                },
+                                { [weak recorder = self.recordingController] pixelBuffer in
+                                    recorder?.enqueue(pixelBuffer: pixelBuffer)
+                                }) else {
+                            self.recordingController.stop { _ in }
+                            throw RecordingController.RecordingError.cannotStartFilteredRendering
+                        }
+                    }
+                } catch {
+                    if activeMode == .filtered {
+                        self.stopFilteredRecording?()
+                    }
+                    throw error
+                }
+                self.activeRecordingMode = activeMode
+                self.isRecording = true
+                let label: String
+                if activeMode == .filtered,
+                   self.settings.filteredRecordingQuality == .proRes422HQ {
+                    label = "filtered ProRes"
+                } else {
+                    label = activeMode == .filtered ? "filtered" : "source"
+                }
+                self.transferStatus = .uploading(
+                    "Recording \(label): \(url.lastPathComponent)")
+            } catch {
+                self.transferStatus = .failed("Recording failed to start: \(error.localizedDescription)")
+                self.scheduleClearTransferStatus()
+            }
+        }
+    }
+
+    private func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        if activeRecordingMode == .filtered {
+            stopFilteredRecording?()
+        }
+        activeRecordingMode = nil
+        recordingController.stop { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                switch result {
+                case .success(let url):
+                    self.transferStatus = .done("Saved \(url.lastPathComponent)")
+                case .failure(let error):
+                    self.transferStatus = .failed("Recording failed: \(error.localizedDescription)")
+                }
+                self.scheduleClearTransferStatus()
+            }
+        }
+    }
+
+    private static func recordingFilename(for deviceName: String) -> String {
+        "\(screenshotFilename(for: deviceName)).mov"
     }
 
     func applyAudioSettings() {

@@ -22,10 +22,13 @@ final class DisplaySettings: ObservableObject {
     @Published var scalingMode: ScalingMode { didSet { save() } }
     @Published var filterMode: FilterMode { didSet { save() } }
     @Published var palette: PaletteChoice { didSet { save() } }
+    /// UUID in the shared palette library when `palette == .custom`.
+    @Published var selectedCustomPaletteID: UUID? { didSet { save() } }
     @Published var tubeInput: TubeInput { didSet { save() } }
     @Published var crtScreenColor: CRTScreenColor { didSet { save() } }
     @Published var crtDirtyGlass: Bool { didSet { save() } }
     @Published var showFPS: Bool { didSet { save() } }
+    @Published var showStreamDiagnostics: Bool { didSet { save() } }
     /// CRT Tube phosphor / shadow-mask geometry (1702 vs 1084S pitch).
     /// Physical monitor-case chrome was removed; this only feeds shaders.
     @Published var bezelStyle: BezelChoice { didSet { save() } }
@@ -57,11 +60,13 @@ final class DisplaySettings: ObservableObject {
         var scalingMode: ScalingMode
         var filterMode: FilterMode
         var palette: PaletteChoice
+        var selectedCustomPaletteID: UUID?
         var tubeInput: TubeInput
         /// Optional for backward compatibility with existing per-device JSON.
         var crtScreenColor: CRTScreenColor?
         var crtDirtyGlass: Bool?
         var showFPS: Bool
+        var showStreamDiagnostics: Bool?
         /// Ignored; kept optional so older per-device JSON still decodes.
         var showBezel: Bool?
         var bezelStyle: BezelChoice
@@ -88,10 +93,12 @@ final class DisplaySettings: ObservableObject {
             scalingMode = data.scalingMode
             filterMode = data.filterMode
             palette = data.palette
+            selectedCustomPaletteID = data.selectedCustomPaletteID
             tubeInput = data.tubeInput
             crtScreenColor = data.crtScreenColor ?? .color
             crtDirtyGlass = data.crtDirtyGlass ?? false
             showFPS = data.showFPS
+            showStreamDiagnostics = data.showStreamDiagnostics ?? false
             bezelStyle = data.bezelStyle
             bezelReflection = data.bezelReflection
             monBrightness = data.monBrightness
@@ -109,12 +116,14 @@ final class DisplaySettings: ObservableObject {
             scalingMode = ScalingMode(rawValue: defaults.string(forKey: "scalingMode") ?? "") ?? .aspectFit
             filterMode = FilterMode(rawValue: defaults.string(forKey: "filterMode") ?? "") ?? .sharp
             palette = PaletteChoice(rawValue: defaults.string(forKey: "palette") ?? "") ?? .pepto
+            selectedCustomPaletteID = nil
             tubeInput = TubeInput(rawValue: defaults.string(forKey: "tubeInput") ?? "") ?? .svideo
             crtScreenColor = CRTScreenColor(
                 rawValue: defaults.string(forKey: "crtScreenColor") ?? "") ?? .color
             crtDirtyGlass = defaults.object(
                 forKey: "crtDirtyGlass") as? Bool ?? false
             showFPS = defaults.bool(forKey: "showFPS")
+            showStreamDiagnostics = false
             bezelStyle = BezelChoice(rawValue: defaults.string(forKey: "bezelStyle") ?? "") ?? .c1702
             bezelReflection = defaults.object(forKey: "bezelReflection") as? Bool ?? true
             monBrightness = defaults.object(forKey: "monBrightness") as? Double ?? 0.5
@@ -142,10 +151,13 @@ final class DisplaySettings: ObservableObject {
         guard loaded else { return }
         let data = Snapshot(
             scalingMode: scalingMode, filterMode: filterMode,
-            palette: palette, tubeInput: tubeInput,
+            palette: palette, selectedCustomPaletteID: selectedCustomPaletteID,
+            tubeInput: tubeInput,
             crtScreenColor: crtScreenColor,
             crtDirtyGlass: crtDirtyGlass,
-            showFPS: showFPS, showBezel: nil,
+            showFPS: showFPS,
+            showStreamDiagnostics: showStreamDiagnostics,
+            showBezel: nil,
             bezelStyle: bezelStyle, bezelReflection: bezelReflection,
             monBrightness: monBrightness, monContrast: monContrast,
             monColor: monColor, monTint: monTint,

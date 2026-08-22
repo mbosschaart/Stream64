@@ -491,6 +491,84 @@ private struct FPSOverlayLabel: View {
     }
 }
 
+/// Compact selected-view indicator. Its separate observable keeps the
+/// diagnostics' once-per-second updates out of the Metal video host.
+private struct StreamHealthOverlay: View {
+    @ObservedObject var diagnostics: StreamDiagnostics
+    @State private var showingDetails = false
+
+    var body: some View {
+        let snapshot = diagnostics.snapshot
+        Button {
+            showingDetails.toggle()
+        } label: {
+            Label(
+                snapshot.healthLabel,
+                systemImage: snapshot.isDegraded
+                    ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(snapshot.isDegraded ? .yellow : .green)
+        }
+        .buttonStyle(.plain)
+        .padding(6)
+        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+        .help("Stream health — click for details")
+        .popover(isPresented: $showingDetails, arrowEdge: .top) {
+            StreamDiagnosticsDetail(snapshot: snapshot)
+        }
+    }
+}
+
+private struct StreamDiagnosticsDetail: View {
+    let snapshot: StreamDiagnosticsSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(
+                snapshot.healthLabel,
+                systemImage: snapshot.isDegraded
+                    ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.headline)
+                .foregroundStyle(snapshot.isDegraded ? .yellow : .green)
+            Divider()
+            Group {
+                Text("Video  \(snapshot.video.framesPerSecond, specifier: "%.1f") fps · \(snapshot.video.packetsPerSecond, specifier: "%.0f") pkt/s")
+                Text("Display  \(snapshot.renderer.presentFPS, specifier: "%.1f") fps · \(snapshot.renderer.queuedFrames) queued")
+                Text("Audio  \(snapshot.audio.packetsPerSecond, specifier: "%.0f") pkt/s · \(snapshot.audio.bufferedMilliseconds) ms buffer")
+                if snapshot.recording.active {
+                    Text("Recording  \(snapshot.recording.filtered ? "filtered" : "source") · \(snapshot.recording.queuedVideoFrames) queued")
+                }
+            }
+            .font(.caption.monospacedDigit())
+            if snapshot.video.rejectedPacketsPerSecond > 0
+                || snapshot.audio.rejectedPacketsPerSecond > 0 {
+                Text("Rejected UDP: video \(snapshot.video.rejectedPacketsPerSecond, specifier: "%.0f")/s · audio \(snapshot.audio.rejectedPacketsPerSecond, specifier: "%.0f")/s")
+                    .font(.caption)
+            }
+            if snapshot.audio.underrunsPerSecond > 0
+                || snapshot.audio.droppedFramesPerSecond > 0
+                || snapshot.renderer.droppedFramesPerSecond > 0
+                || snapshot.recording.droppedVideoFramesPerSecond > 0
+                || snapshot.recording.droppedAudioPacketsPerSecond > 0 {
+                Text("Loss: audio underruns \(snapshot.audio.underrunsPerSecond, specifier: "%.0f")/s · renderer drops \(snapshot.renderer.droppedFramesPerSecond, specifier: "%.0f")/s")
+                    .font(.caption)
+                if snapshot.recording.droppedVideoFramesPerSecond > 0
+                    || snapshot.recording.droppedAudioPacketsPerSecond > 0 {
+                    Text("Recording drops: video \(snapshot.recording.droppedVideoFramesPerSecond, specifier: "%.0f")/s · audio \(snapshot.recording.droppedAudioPacketsPerSecond, specifier: "%.0f")/s")
+                        .font(.caption)
+                }
+            }
+            if snapshot.renderer.gpuBehind {
+                Text("Display renderer is behind.")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+            }
+        }
+        .padding(12)
+        .frame(minWidth: 280, alignment: .leading)
+    }
+}
+
 /// One live device tile in the grid: video, connection state, name banner.
 ///
 /// Does **not** observe `DeviceSession` itself — fps / presentFPS ticks would
@@ -972,6 +1050,9 @@ private struct ViewerPaneSessionContent: View {
         .onReceive(NotificationCenter.default.publisher(for: .saveScreenshotRequested)) { _ in
             session.saveScreenshot()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleRecordingRequested)) { _ in
+            session.toggleRecording()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .powerOffRequested)) { note in
             guard let target = note.object as? DeviceSession,
                   target === session else { return }
@@ -1043,15 +1124,22 @@ private struct ViewerPaneSessionContent: View {
                 .buttonStyle(.borderedProminent)
             }
         case .connected:
-            if display.showFPS {
+            if display.showFPS || display.showStreamDiagnostics {
                 VStack {
-                    HStack {
+                    HStack(alignment: .top) {
+                        if display.showStreamDiagnostics {
+                            StreamHealthOverlay(
+                                diagnostics: session.streamDiagnostics)
+                                .padding(8)
+                        }
                         Spacer()
-                        FPSOverlayLabel(stats: session.videoFrameStats)
-                            .padding(6)
-                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
-                            .foregroundStyle(.green)
-                            .padding(8)
+                        if display.showFPS {
+                            FPSOverlayLabel(stats: session.videoFrameStats)
+                                .padding(6)
+                                .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                                .foregroundStyle(.green)
+                                .padding(8)
+                        }
                     }
                     Spacer()
                 }
@@ -1316,6 +1404,17 @@ struct ViewerSessionToolbar: ToolbarContent {
                 Label("Save Screenshot", systemImage: "camera")
             }
             .help("Screenshot \(session.device.name)")
+            .disabled(!session.isConnected)
+
+            Button {
+                session.toggleRecording()
+            } label: {
+                Label(
+                    session.isRecording ? "Stop Recording" : "Record Movie",
+                    systemImage: session.isRecording ? "stop.circle.fill" : "record.circle"
+                )
+            }
+            .help("Record source video and audio from \(session.device.name)")
             .disabled(!session.isConnected)
 
             Button {

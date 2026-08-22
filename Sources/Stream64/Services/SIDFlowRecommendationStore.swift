@@ -19,6 +19,25 @@ struct SIDFlowRecommendation: Identifiable, Hashable, Sendable {
     var id: String { key.id }
 }
 
+enum SIDStationFeedback: String, Codable, Sendable {
+    case liked
+    case disliked
+}
+
+struct SIDStationHistoryEntry: Codable, Identifiable, Hashable, Sendable {
+    let key: SIDFlowTrackKey
+    let startedAt: Date
+    var endedAt: Date?
+    var listenedMilliseconds: Int
+    var completion: Completion
+
+    enum Completion: String, Codable, Sendable {
+        case completed, skipped, failed, replaced
+    }
+
+    var id: String { "\(key.id)#\(startedAt.timeIntervalSince1970)" }
+}
+
 /// The subset of the published sidecar that Stream64 needs. Additional fields
 /// are deliberately ignored so a backwards-compatible data release does not
 /// require an app update.
@@ -284,6 +303,8 @@ final class SIDFlowRecommendationStore: ObservableObject {
     var likedKeys: Set<SIDFlowTrackKey> {
         Set(preferences.liked.map(Self.canonicalKey))
     }
+    var history: [SIDStationHistoryEntry] { preferences.history }
+    var feedback: [SIDFlowTrackKey: SIDStationFeedback] { preferences.feedback }
 
     func downloadLatest() async {
         guard !isLoading else { return }
@@ -339,6 +360,7 @@ final class SIDFlowRecommendationStore: ObservableObject {
         let key = Self.canonicalKey(key)
         preferences.liked.insert(key)
         preferences.skipped.remove(key)
+        preferences.feedback[key] = .liked
         savePreferences()
         objectWillChange.send()
     }
@@ -347,16 +369,48 @@ final class SIDFlowRecommendationStore: ObservableObject {
         let key = Self.canonicalKey(key)
         preferences.skipped.insert(key)
         preferences.liked.remove(key)
+        preferences.feedback[key] = .disliked
         savePreferences()
         objectWillChange.send()
     }
 
     func recordPlayed(_ key: SIDFlowTrackKey) {
         let key = Self.canonicalKey(key)
-        preferences.history.removeAll { $0 == key }
-        preferences.history.insert(key, at: 0)
+        preferences.history.removeAll { $0.key == key }
+        preferences.history.insert(.init(
+            key: key, startedAt: Date(), endedAt: nil,
+            listenedMilliseconds: 0, completion: .replaced), at: 0)
         preferences.history = Array(preferences.history.prefix(100))
         savePreferences()
+    }
+
+    func finishPlaying(
+        _ key: SIDFlowTrackKey,
+        listenedMilliseconds: Int,
+        completion: SIDStationHistoryEntry.Completion
+    ) {
+        let key = Self.canonicalKey(key)
+        guard let index = preferences.history.firstIndex(where: {
+            $0.key == key && $0.endedAt == nil
+        }) else { return }
+        preferences.history[index].endedAt = Date()
+        preferences.history[index].listenedMilliseconds = max(0, listenedMilliseconds)
+        preferences.history[index].completion = completion
+        savePreferences()
+    }
+
+    func clearHistory() {
+        preferences.history.removeAll()
+        savePreferences()
+    }
+
+    func undoFeedback(for key: SIDFlowTrackKey) {
+        let key = Self.canonicalKey(key)
+        preferences.feedback.removeValue(forKey: key)
+        preferences.liked.remove(key)
+        preferences.skipped.remove(key)
+        savePreferences()
+        objectWillChange.send()
     }
 
     func rebuildRecommendations(limit: Int = 20) {
@@ -365,11 +419,51 @@ final class SIDFlowRecommendationStore: ObservableObject {
             return
         }
         let excluded = Set(preferences.skipped.map(Self.canonicalKey))
-            .union(preferences.history.map(Self.canonicalKey))
+            .union(preferences.history.map(\.key))
         recommendations = bundle.recommendations(
             seededBy: likedKeys,
             excluding: excluded,
             limit: limit)
+    }
+
+    /// Calculates a fresh page away from the main actor. Ranking scans the
+    /// whole SIDFlow corpus, so station playback must not make the UI wait
+    /// for it at the end of a queue.
+    func freshRecommendations(
+        excluding additionalExclusions: Set<SIDFlowTrackKey> = [],
+        limit: Int = 20,
+        diversity: Double = 0,
+        pathCooldown: Int = 0
+    ) async -> [SIDFlowRecommendation] {
+        guard let bundle else { return [] }
+        let excluded = Set(preferences.skipped.map(Self.canonicalKey))
+            .union(preferences.history.map(\.key))
+            .union(additionalExclusions.map(Self.canonicalKey))
+        let seeds = likedKeys
+        let recentFamilies = Set(preferences.history.prefix(pathCooldown).map {
+            Self.pathFamily(for: $0.key)
+        })
+        return await Task.detached(priority: .utility) {
+            let candidates = bundle.recommendations(
+                seededBy: seeds, excluding: excluded,
+                limit: max(limit, limit * 12))
+            guard diversity > 0 else { return Array(candidates.prefix(limit)) }
+            var selected: [SIDFlowRecommendation] = []
+            var seenFamilies = recentFamilies
+            var deferred: [SIDFlowRecommendation] = []
+            for candidate in candidates {
+                let family = Self.pathFamily(for: candidate.key)
+                if seenFamilies.contains(family) {
+                    deferred.append(candidate)
+                } else {
+                    selected.append(candidate)
+                    seenFamilies.insert(family)
+                    if selected.count == limit { return selected }
+                }
+            }
+            selected.append(contentsOf: deferred.prefix(max(0, limit - selected.count)))
+            return selected
+        }.value
     }
 
     private func loadCached() {
@@ -408,21 +502,59 @@ final class SIDFlowRecommendationStore: ObservableObject {
     private struct Preferences: Codable {
         var liked = Set<SIDFlowTrackKey>()
         var skipped = Set<SIDFlowTrackKey>()
-        var history = [SIDFlowTrackKey]()
+        var history = [SIDStationHistoryEntry]()
+        var feedback = [SIDFlowTrackKey: SIDStationFeedback]()
+
+        private enum CodingKeys: String, CodingKey {
+            case liked, skipped, history, feedback
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            liked = try container.decodeIfPresent(Set<SIDFlowTrackKey>.self, forKey: .liked) ?? []
+            skipped = try container.decodeIfPresent(Set<SIDFlowTrackKey>.self, forKey: .skipped) ?? []
+            feedback = try container.decodeIfPresent(
+                [SIDFlowTrackKey: SIDStationFeedback].self, forKey: .feedback) ?? [:]
+            if let entries = try? container.decode(
+                [SIDStationHistoryEntry].self, forKey: .history) {
+                history = entries
+            } else {
+                let legacy = try container.decodeIfPresent(
+                    [SIDFlowTrackKey].self, forKey: .history) ?? []
+                history = legacy.map {
+                    .init(key: $0, startedAt: .distantPast, endedAt: nil,
+                          listenedMilliseconds: 0, completion: .completed)
+                }
+            }
+        }
     }
 
     private func loadPreferences() {
         guard let data = try? Data(contentsOf: preferencesURL),
               let saved = try? JSONDecoder().decode(Preferences.self, from: data) else { return }
         preferences = saved
+        preferences.liked = Set(preferences.liked.map(Self.canonicalKey))
+        preferences.skipped = Set(preferences.skipped.map(Self.canonicalKey))
+        preferences.history = preferences.history.map {
+            SIDStationHistoryEntry(
+                key: Self.canonicalKey($0.key), startedAt: $0.startedAt,
+                endedAt: $0.endedAt, listenedMilliseconds: $0.listenedMilliseconds,
+                completion: $0.completion)
+        }
     }
 
     private func savePreferences() {
-        guard let data = try? JSONEncoder().encode(preferences) else { return }
-        try? FileManager.default.createDirectory(
-            at: preferencesURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true)
-        try? data.write(to: preferencesURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(preferences)
+            try FileManager.default.createDirectory(
+                at: preferencesURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try data.write(to: preferencesURL, options: .atomic)
+        } catch {
+            status = "Could not save SID Station preferences: \(error.localizedDescription)"
+        }
     }
 
     nonisolated static func sha256(_ data: Data) -> String {
@@ -456,6 +588,11 @@ final class SIDFlowRecommendationStore: ObservableObject {
             // first subtune is 1. Early Stream64 builds wrote 0 here, so
             // normalise persisted likes/skips/history on read as well.
             songIndex: max(1, key.songIndex))
+    }
+
+    nonisolated private static func pathFamily(for key: SIDFlowTrackKey) -> String {
+        let components = key.sidPath.split(separator: "/")
+        return components.dropLast().prefix(3).joined(separator: "/").lowercased()
     }
 }
 

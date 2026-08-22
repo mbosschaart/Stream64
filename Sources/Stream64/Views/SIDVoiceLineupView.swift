@@ -68,8 +68,8 @@ struct SIDVoiceLineupView: View {
         return result
     }
 
-    /// Groups onsets across all voices that land within
-    /// `alignmentToleranceSamples` of each other and draws a shared
+    /// Groups onsets across all voices whose adjacent events land within
+    /// `alignmentToleranceSamples` and draws a shared
     /// vertical guide through them — a chiptune's equivalent of Sonic
     /// Lineup's cross-track alignment markers, highlighting where two or
     /// more voices change notes together (the closest thing a 3-voice

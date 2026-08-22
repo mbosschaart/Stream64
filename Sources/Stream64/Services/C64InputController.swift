@@ -16,6 +16,8 @@ final class C64InputController: ObservableObject {
     private var queueHead = 0
     private var worker: Task<Void, Never>?
     private var workerGeneration = 0
+    private var isTearingDown = false
+    private var deferredCommands: [Command] = []
     private var matrixUnavailable = false
     private var heldKeys: [UInt16: (inputs: [String], fallback: UInt8?)] = [:]
     private var joystickSources: [String: Set<JoystickDirection>] = [:]
@@ -191,6 +193,8 @@ final class C64InputController: ObservableObject {
     }
 
     func cancelAndRelease() async {
+        guard !isTearingDown else { return }
+        isTearingDown = true
         heldKeys.removeAll()
         joystickSources.removeAll()
         emittedJoystick.removeAll()
@@ -207,6 +211,11 @@ final class C64InputController: ObservableObject {
         }
         await sendReleaseAllWithRetry()
         try? await client.flushKeyboardBuffer()
+        isTearingDown = false
+        queue = deferredCommands
+        deferredCommands.removeAll(keepingCapacity: true)
+        queueHead = 0
+        startWorker()
     }
 
     private func emitMergedJoystick() {
@@ -240,7 +249,11 @@ final class C64InputController: ObservableObject {
     private var logicalQueueDepth: Int { queue.count - queueHead }
 
     private func enqueue(_ command: Command) {
-        guard logicalQueueDepth < maximumQueueDepth else {
+        if isTearingDown {
+            deferredCommands.append(command)
+            return
+        }
+        guard logicalQueueDepth + deferredCommands.count < maximumQueueDepth else {
             settings.updateCapability(.failed("Input queue is full"))
             // Never silently drop a release or leave presses that are
             // already remote-active. Throw away stale work and make the

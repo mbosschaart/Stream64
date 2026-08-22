@@ -3,9 +3,47 @@ import CryptoKit
 import ZIPFoundation
 import MetalKit
 import AVFoundation
+import CoreVideo
 @testable import Stream64
 
 final class VideoAudioTests: XCTestCase {
+    func testBuiltInPaletteCatalogProvidesAllSixteenColors() {
+        XCTAssertEqual(PaletteChoice.builtInCases.count, 12)
+        for choice in PaletteChoice.builtInCases {
+            let colors = C64Palette.palette(for: choice)
+            XCTAssertEqual(colors.count, 16, "\(choice.rawValue) must have 16 colors")
+            XCTAssertTrue(colors.allSatisfy { $0.w == 255 })
+        }
+    }
+
+    @MainActor
+    func testMissingCustomPaletteFallsBackToPeptoPAL() {
+        let id = UUID()
+        let key = "displaySettings.\(id.uuidString)"
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let display = DisplaySettings(deviceID: id)
+        display.palette = .custom
+        display.selectedCustomPaletteID = UUID()
+
+        XCTAssertEqual(display.resolvedPalette, C64Palette.pepto)
+    }
+
+    @MainActor
+    func testCustomPaletteStoresSixteenEditableColors() {
+        let library = PaletteLibrary.shared
+        let palette = CustomC64Palette(name: "Palette test \(UUID().uuidString)")
+        library.add(name: palette.name)
+        guard var stored = library.palettes.last else {
+            return XCTFail("Expected a new palette")
+        }
+        defer { library.remove(id: stored.id) }
+
+        stored.colors[0] = C64RGBAColor(1, 2, 3, 4)
+        library.update(stored)
+        XCTAssertEqual(library.palette(id: stored.id)?.colors.count, 16)
+        XCTAssertEqual(library.colors(for: stored.id)?.first, SIMD4<UInt8>(1, 2, 3, 4))
+    }
+
     func testCRTScreenColorShaderValuesAreStable() {
         XCTAssertEqual(CRTScreenColor.color.shaderValue, 0)
         XCTAssertEqual(CRTScreenColor.amber.shaderValue, 1)
@@ -89,6 +127,123 @@ final class VideoAudioTests: XCTestCase {
             sequence: 0, frame: 10, startLine: 0, lines: 136,
             value: 0xF, last: false))
         XCTAssertEqual(frames.count, 1)
+    }
+
+    func testVideoReceiverBroadcastsTokenizedCompleteFrameObservers() {
+        func packet(startLine: Int, last: Bool) -> Data {
+            var data = Data(repeating: 0, count: 12 + 384 * 136 / 2)
+            let lineField = UInt16(startLine) | (last ? 0x8000 : 0)
+            data[4] = UInt8(lineField & 0xFF)
+            data[5] = UInt8(lineField >> 8)
+            data[6] = 0x80
+            data[7] = 0x01
+            data[8] = 136
+            data[9] = 4
+            for index in 12..<data.count { data[index] = 0xAA }
+            return data
+        }
+
+        let receiver = VideoReceiver()
+        var legacyCount = 0
+        var observedCount = 0
+        receiver.onFrame = { _ in legacyCount += 1 }
+        let token = receiver.addFrameObserver { frame in
+            observedCount += 1
+            XCTAssertEqual(frame.count, VideoReceiver.width * VideoReceiver.palHeight)
+        }
+        receiver.ingest(packet(startLine: 0, last: false))
+        receiver.ingest(packet(startLine: 136, last: true))
+        XCTAssertEqual(legacyCount, 1)
+        XCTAssertEqual(observedCount, 1)
+
+        receiver.removeFrameObserver(token)
+        receiver.ingest(packet(startLine: 0, last: false))
+        receiver.ingest(packet(startLine: 136, last: true))
+        XCTAssertEqual(legacyCount, 2)
+        XCTAssertEqual(observedCount, 1)
+    }
+
+    func testSourceRecordingUsesFixedPALMovieCanvas() {
+        XCTAssertEqual(RecordingController.movieHeight, VideoReceiver.palHeight)
+        XCTAssertGreaterThan(RecordingController.maximumQueuedVideoFrames, 0)
+        XCTAssertGreaterThan(RecordingController.maximumQueuedAudioPackets, 0)
+    }
+
+    func testFilteredRecordingOptionsRemainStable() {
+        XCTAssertEqual(RecordingMode.source.rawValue, "Source (fast)")
+        XCTAssertEqual(RecordingMode.filtered.rawValue, "Filtered viewer")
+        XCTAssertEqual(
+            FilteredRecordingSize.fourThree.rawValue,
+            "Fixed 4:3 (768×576)")
+        XCTAssertEqual(
+            FilteredRecordingSize.matchViewer.rawValue,
+            "Match Viewer")
+    }
+
+    func testRecordingControllerWritesSourceMovie() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mov")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let recorder = RecordingController()
+        try recorder.start(url: url, palette: C64Palette.pepto)
+        let frame = Data(
+            repeating: 0x06,
+            count: VideoReceiver.width * VideoReceiver.palHeight)
+        for _ in 0..<4 { recorder.enqueue(frame: frame) }
+        for _ in 0..<20 {
+            recorder.enqueue(audioSamples: [Float](repeating: 0.1, count: 192 * 2))
+        }
+        let finished = expectation(description: "source movie finished")
+        var result: Result<URL, Error>?
+        recorder.stop {
+            result = $0
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 8)
+        let movieURL = try XCTUnwrap(try result?.get())
+        XCTAssertGreaterThan(
+            try Data(contentsOf: movieURL).count,
+            1_000,
+            "recorded movie should contain encoded media")
+    }
+
+    func testRecordingControllerWritesMetalStylePixelBuffers() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mov")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let recorder = RecordingController()
+        try recorder.start(
+            url: url, palette: C64Palette.pepto,
+            outputSize: CGSize(
+                width: VideoReceiver.width, height: VideoReceiver.palHeight),
+            acceptsIndexedFrames: false,
+            requiresMetalCompatiblePixelBuffers: true)
+        for _ in 0..<4 {
+            let pixelBuffer = try XCTUnwrap(recorder.makeFilteredPixelBuffer())
+            CVPixelBufferLockBaseAddress(pixelBuffer, [])
+            memset(
+                CVPixelBufferGetBaseAddress(pixelBuffer),
+                0x7F,
+                CVPixelBufferGetBytesPerRow(pixelBuffer)
+                    * CVPixelBufferGetHeight(pixelBuffer))
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+            recorder.enqueue(pixelBuffer: pixelBuffer)
+        }
+        for _ in 0..<20 {
+            recorder.enqueue(audioSamples: [Float](repeating: 0.1, count: 192 * 2))
+        }
+        let finished = expectation(description: "filtered movie finished")
+        var result: Result<URL, Error>?
+        recorder.stop {
+            result = $0
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 8)
+        let movieURL = try XCTUnwrap(try result?.get())
+        XCTAssertGreaterThan(try Data(contentsOf: movieURL).count, 1_000)
     }
 
 

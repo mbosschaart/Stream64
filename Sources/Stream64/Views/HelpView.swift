@@ -226,6 +226,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     matches typical panels and is shown without that blend. Idle viewers \
     pause the display link to save GPU.
 
+    **Stream Health** — enable per device via right-click → Show Stream \
+    Health to see receive/reject rates, audio buffering and underruns, \
+    renderer queue/GPU pressure, and recording queue/drop state. It updates \
+    at a low rate and does not affect live video rendering.
+
     **Screenshot** — the toolbar camera, right-click → Save Screenshot…, or \
     ⇧⌘S saves the actual filtered Metal output as PNG, including signal \
     artifacts, CRT curvature, phosphor color/afterglow, reflection and dirt.
@@ -270,7 +275,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     moisture/mineral deposits, warm haze, contrast loss, and subtle refraction \
     of the picture underneath.
 
-    **Palette** — Pepto (default), Colodore, or VICE color tables.
+    **Palette** — Pepto (default), Colodore, VICE, or a named custom table. \
+    Open **Palette Library…** from the palette menu to create, rename, edit, \
+    or delete shared 16-colour C64 palettes; each device remembers its own \
+    selection. A deleted custom selection safely uses Pepto PAL until another \
+    custom palette is chosen.
 
     **Picture controls** — when a CRT filter is active, use the toolbar sliders \
     button or right-click → **Picture Controls…** to open brightness, color, \
@@ -347,6 +356,16 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     You can also load software directly from the **Assembly64 online \
     library** without downloading anything first — see the Assembly64 \
     Library topic.
+
+    **Movie recording** — choose **Record Movie…** from the File menu or \
+    stream menu, then choose a `.mov` destination. Settings → General → \
+    Movie Recording selects **Source** (the received indexed stream) or \
+    **Filtered viewer** (the active palette, signal simulation, picture \
+    controls, CRT effects, and viewer scaling). Filtered recordings can use \
+    a fixed 4:3 canvas or match the viewer, with compact H.264 or \
+    high-gradient-quality ProRes 422 HQ. Filtered capture needs an active \
+    Metal viewer; if one cannot provide a capture target, Stream64 records \
+    Source instead. The Stream Health overlay shows recording queues/drops.
     """
 
     private static let fileManagerText = """
@@ -479,7 +498,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     and one-file download requests as the HVSC website. It does not crawl, \
     bulk-index, prefetch, or automatically page through HVSC. Searches wait \
     briefly while you type, require at least three characters, and cancel \
-    obsolete requests.
+    obsolete requests. Transient service-unavailable responses are retried \
+    before Stream64 reports a search failure.
 
     **Filters** narrow results by title, author, release, filename, SID model, \
     video standard, and year. Select a result to inspect its PSID/RSID format, \

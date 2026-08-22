@@ -70,7 +70,11 @@ final class PSID64Service {
     }
 
     func installedVersion() -> String? {
-        guard let result = try? run(executableURL, arguments: ["--version"]),
+        executableVersion(at: executableURL)
+    }
+
+    private func executableVersion(at url: URL) -> String? {
+        guard let result = try? run(url, arguments: ["--version"]),
               result.status == 0 else { return nil }
         return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -160,17 +164,27 @@ final class PSID64Service {
     }
 
     private func install(executableAt source: URL) throws {
-        try FileManager.default.createDirectory(
-            at: executableURL.deletingLastPathComponent(),
+        let fileManager = FileManager.default
+        let directory = executableURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: directory,
             withIntermediateDirectories: true)
-        try? FileManager.default.removeItem(at: executableURL)
-        try FileManager.default.copyItem(at: source, to: executableURL)
-        try FileManager.default.setAttributes(
+        let candidate = directory.appendingPathComponent(
+            ".psid64-\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: candidate) }
+        try fileManager.copyItem(at: source, to: candidate)
+        try fileManager.setAttributes(
             [.posixPermissions: 0o755],
-            ofItemAtPath: executableURL.path)
-        guard installedVersion() != nil else {
-            try? FileManager.default.removeItem(at: executableURL)
+            ofItemAtPath: candidate.path)
+        guard executableVersion(at: candidate) != nil else {
             throw ServiceError.invalidExecutable
+        }
+        if fileManager.fileExists(atPath: executableURL.path) {
+            _ = try fileManager.replaceItemAt(
+                executableURL, withItemAt: candidate,
+                backupItemName: nil, options: [])
+        } else {
+            try fileManager.moveItem(at: candidate, to: executableURL)
         }
     }
 

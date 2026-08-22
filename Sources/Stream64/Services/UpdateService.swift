@@ -517,7 +517,11 @@ final class UpdateService: ObservableObject {
         process.arguments = ["-dr", "com.apple.quarantine", appURL.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try? process.run()
+        do {
+            try process.run()
+        } catch {
+            return
+        }
         process.waitUntilExit()
     }
 

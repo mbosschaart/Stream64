@@ -18,6 +18,33 @@ enum FilterMode: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+/// Selects whether movies contain the decoded Ultimate stream or the same
+/// composited Metal image the viewer presents.
+enum RecordingMode: String, CaseIterable, Identifiable, Codable {
+    case source = "Source (fast)"
+    case filtered = "Filtered viewer"
+
+    var id: String { rawValue }
+}
+
+/// Geometry for filtered recordings. Source recordings always retain their
+/// historical 384×272 PAL canvas for compatibility.
+enum FilteredRecordingSize: String, CaseIterable, Identifiable, Codable {
+    case fourThree = "Fixed 4:3 (768×576)"
+    case matchViewer = "Match Viewer"
+
+    var id: String { rawValue }
+}
+
+/// Codec trade-off for filtered exports. ProRes keeps 10-bit gradients but
+/// produces much larger files than the compact H.264 option.
+enum FilteredRecordingQuality: String, CaseIterable, Identifiable, Codable {
+    case compactH264 = "Compact H.264"
+    case proRes422HQ = "High Gradient Quality (ProRes 422 HQ)"
+
+    var id: String { rawValue }
+}
+
 enum TubeInput: String, CaseIterable, Identifiable, Codable {
     case svideo = "S-Video"
     case composite = "Composite"
@@ -72,11 +99,41 @@ enum BezelChoice: String, CaseIterable, Identifiable, Codable {
 }
 
 enum PaletteChoice: String, CaseIterable, Identifiable, Codable {
-    case pepto = "Pepto (default)"
+    case peptoPAL = "Pepto PAL (default)"
+    case peptoNTSC = "Pepto NTSC"
     case colodore = "Colodore"
     case vice = "VICE"
+    case deekay = "Deekay"
+    case communityColors = "Community Colors"
+    case ptoing = "Ptoing"
+    case palVICII6569R1 = "PAL VIC-II 6569R1"
+    case palVICII6569R3 = "PAL VIC-II 6569R3"
+    case palVICII6569R4 = "PAL VIC-II 6569R4"
+    case palVICII6569R5 = "PAL VIC-II 6569R5"
+    case palVICII8565R2 = "PAL VIC-II 8565R2"
+    case custom = "Custom"
 
     var id: String { rawValue }
+
+    static var builtInCases: [PaletteChoice] {
+        allCases.filter { $0 != .custom }
+    }
+
+    /// Source compatibility for the original single Pepto selection.
+    static var pepto: PaletteChoice { .peptoPAL }
+
+    init(from decoder: Decoder) throws {
+        let rawValue = try decoder.singleValueContainer().decode(String.self)
+        // Display snapshots written before the palette library used this
+        // label. Keep those per-device settings readable.
+        self = PaletteChoice(rawValue: rawValue)
+            ?? (rawValue == "Pepto (default)" ? .peptoPAL : .peptoPAL)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 /// Live picture-control values, read by the renderer every frame. A plain
@@ -117,6 +174,11 @@ final class AppSettings: ObservableObject {
     // Network
     @AppStorage("connectTimeoutSeconds") var connectTimeoutSeconds: Double = 5
     @AppStorage("streamDurationSeconds") var streamDurationSeconds: Int = 0 // 0 = forever
+    @AppStorage("recordingMode") var recordingMode: RecordingMode = .source
+    @AppStorage("filteredRecordingSize")
+    var filteredRecordingSize: FilteredRecordingSize = .fourThree
+    @AppStorage("filteredRecordingQuality")
+    var filteredRecordingQuality: FilteredRecordingQuality = .compactH264
 
     // General
     @AppStorage("reconnectAutomatically") var reconnectAutomatically: Bool = true
@@ -144,6 +206,12 @@ final class AppSettings: ObservableObject {
     var sidRadioFallbackDurationSeconds: Double = 180
     @AppStorage("sidRadioFadeOutEnabled")
     var sidRadioFadeOutEnabled: Bool = true
+    @AppStorage("sidRadioQueueSize")
+    var sidRadioQueueSize: Int = 5
+    @AppStorage("sidRadioDiversity")
+    var sidRadioDiversity: Double = 0.35
+    @AppStorage("sidRadioPathCooldown")
+    var sidRadioPathCooldown: Int = 8
 }
 
 // Allow enums in @AppStorage via RawRepresentable String conformance (already String-backed).
