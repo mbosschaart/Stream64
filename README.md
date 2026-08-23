@@ -71,8 +71,9 @@ Browse any configured Ultimate or mounted Mac volume in either pane, then queue 
 
 ## HVSC Browser
 
-Choose an extracted corpus in **File → HVSC Browser…**, or use **Install HVSC**
-after checking a release. The installer asks you to choose a destination and
+Choose an extracted corpus in **File → HVSC Browser…**, or download and install
+the latest HVSC archive directly from Stream64 using **Install HVSC** after
+checking a release. The installer asks you to choose a destination and
 downloads only the full/update URL supplied by
 `https://hvsc.de/api/v1/version`; it does not use HVSC search/detail/SID APIs
 or construct download URLs itself. Downloads are streamed to a temporary file,
