@@ -218,6 +218,20 @@ final class SIDTests: XCTestCase {
         XCTAssertEqual(peakBarFrequency, toneHz, accuracy: toneHz * 0.5)
     }
 
+    func testSIDSpectrumAnalyzerRetainsRawTransientEvidence() throws {
+        let analyzer = SIDSpectrumAnalyzer(sampleRate: 48_000)
+        let quiet = [Float](repeating: 0.03, count: SIDSpectrumAnalyzer.fftSize)
+        let loud = (0..<SIDSpectrumAnalyzer.fftSize).map {
+            Float(sin(Double($0) * 0.43)) * 0.8
+        }
+
+        _ = analyzer.ingestFrame(quiet)
+        let frame = try XCTUnwrap(analyzer.ingestFrame(loud))
+        XCTAssertGreaterThan(frame.features.rms, 0.4)
+        XCTAssertGreaterThan(frame.features.spectralFlux, 0)
+        XCTAssertGreaterThan(frame.features.midBandEnergy, 0)
+    }
+
 
     func testSIDFilterRegistersDecodeCutoffResonanceRoutingAndMode() {
         var filter = SIDFilterRegisters()
@@ -401,6 +415,30 @@ final class SIDTests: XCTestCase {
         XCTAssertGreaterThan(rhythm.inferredBPM, 100)
         XCTAssertLessThan(rhythm.inferredBPM, 140)
         XCTAssertGreaterThan(rhythm.beatConfidence, 0)
+    }
+
+    func testKAOSRhythmKeepsClockStableWhileOffGridImpactsStayResponsive() {
+        var rhythm = KAOSRhythmState()
+        let bars = Array(repeating: Float(0.5), count: 24)
+
+        // Establish a 120 BPM grid from two on-grid register onsets.
+        rhythm.advance(timestamp: 1, events: [.gateRise], spectrumBars: bars, channels: [])
+        rhythm.advance(timestamp: 1.5, events: [.gateRise], spectrumBars: bars, channels: [])
+        let bpm = rhythm.inferredBPM
+        XCTAssertEqual(bpm, 120, accuracy: 8)
+
+        // An off-grid digi hit should create a visible impact, but it must
+        // not reset the clock/BPM that drives bars and scene cuts.
+        rhythm.advance(
+            timestamp: 1.67, events: [.digiVolumeStep],
+            spectrumBars: bars, channels: [])
+        XCTAssertGreaterThan(rhythm.impactPulse, 0.9)
+        XCTAssertEqual(rhythm.inferredBPM, bpm, accuracy: 8)
+
+        // With no more onsets, the predicted clock still emits the next beat.
+        rhythm.advance(timestamp: 2.03, events: [], spectrumBars: bars, channels: [])
+        XCTAssertGreaterThan(rhythm.beatPulse, 0.8)
+        XCTAssertGreaterThanOrEqual(rhythm.sceneIndex, 0)
     }
 
 

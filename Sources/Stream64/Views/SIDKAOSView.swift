@@ -15,11 +15,11 @@ struct SIDKAOSView: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             Canvas { context, size in
                 let time = timeline.date.timeIntervalSinceReferenceDate
-                let bpm = max(75, min(180, Double(rhythm.inferredBPM == 0 ? 120 : rhythm.inferredBPM)))
-                // Cut every eight beats; a bounded wall-clock fallback keeps
-                // KAOS moving for sparse/noisy register patterns.
-                let sceneDuration = 60 / bpm * 8
-                let sceneStep = Int(time / sceneDuration)
+                // Scene cuts are clock-quantized. The rhythm state has a
+                // 120 BPM fallback clock, so this remains animated before
+                // confidence builds without allowing wall time to drift away
+                // from established beats.
+                let sceneStep = rhythm.sceneIndex
                 let scene = KAOSScene(
                     rawValue: shuffledSceneIndex(
                         step: sceneStep,
@@ -30,6 +30,7 @@ struct SIDKAOSView: View {
                     phase: time * 0.025
                         + Double(scene.rawValue) / Double(KAOSScene.allCases.count)
                         + Double(rhythm.barPhase) * 0.065
+                        + Double(rhythm.beatPhase) * 0.015
                         + Double(rhythm.bassEnergy - rhythm.midEnergy) * 0.11)
 
                 context.fill(
@@ -212,7 +213,9 @@ struct SIDKAOSView: View {
         time: TimeInterval,
         palette: KAOSPalette
     ) {
-        let horizon = size.height * (0.34 - CGFloat(rhythm.beatPulse) * 0.06)
+        let horizon = size.height * (0.34
+            - CGFloat(rhythm.beatPulse) * 0.06
+            - CGFloat(rhythm.impactPulse) * 0.025)
         var path = Path()
         let columns = 18
         for column in 0...columns {
@@ -434,7 +437,8 @@ struct SIDKAOSView: View {
         for index in 0..<count {
             let x = size.width * CGFloat(index + 1) / CGFloat(count + 1)
             let phase = time * 5.5 + Double(index) * 1.7
-            let bounce = CGFloat(abs(Foundation.sin(phase))) * (30 + CGFloat(rhythm.beatPulse) * 45)
+            let bounce = CGFloat(abs(Foundation.sin(phase))) * (
+                30 + CGFloat(rhythm.beatPulse) * 45 + CGFloat(rhythm.impactPulse) * 22)
             let head = CGPoint(x: x, y: floor - 120 - bounce)
             var body = Path()
             body.addEllipse(in: CGRect(x: head.x - 12, y: head.y - 12, width: 24, height: 24))
@@ -566,7 +570,8 @@ struct SIDKAOSView: View {
     ) {
         for index in 0..<18 {
             let phase = time * (0.7 + Double(index % 4) * 0.18) + Double(index)
-            let radius = CGFloat(20 + (index % 5) * 13) * (1 + CGFloat(rhythm.beatPulse) * 0.6)
+            let radius = CGFloat(20 + (index % 5) * 13) * (
+                1 + CGFloat(rhythm.beatPulse) * 0.6 + CGFloat(rhythm.impactPulse) * 0.25)
             let x = size.width * (0.5 + CGFloat(Foundation.sin(phase * 1.3)) * 0.42)
             let y = size.height * (0.5 + CGFloat(Foundation.cos(phase * 1.7)) * 0.36)
             let orb = Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2))
@@ -930,10 +935,11 @@ struct SIDKAOSView: View {
         time: TimeInterval,
         palette: KAOSPalette
     ) {
-        guard rhythm.beatPulse > 0.18 else { return }
+        let pulse = max(rhythm.beatPulse, rhythm.impactPulse * 0.8)
+        guard pulse > 0.18 else { return }
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let length = hypot(size.width, size.height)
-            * CGFloat(rhythm.beatPulse) * 0.7
+            * CGFloat(pulse) * 0.7
         var rays = Path()
         for index in 0..<20 {
             let angle = time * 0.4 + Double(index) * .pi * 2 / 20
@@ -944,7 +950,7 @@ struct SIDKAOSView: View {
         }
         context.stroke(
             rays,
-            with: .color(palette.hotPink.opacity(Double(rhythm.beatPulse) * 0.32)),
+            with: .color(palette.hotPink.opacity(Double(pulse) * 0.32)),
             lineWidth: 1)
     }
 
@@ -953,10 +959,11 @@ struct SIDKAOSView: View {
         size: CGSize,
         palette: KAOSPalette
     ) {
-        guard rhythm.beatPulse > 0.72 else { return }
+        let flash = max(rhythm.beatPulse, rhythm.impactPulse * 0.9)
+        guard flash > 0.72 else { return }
         context.fill(
             Path(CGRect(origin: .zero, size: size)),
-            with: .color(palette.acid.opacity(Double(rhythm.beatPulse - 0.72) * 0.25)))
+            with: .color(palette.acid.opacity(Double(flash - 0.72) * 0.25)))
     }
 
     private func drawScanlines(context: inout GraphicsContext, size: CGSize) {

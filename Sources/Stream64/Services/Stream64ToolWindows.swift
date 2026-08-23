@@ -19,6 +19,7 @@ enum Stream64ToolWindows {
     private static var sessionManager: SessionManager?
     private static var assembly64Library: Assembly64LibraryStore?
     private static var hvscLibrary: HVSCLibraryStore?
+    private static var localHVSCLibrary: HVSCLocalLibrary?
     private static var sidFlowRecommendations: SIDFlowRecommendationStore?
 
     static func configure(
@@ -27,6 +28,7 @@ enum Stream64ToolWindows {
         sessionManager: SessionManager,
         assembly64Library: Assembly64LibraryStore,
         hvscLibrary: HVSCLibraryStore,
+        localHVSCLibrary: HVSCLocalLibrary,
         sidFlowRecommendations: SIDFlowRecommendationStore
     ) {
         self.deviceStore = deviceStore
@@ -34,6 +36,7 @@ enum Stream64ToolWindows {
         self.sessionManager = sessionManager
         self.assembly64Library = assembly64Library
         self.hvscLibrary = hvscLibrary
+        self.localHVSCLibrary = localHVSCLibrary
         self.sidFlowRecommendations = sidFlowRecommendations
     }
 
@@ -79,7 +82,7 @@ enum Stream64ToolWindows {
 
     static func showHVSC() {
         guard let deviceStore, let settings, let sessionManager,
-              let hvscLibrary, let sidFlowRecommendations else { return }
+              let hvscLibrary, let localHVSCLibrary, let sidFlowRecommendations else { return }
         if let existing = hvscController {
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -89,6 +92,7 @@ enum Stream64ToolWindows {
             deviceStore: deviceStore,
             settings: settings,
             library: hvscLibrary,
+            localLibrary: localHVSCLibrary,
             sidFlowRecommendations: sidFlowRecommendations,
             sessionProvider: { device in
                 sessionManager.session(for: device, settings: settings)
@@ -102,7 +106,7 @@ enum Stream64ToolWindows {
 
     static func showSIDRadio() {
         guard let deviceStore, let settings, let sessionManager,
-              let sidFlowRecommendations, let hvscLibrary else { return }
+              let sidFlowRecommendations, let hvscLibrary, let localHVSCLibrary else { return }
         if let existing = sidRadioController {
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -113,6 +117,7 @@ enum Stream64ToolWindows {
             settings: settings,
             store: sidFlowRecommendations,
             library: hvscLibrary,
+            localLibrary: localHVSCLibrary,
             sessionProvider: { device in
                 sessionManager.session(for: device, settings: settings)
             })
@@ -191,6 +196,7 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
         deviceStore: DeviceStore,
         settings: AppSettings,
         library: HVSCLibraryStore,
+        localLibrary: HVSCLocalLibrary,
         sidFlowRecommendations: SIDFlowRecommendationStore,
         sessionProvider: @escaping (UltimateDevice) -> DeviceSession
     ) {
@@ -199,7 +205,7 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        window.title = "HVSC SID Browser"
+        window.title = "HVSC Browser"
         window.minSize = NSSize(width: 880, height: 560)
         window.isReleasedWhenClosed = false
         window.center()
@@ -211,6 +217,7 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(deviceStore)
                     .environmentObject(settings)
                     .environmentObject(library)
+                    .environmentObject(localLibrary)
                     .environmentObject(sidFlowRecommendations)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
@@ -231,6 +238,7 @@ final class SIDRadioWindowController: NSWindowController, NSWindowDelegate {
         settings: AppSettings,
         store: SIDFlowRecommendationStore,
         library: HVSCLibraryStore,
+        localLibrary: HVSCLocalLibrary,
         sessionProvider: @escaping (UltimateDevice) -> DeviceSession
     ) {
         let window = NSWindow(
@@ -251,6 +259,7 @@ final class SIDRadioWindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(settings)
                     .environmentObject(store)
                     .environmentObject(library)
+                    .environmentObject(localLibrary)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
     }

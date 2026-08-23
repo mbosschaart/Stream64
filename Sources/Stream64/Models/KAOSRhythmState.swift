@@ -1,5 +1,14 @@
 import Foundation
 
+/// All beat evidence collected during one bounded engine tick. Keeping this
+/// separate from the published rhythm state makes evidence collection cheap
+/// and lets the clock use raw FFT values rather than auto-gained display bars.
+struct KAOSRhythmEvidence {
+    var events: [KAOSRhythmState.Event] = []
+    var spectrum: SIDSpectrumFeatures = .silence
+    var spectrumBars: [Float] = []
+}
+
 /// Compact, shared music state for KAOS. Register events supply musical
 /// structure while post-mix spectrum energy supplies reliable pulse for
 /// digi/noise-heavy SID productions.
@@ -21,6 +30,11 @@ struct KAOSRhythmState: Equatable {
     }
 
     var beatPulse: Float = 0
+    /// Immediate transient response. This is deliberately independent of
+    /// `beatPulse`: rapid fills can hit the visuals without destabilizing the
+    /// tempo clock.
+    var impactPulse: Float = 0
+    var impactStrength: Float = 0
     var beatStrength: Float = 0
     var beatPhase: Float = 0
     var barStartPulse: Float = 0
@@ -32,13 +46,20 @@ struct KAOSRhythmState: Equatable {
     var beatConfidence: Float = 0
     var barPhase = 0
     var phraseIndex = 0
+    var sceneIndex = 0
     var activeVoiceMask: UInt8 = 0
     var digiActivity: Float = 0
     var voiceLevels: [Float] = Array(repeating: 0, count: 6)
 
     private var smoothedEnergy: Float = 0
-    private var lastBeatTime: TimeInterval?
-    private var smoothedBeatInterval: TimeInterval?
+    private var lastUpdateTime: TimeInterval?
+    private var lastClockBeatTime: TimeInterval?
+    private var lastOnsetTime: TimeInterval?
+    private var smoothedBeatInterval: TimeInterval = 0.5
+    private var fluxMean: Float = 0
+    private var fluxDeviation: Float = 0
+    private var lowMean: Float = 0
+    private var lowDeviation: Float = 0
     private var beatCount = 0
 
     /// Advances beat/phrase state at the engine UI cadence. `timestamp` is
@@ -49,48 +70,56 @@ struct KAOSRhythmState: Equatable {
         spectrumBars: [Float],
         channels: [SIDVoiceChannel]
     ) {
-        let previousTime = lastBeatTime ?? timestamp
-        let dt = max(0, min(0.2, timestamp - previousTime))
+        advance(
+            timestamp: timestamp,
+            evidence: KAOSRhythmEvidence(events: events, spectrumBars: spectrumBars),
+            channels: channels)
+    }
+
+    mutating func advance(
+        timestamp: TimeInterval,
+        evidence: KAOSRhythmEvidence,
+        channels: [SIDVoiceChannel]
+    ) {
+        let dt = max(0, min(0.2, timestamp - (lastUpdateTime ?? timestamp)))
+        lastUpdateTime = timestamp
         let decayDt = max(dt, 1.0 / 30.0)
-        beatPulse = max(0, beatPulse - Float(decayDt * 3.2))
+        beatPulse = max(0, beatPulse - Float(decayDt * 2.7))
+        impactPulse = max(0, impactPulse - Float(decayDt * 7.5))
         barStartPulse = max(0, barStartPulse - Float(decayDt * 3.6))
         phraseStartPulse = max(0, phraseStartPulse - Float(decayDt * 3.2))
         digiActivity = max(0, digiActivity - Float(decayDt * 1.25))
 
-        bassEnergy = Self.mean(spectrumBars.prefix(8))
-        midEnergy = Self.mean(spectrumBars.dropFirst(8).prefix(18))
+        bassEnergy = Self.mean(evidence.spectrumBars.prefix(8))
+        midEnergy = Self.mean(evidence.spectrumBars.dropFirst(8).prefix(18))
         masterLevel = min(1, bassEnergy * 1.35 + midEnergy * 0.45)
         smoothedEnergy += (masterLevel - smoothedEnergy) * 0.08
 
-        let registerEnergy = events.reduce(Float(0)) {
+        let registerEnergy = evidence.events.reduce(Float(0)) {
             max($0, $1.weight)
         }
-        if events.contains(.digiVolumeStep) {
+        if evidence.events.contains(.digiVolumeStep) {
             digiActivity = 1
         }
-        let trigger = max(registerEnergy, masterLevel)
-        let threshold = max(0.14, smoothedEnergy * 1.28 + 0.035)
-        let sinceBeat = timestamp - (lastBeatTime ?? -10)
-
-        if trigger >= threshold, sinceBeat >= 0.18 {
-            registerBeat(timestamp: timestamp, strength: trigger, measured: true)
-        } else {
-            // Once a pattern is confident, keep a clock running between
-            // register events. This makes KAOS scenes and typography flow
-            // through sparse/noisy productions instead of freezing.
-            let interval = smoothedBeatInterval ?? 0.5
-            if sinceBeat >= interval {
-                registerBeat(
-                    timestamp: timestamp,
-                    strength: max(masterLevel, 0.28),
-                    measured: false)
-            }
-            beatStrength += (masterLevel - beatStrength) * 0.1
-            beatConfidence = max(0, beatConfidence - 0.002)
+        let audioImpact = updateAudioOnset(evidence.spectrum)
+        let impact = max(registerEnergy, audioImpact)
+        if impact > 0 {
+            impactPulse = 1
+            impactStrength = impact
         }
 
-        let activeInterval = smoothedBeatInterval ?? 0.5
-        beatPhase = Float(min(1, max(0, timestamp - (lastBeatTime ?? timestamp)) / activeInterval))
+        // The onset path only nudges a clock when it lands close to its
+        // expected grid. Off-grid fills remain responsive impacts but cannot
+        // drag scene changes or BPM around.
+        if impact >= 0.5,
+           timestamp - (lastOnsetTime ?? -.infinity) >= 0.09 {
+            acceptOnset(timestamp: timestamp, strength: impact)
+        }
+        advanceClock(to: timestamp)
+        beatStrength += (masterLevel - beatStrength) * 0.08
+        beatConfidence = max(0, beatConfidence - Float(dt) * 0.012)
+        beatPhase = Float(min(
+            1, max(0, timestamp - (lastClockBeatTime ?? timestamp)) / smoothedBeatInterval))
 
         activeVoiceMask = 0
         voiceLevels = Array(
@@ -108,30 +137,67 @@ struct KAOSRhythmState: Equatable {
         }
     }
 
-    private mutating func registerBeat(
+    private mutating func updateAudioOnset(_ features: SIDSpectrumFeatures) -> Float {
+        guard features.rms > 0 else { return 0 }
+        let fluxDelta = features.spectralFlux - fluxMean
+        let lowDelta = features.lowBandEnergy - lowMean
+        fluxMean += fluxDelta * 0.055
+        lowMean += lowDelta * 0.055
+        fluxDeviation += (abs(fluxDelta) - fluxDeviation) * 0.055
+        lowDeviation += (abs(lowDelta) - lowDeviation) * 0.055
+        let fluxZ = max(0, fluxDelta / max(fluxDeviation * 2.4, 0.02))
+        let lowZ = max(0, lowDelta / max(lowDeviation * 2.8, 0.02))
+        // Flux catches percussion/noise; low-band growth favors kick drums.
+        return min(1, fluxZ * 0.64 + lowZ * 0.36)
+    }
+
+    private mutating func acceptOnset(timestamp: TimeInterval, strength: Float) {
+        defer { lastOnsetTime = timestamp }
+        guard let previousOnset = lastOnsetTime else {
+            if lastClockBeatTime == nil {
+                registerClockBeat(timestamp: timestamp, strength: strength, measured: true)
+            }
+            return
+        }
+        let interval = timestamp - previousOnset
+        guard (0.28...0.95).contains(interval) else { return }
+        let nearestMultiple = max(1, (interval / smoothedBeatInterval).rounded())
+        let candidate = interval / nearestMultiple
+        guard (0.30...0.86).contains(candidate) else { return }
+        let error = abs(candidate - smoothedBeatInterval) / smoothedBeatInterval
+        guard error < 0.28 || beatConfidence < 0.18 else { return }
+        smoothedBeatInterval += (candidate - smoothedBeatInterval) * 0.12
+        inferredBPM = Float(min(200, max(70, 60 / smoothedBeatInterval)))
+        beatConfidence = min(1, beatConfidence + 0.13)
+
+        if let lastClockBeatTime,
+           abs(timestamp - lastClockBeatTime) <= smoothedBeatInterval * 0.24 {
+            registerClockBeat(timestamp: timestamp, strength: strength, measured: true)
+        }
+    }
+
+    private mutating func advanceClock(to timestamp: TimeInterval) {
+        guard let lastClockBeatTime else { return }
+        // A bounded loop absorbs a briefly delayed main run loop without
+        // publishing an unbounded catch-up sequence after a sleep/wake.
+        var beatTime = lastClockBeatTime
+        var emitted = 0
+        while timestamp - beatTime >= smoothedBeatInterval, emitted < 2 {
+            beatTime += smoothedBeatInterval
+            registerClockBeat(
+                timestamp: beatTime,
+                strength: max(masterLevel, 0.28),
+                measured: false)
+            emitted += 1
+        }
+    }
+
+    private mutating func registerClockBeat(
         timestamp: TimeInterval,
         strength: Float,
         measured: Bool
     ) {
-        if let previous = lastBeatTime {
-            let interval = timestamp - previous
-            if measured, (0.26...1.0).contains(interval) {
-                if let currentInterval = smoothedBeatInterval {
-                    smoothedBeatInterval =
-                        currentInterval + (interval - currentInterval) * 0.24
-                } else {
-                    smoothedBeatInterval = interval
-                }
-                if let smoothedBeatInterval {
-                    inferredBPM = Float(
-                        min(220, max(60, 60 / smoothedBeatInterval)))
-                    beatConfidence = min(1, beatConfidence + 0.16)
-                }
-            } else if measured {
-                beatConfidence = max(0, beatConfidence - 0.08)
-            }
-        }
-        lastBeatTime = timestamp
+        lastClockBeatTime = timestamp
         beatPulse = 1
         beatStrength = strength
         beatCount += 1
@@ -142,6 +208,10 @@ struct KAOSRhythmState: Equatable {
         if beatCount.isMultiple(of: 16) {
             phraseIndex += 1
             phraseStartPulse = 1
+        }
+        sceneIndex = beatCount / 8
+        if inferredBPM == 0 {
+            inferredBPM = Float(60 / smoothedBeatInterval)
         }
     }
 

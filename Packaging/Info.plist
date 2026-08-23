@@ -22,6 +22,8 @@
     <string>__VERSION__</string>
     <key>CFBundleVersion</key>
     <string>__BUILD_NUMBER__</string>
+    <key>HVSC7zSHA256</key>
+    <string>9c56cf3379a0d8544e9244958b96fdc7c17f9ce70f5a160eb2b41f5f3df96d8c</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.entertainment</string>
     <key>LSMinimumSystemVersion</key>

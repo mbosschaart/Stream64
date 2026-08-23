@@ -332,17 +332,20 @@ struct RemoteBrowserView: View {
                     .tag(Optional(DeviceActionTarget.allConnected))
             }
             .frame(maxWidth: 220)
+            .help("Choose which connected C64 receives Run, Mount, and Play actions")
             Button {
                 swapPaneLocations()
             } label: {
                 Label("Swap Panes", systemImage: "arrow.left.arrow.right")
             }
+            .help("Swap the left and right pane locations")
             Button {
                 left.refresh(devices: deviceStore.devices)
                 right.refresh(devices: deviceStore.devices)
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
+            .help("Refresh both file panes")
         }
     }
 
@@ -892,6 +895,7 @@ private struct FilePaneView: View {
                     Image(systemName: "arrow.up")
                 }
                 .disabled(model.path.rawValue == "/")
+                .help("Go to the parent folder")
                 TextField("Path", text: $model.pathText)
                     .onSubmit {
                         model.navigate(
@@ -903,6 +907,7 @@ private struct FilePaneView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
+                .help("Refresh this folder")
                 Button("Open") {
                     if let folder = model.selectedItems.first,
                        folder.isDirectory {

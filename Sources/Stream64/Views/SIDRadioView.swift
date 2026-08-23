@@ -5,13 +5,20 @@ import SwiftUI
 /// published SIDFlow data bundle. It never owns a SID-file cache: the selected
 /// tune is resolved from HVSC and immediately sent to the Ultimate.
 struct SIDRadioView: View {
+    private enum PlaybackMode: String, CaseIterable, Identifiable {
+        case station = "Station"
+        case playlist = "Playlist"
+
+        var id: Self { self }
+    }
+
     @EnvironmentObject private var deviceStore: DeviceStore
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var store: SIDFlowRecommendationStore
     @EnvironmentObject private var library: HVSCLibraryStore
+    @EnvironmentObject private var localLibrary: HVSCLocalLibrary
 
     let sessionProvider: (UltimateDevice) -> DeviceSession
-    private let hvsc = HVSCClient()
     private let fadeOutDurationMilliseconds = 3_000
 
     @State private var queue: [SIDFlowRecommendation] = []
@@ -28,31 +35,36 @@ struct SIDRadioView: View {
     @State private var nowPlayingDurationMilliseconds: Int?
     @State private var nowPlayingUsesFallbackDuration = false
     @State private var showingHistory = false
+    @State private var playbackMode: PlaybackMode = .station
+    @State private var playlistCurrentIndex: Int?
+    @State private var playlistTask: Task<Void, Never>?
+    @State private var playlistIsLoading = false
 
     private var targetDevice: UltimateDevice? { deviceStore.selectedDevice }
     private var targetLabel: String { targetDevice?.name ?? "No Selected C64" }
 
     var body: some View {
         Group {
-            if !store.isInstalled {
-                ContentUnavailableView {
-                    Label("SID Station Needs Recommendation Data", systemImage: "dot.radiowaves.left.and.right")
-                } description: {
-                    Text("A random-playing station built from your HVSC likes. It uses verified SIDFlow similarity data; SID files are fetched only when played and are never retained.")
-                } actions: {
-                    Button("Download Recommendation Data") {
-                        Task { await store.downloadLatest() }
-                    }
-                    .disabled(store.isLoading)
-                    Link(
-                        "View SIDFlow data release",
-                        destination: URL(string: "https://github.com/chrisgleissner/sidflow-data/releases")!)
-                    Text(store.status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            if !localLibrary.isReady {
+                ContentUnavailableView(
+                    "SID Station Needs HVSC Data",
+                    systemImage: "externaldrive",
+                    description: Text("Choose and index an extracted HVSC folder in the HVSC Browser window before starting SID Station."))
             } else {
-                recommendationsList
+                VStack(spacing: 0) {
+                    Picker("Playback Mode", selection: $playbackMode) {
+                        ForEach(PlaybackMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding()
+                    if playbackMode == .station {
+                        stationContent
+                    } else {
+                        playlistContent
+                    }
+                }
             }
         }
         .navigationTitle("SID Station")
@@ -67,22 +79,50 @@ struct SIDRadioView: View {
         .frame(minWidth: 760, minHeight: 500)
     }
 
+    @ViewBuilder
+    private var stationContent: some View {
+        if !store.isInstalled {
+            ContentUnavailableView {
+                Label("SID Station Needs Recommendation Data", systemImage: "dot.radiowaves.left.and.right")
+            } description: {
+                Text("A random-playing station built from your local HVSC likes. It uses verified SIDFlow similarity data; SID files stay in your selected local corpus.")
+            } actions: {
+                Button("Download Recommendation Data") {
+                    Task { await store.downloadLatest() }
+                }
+                .disabled(store.isLoading)
+                Link(
+                    "View SIDFlow data release",
+                    destination: URL(string: "https://github.com/chrisgleissner/sidflow-data/releases")!)
+                Text(store.status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            recommendationsList
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem { Text(targetLabel).foregroundStyle(.secondary) }
-        ToolbarItem {
-            Button {
-                Task { await store.downloadLatest() }
-            } label: {
-                Label("Update Data", systemImage: "arrow.down.circle")
+        if localLibrary.isReady {
+            ToolbarItem {
+                Button {
+                    Task { await store.downloadLatest() }
+                } label: {
+                    Label("Update Data", systemImage: "arrow.down.circle")
+                }
+                .disabled(store.isLoading)
+                .help("Download the latest recommendation data")
             }
-            .disabled(store.isLoading)
-        }
-        ToolbarItem {
-            Button {
-                showingHistory = true
-            } label: {
-                Label("Playback History", systemImage: "clock.arrow.circlepath")
+            ToolbarItem {
+                Button {
+                    showingHistory = true
+                } label: {
+                    Label("Playback History", systemImage: "clock.arrow.circlepath")
+                }
+                .help("Show SID Station playback history")
             }
         }
     }
@@ -93,7 +133,7 @@ struct SIDRadioView: View {
                 ContentUnavailableView(
                     "Like an HVSC Tune First",
                     systemImage: "heart",
-                    description: Text("In the HVSC SID Browser, select a tune and choose “Like for SID Station.”"))
+                    description: Text("In the HVSC Browser, select a tune and choose “Like for SID Station.”"))
             } else if queue.isEmpty {
                 ContentUnavailableView(
                     "No More Recommendations",
@@ -113,6 +153,17 @@ struct SIDRadioView: View {
                     .padding(.vertical, 8)
                 }
                 List(Array(queue.enumerated()), id: \.element.id) { _, recommendation in
+                    let isLiked = store.likedKeys.contains(recommendation.key)
+                    let localTune = localLibrary.tunes.first {
+                        $0.relativePath.caseInsensitiveCompare(
+                            recommendation.key.sidPath) == .orderedSame
+                    }
+                    let isInPlaylist = localTune.map { tune in
+                        localLibrary.playlist.contains { entry in
+                            entry.relativePath.caseInsensitiveCompare(
+                                tune.relativePath) == .orderedSame
+                        }
+                    } ?? false
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(recommendation.key.filename)
@@ -130,10 +181,13 @@ struct SIDRadioView: View {
                         Button {
                             store.like(recommendation.key)
                         } label: {
-                            Image(systemName: "heart")
+                            Image(systemName: isLiked ? "heart.fill" : "heart")
                         }
                         .buttonStyle(.borderless)
-                        .help("Like this tune")
+                        .foregroundStyle(isLiked ? .red : .primary)
+                        .help(isLiked
+                            ? "This tune is in your SID Station likes"
+                            : "Like this tune")
                         Button {
                             store.skip(recommendation.key)
                         } label: {
@@ -155,6 +209,22 @@ struct SIDRadioView: View {
                         }
                         .buttonStyle(.borderless)
                         .help("Remove from queue")
+                        if let localTune {
+                            Button {
+                                localLibrary.addToPlaylist(localTune)
+                            } label: {
+                                Image(systemName: isInPlaylist
+                                    ? "text.badge.checkmark"
+                                    : "text.badge.plus")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(
+                                isInPlaylist ? Color.accentColor : Color.primary)
+                            .disabled(isInPlaylist)
+                            .help(isInPlaylist
+                                ? "This tune is already in the local playlist"
+                                : "Add this tune to the local playlist")
+                        }
                         Button(currentRecommendation?.id == recommendation.id ? "Playing" : "Play") {
                             start(at: recommendation)
                         }
@@ -194,6 +264,61 @@ struct SIDRadioView: View {
                     "More like this: SIDFlow data by Chris Gleissner",
                     destination: URL(string: "https://github.com/chrisgleissner/sidflow")!)
                     .font(.caption)
+            }
+            .font(.callout)
+            .padding(12)
+        }
+    }
+
+    private var playlistContent: some View {
+        VStack(spacing: 0) {
+            if localLibrary.playlist.isEmpty {
+                ContentUnavailableView(
+                    "Local Playlist Is Empty",
+                    systemImage: "music.note.list",
+                    description: Text("Add tunes in the HVSC Browser, then play them here in their saved order."))
+            } else {
+                List(Array(localLibrary.playlist.enumerated()), id: \.element.id) { index, entry in
+                    let tune = localLibrary.tune(for: entry)
+                    let isCurrent = playlistCurrentIndex == index
+                    Button {
+                        startPlaylist(at: index)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: tune == nil ? "music.note.slash" : "music.note")
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(tune?.title ?? entry.relativePath)
+                                    .font(.headline)
+                                    .lineLimit(1)
+                                Text(entry.relativePath)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if isCurrent {
+                                Text(playlistIsLoading ? "Loading" : "Playing")
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(tune == nil || playlistIsLoading || targetDevice == nil)
+                    .foregroundStyle(tune == nil ? .secondary : .primary)
+                    // A selected unavailable row remains visibly muted rather
+                    // than taking on the normal actionable accent treatment.
+                    .listRowBackground(
+                        isCurrent ? Color.gray.opacity(0.18) : Color.clear)
+                }
+            }
+            Divider()
+            playlistTransport
+            Divider()
+            HStack {
+                if playlistIsLoading { ProgressView().controlSize(.small) }
+                Text(playbackStatus ?? "Plays the local playlist in saved order.")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
             }
             .font(.callout)
             .padding(12)
@@ -241,6 +366,43 @@ struct SIDRadioView: View {
         .frame(width: 460, height: 420)
     }
 
+    private var playlistTransport: some View {
+        HStack(spacing: 12) {
+            Button {
+                if playlistCurrentIndex == nil {
+                    startPlaylist(at: 0)
+                } else {
+                    startPlaylist(at: playlistCurrentIndex!)
+                }
+            } label: {
+                Label("Play", systemImage: "play.fill")
+            }
+            .disabled(localLibrary.playlist.isEmpty || targetDevice == nil)
+            Button { previousPlaylist() } label: {
+                Image(systemName: "backward.fill")
+            }
+            .disabled(playlistCurrentIndex == nil)
+            Button { nextPlaylist() } label: {
+                Image(systemName: "forward.fill")
+            }
+            .disabled(localLibrary.playlist.isEmpty)
+            Button { loop.toggle() } label: { Image(systemName: "repeat") }
+                .foregroundStyle(loop ? Color.accentColor : Color.primary)
+                .help(loop ? "Disable playlist loop" : "Loop the playlist")
+            Button { stopPlaylist() } label: { Image(systemName: "stop.fill") }
+                .disabled(playlistTask == nil)
+            Spacer()
+            if let entry = playlistCurrentIndex.flatMap({
+                localLibrary.playlist.indices.contains($0) ? localLibrary.playlist[$0] : nil
+            }) {
+                Text("Now: \(localLibrary.tune(for: entry)?.filename ?? entry.relativePath)")
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+    }
+
     private var currentRecommendation: SIDFlowRecommendation? {
         currentIndex.flatMap { queue.indices.contains($0) ? queue[$0] : nil }
     }
@@ -265,17 +427,24 @@ struct SIDRadioView: View {
         HStack(spacing: 12) {
             Button { currentIndex == nil ? start(at: queue.first) : resume() } label: {
                 Label(isPaused ? "Resume" : "Play", systemImage: isPaused ? "play.fill" : "play.fill")
-            }.disabled(queue.isEmpty || targetDevice == nil)
+            }
+            .disabled(queue.isEmpty || targetDevice == nil)
+            .help(isPaused ? "Resume playback" : "Play the selected station queue")
             Button { previous() } label: { Image(systemName: "backward.fill") }
                 .disabled(currentIndex == nil)
+                .help("Play the previous tune")
             Button { next() } label: { Image(systemName: "forward.fill") }
                 .disabled(queue.isEmpty)
+                .help("Play the next tune")
             Button { shuffle.toggle() } label: { Image(systemName: "shuffle") }
                 .foregroundStyle(shuffle ? Color.accentColor : Color.primary)
+                .help(shuffle ? "Disable shuffle" : "Enable shuffle")
             Button { loop.toggle() } label: { Image(systemName: "repeat") }
                 .foregroundStyle(loop ? Color.accentColor : Color.primary)
+                .help(loop ? "Disable loop" : "Enable loop")
             Button { pause() } label: { Image(systemName: "pause.fill") }
                 .disabled(!isPlaying || isPaused)
+                .help("Pause playback")
             Spacer()
             if let currentRecommendation {
                 VStack(alignment: .leading, spacing: 1) {
@@ -325,14 +494,17 @@ struct SIDRadioView: View {
         isPlaying = true
         isLoadingTrack = true
         isPaused = false
-        playbackStatus = "Fetching \(recommendation.key.filename) from HVSC…"
+        playbackStatus = "Loading \(recommendation.key.filename) from local HVSC…"
         advanceTask = Task {
             defer { isPlaying = false }
             let session = sessionProvider(device)
             do {
-                // This value stays in this task only. Neither the radio nor
-                // HVSC client writes SID data to Application Support.
-                let sid = try await hvsc.downloadSID(for: recommendation.key)
+                guard let tune = localLibrary.tunes.first(where: {
+                    $0.relativePath.caseInsensitiveCompare(recommendation.key.sidPath) == .orderedSame
+                }) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let sid = try localLibrary.data(for: tune)
                 let header = try SIDHeader(data: sid)
                 guard !Task.isCancelled else { return }
                 nowPlayingHeader = header
@@ -385,6 +557,101 @@ struct SIDRadioView: View {
                 playbackStatus = "Play failed: \(error.localizedDescription)"
                 next()
             }
+        }
+    }
+
+    private func startPlaylist(at requestedIndex: Int) {
+        guard let device = targetDevice else { return }
+        playlistTask?.cancel()
+        playlistTask = Task {
+            var index = requestedIndex
+            while !Task.isCancelled {
+                guard localLibrary.playlist.indices.contains(index) else {
+                    if loop, !localLibrary.playlist.isEmpty {
+                        index = 0
+                    } else {
+                        playlistCurrentIndex = nil
+                        playlistIsLoading = false
+                        playbackStatus = "Reached the end of the local playlist."
+                        playlistTask = nil
+                        return
+                    }
+                    continue
+                }
+                playlistCurrentIndex = index
+                let entry = localLibrary.playlist[index]
+                guard let tune = localLibrary.tune(for: entry) else {
+                    playbackStatus = "Skipped unavailable playlist entry: \(entry.relativePath)"
+                    index += 1
+                    continue
+                }
+                playlistIsLoading = true
+                playbackStatus = "Loading \(tune.filename) from local HVSC…"
+                let session = sessionProvider(device)
+                do {
+                    let sid = try localLibrary.data(for: tune)
+                    let header = try SIDHeader(data: sid)
+                    guard !Task.isCancelled else { return }
+                    nowPlayingHeader = header
+                    guard await session.loadData(
+                        sid, filename: tune.filename, songNumber: tune.startSong,
+                        onUploadStarted: {
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(150))
+                                session.audioReceiver.volume = Float(settings.volume)
+                            }
+                        }) != nil else {
+                        playbackStatus = "The Ultimate did not accept \(tune.filename); skipped."
+                        index += 1
+                        continue
+                    }
+                    playlistIsLoading = false
+                    let duration = library.durations(for: sid)?
+                        .dropFirst(max(0, tune.startSong - 1)).first
+                        .map(Double.init)
+                        ?? settings.sidRadioFallbackDurationSeconds * 1_000
+                    nowPlayingDurationMilliseconds = Int(duration)
+                    nowPlayingUsesFallbackDuration = library.durations(for: sid)?
+                        .dropFirst(max(0, tune.startSong - 1)).first == nil
+                    playbackStatus = "Playing \(tune.filename)."
+                    await fadeOut(
+                        session: session, totalDurationMilliseconds: Int(duration))
+                    guard !Task.isCancelled else { return }
+                    session.audioReceiver.volume = Float(settings.volume)
+                    index += 1
+                } catch {
+                    session.audioReceiver.volume = Float(settings.volume)
+                    playlistIsLoading = false
+                    playbackStatus = "Skipped \(tune.filename): \(error.localizedDescription)"
+                    index += 1
+                }
+            }
+        }
+    }
+
+    private func nextPlaylist() {
+        let next = (playlistCurrentIndex ?? -1) + 1
+        if localLibrary.playlist.indices.contains(next) {
+            startPlaylist(at: next)
+        } else if loop {
+            startPlaylist(at: 0)
+        } else {
+            stopPlaylist()
+            playbackStatus = "Reached the end of the local playlist."
+        }
+    }
+
+    private func previousPlaylist() {
+        guard let playlistCurrentIndex else { return }
+        startPlaylist(at: max(0, playlistCurrentIndex - 1))
+    }
+
+    private func stopPlaylist() {
+        playlistTask?.cancel()
+        playlistTask = nil
+        playlistIsLoading = false
+        if let device = targetDevice {
+            sessionProvider(device).audioReceiver.volume = Float(settings.volume)
         }
     }
 
@@ -480,6 +747,7 @@ struct SIDRadioView: View {
     private func stop() {
         advanceTask?.cancel()
         advanceTask = nil
+        stopPlaylist()
         isLoadingTrack = false
         if let device = targetDevice {
             sessionProvider(device).audioReceiver.volume = Float(settings.volume)

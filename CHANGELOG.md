@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.127b — 2026-08-23
+
+### Added
+
+- **HVSC Browser.** Choose, install, update, and locally index an extracted High Voltage SID Collection corpus; search local PSID/RSID metadata, inspect tune details, manage a playlist, and play selected SIDs on the chosen Ultimate without using HVSC search, detail, or SID-download APIs.
+- **SID Station improvements.** Use the local HVSC corpus for playback, with clearer setup guidance and playlist handoff from the HVSC Browser.
+- **KAOS rhythm analysis.** Beat detection now combines raw spectral onset evidence with SID register activity, separates immediate impact pulses from the tempo clock, and keeps scene timing stable through sparse or noisy passages.
+- **Release packaging updates.** The app, README, Help, and release script now consistently identify this release as 0.127b (build 127).
+
+### Improved
+
+- **HVSC installation safety.** Downloaded archives are staged, validated, and extracted with the bundled verified 7-Zip tool; failed installs preserve the previous compatible corpus.
+- **HVSC playback metadata.** Local indexing and Songlengths.md5 handling expose richer tune metadata while keeping SID files local and avoiding unnecessary network access.
+
 ## 0.126b — 2026-08-22
 
 ### Added
@@ -57,7 +71,7 @@
 
 ### Added
 
-- **HVSC SID Browser.** Search the High Voltage SID Collection with the website’s interactive search flow, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download and play a selected SID on the chosen Ultimate or **All Connected C64s**. Searches are debounced, cancellable, and never crawl or bulk-index HVSC. Build a persistent playlist, reorder/remove entries, and double-click either a result or playlist entry to play it.
+- **HVSC Browser.** Search the High Voltage SID Collection with the website’s interactive search flow, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download and play a selected SID on the chosen Ultimate or **All Connected C64s**. Searches are debounced, cancellable, and never crawl or bulk-index HVSC. Build a persistent playlist, reorder/remove entries, and double-click either a result or playlist entry to play it.
 - **Songlengths.md5 support.** The HVSC browser can update or import the current song-length database, validate it off the main thread, retain the last valid cache on failure, and display full-file-MD5 matched per-subtune durations for downloaded SIDs.
 - **Multi-SID upload and configuration checks.** SID uploads now use the Ultimate API’s documented multipart `sid` attachment. The HVSC browser compares a tune’s 2SID/3SID requirements with the target’s configured sockets and offers a user-confirmed address Fix only for an already enabled/detected second SID.
 - **KAOS SID visualization.** A hybrid register/audio acid-house scene library that infers beat/BPM/pattern structure from SID gate/control and `$D418` events, blends real post-mix energy, and jump-cuts a large procedural library: neon grids/tunnels, dancers, wireframe C64/floppy/cassette/turntable motifs, hyperspace, raster storms, checkerboards, scope/VU walls, and sparse screen-filling house-music typography.

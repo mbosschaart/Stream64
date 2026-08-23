@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.126b}"
-BUILD_NUMBER="${BUILD_NUMBER:-126}"
+VERSION="${VERSION:-0.127b}"
+BUILD_NUMBER="${BUILD_NUMBER:-127}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
     arm64|x86_64) ;;
@@ -75,6 +75,14 @@ sign_app_developer_id() {
         --entitlements "$ENTITLEMENTS" \
         --sign "$CODESIGN_IDENTITY" \
         "$APP_BUNDLE/Contents/MacOS/Stream64"
+    if [[ -f "$APP_BUNDLE/Contents/Resources/hvsc-7zz" ]]; then
+        codesign \
+            --force \
+            --options runtime \
+            --timestamp \
+            --sign "$CODESIGN_IDENTITY" \
+            "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
+    fi
     codesign \
         --force \
         --options runtime \
@@ -163,6 +171,12 @@ cp "$BIN_DIR/Stream64_Stream64.bundle/logofactuur.png" \
     "$APP_BUNDLE/Contents/Resources/logofactuur.png"
 cp "$BIN_DIR/Stream64_Stream64.bundle/Stream64logo.png" \
     "$APP_BUNDLE/Contents/Resources/Stream64logo.png"
+cp "$BIN_DIR/Stream64_Stream64.bundle/hvsc-7zz" \
+    "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
+chmod 755 "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
+mkdir -p "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses"
+cp "$BIN_DIR/Stream64_Stream64.bundle/7-Zip-License.txt" \
+    "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses/7-Zip-License.txt"
 KAOS_ASSETS=(
     kaos-1541.png
     kaos-c64.png

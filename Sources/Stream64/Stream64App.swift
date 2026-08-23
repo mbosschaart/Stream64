@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.126b"
+            ?? "0.127b"
     }
 }
 
@@ -305,6 +305,8 @@ struct Stream64App: App {
     @StateObject private var assembly64Library = Assembly64LibraryStore()
     /// Optional local Songlengths.md5 cache survives HVSC window recreation.
     @StateObject private var hvscLibrary = HVSCLibraryStore()
+    /// User-selected, fully local HVSC corpus and metadata index.
+    @StateObject private var localHVSCLibrary = HVSCLocalLibrary()
     /// Optional verified SIDFlow similarity data plus Stream64-owned radio
     /// likes/skips/history. SID files are never cached here.
     @StateObject private var sidFlowRecommendations = SIDFlowRecommendationStore()
@@ -330,6 +332,7 @@ struct Stream64App: App {
                 sessionManager: sessionManager,
                 assembly64Library: assembly64Library,
                 hvscLibrary: hvscLibrary,
+                localHVSCLibrary: localHVSCLibrary,
                 sidFlowRecommendations: sidFlowRecommendations)
         }()
         WindowGroup("Stream64") {
@@ -348,6 +351,7 @@ struct Stream64App: App {
                         sessionManager: sessionManager,
                         assembly64Library: assembly64Library,
                         hvscLibrary: hvscLibrary,
+                        localHVSCLibrary: localHVSCLibrary,
                         sidFlowRecommendations: sidFlowRecommendations)
                 }
                 .task {
@@ -383,7 +387,7 @@ struct Stream64App: App {
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 Divider()
-                Button("Search HVSC…") {
+                Button("HVSC Browser…") {
                     Stream64ToolWindows.showHVSC()
                 }
                 .keyboardShortcut("h", modifiers: [.command, .shift])

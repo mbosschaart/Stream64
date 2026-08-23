@@ -1427,9 +1427,9 @@ struct ViewerSessionToolbar: ToolbarContent {
             Button {
                 Stream64ToolWindows.showHVSC()
             } label: {
-                Label("HVSC", systemImage: "music.note.list")
+                Label("HVSC Browser", systemImage: "music.note.list")
             }
-            .help("Search High Voltage SID Collection and play SIDs")
+            .help("Browse your local High Voltage SID Collection and play SIDs")
 
             Button {
                 Stream64ToolWindows.showSIDRadio()

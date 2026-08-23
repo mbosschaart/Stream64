@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.126b-purple)
+![Version](https://img.shields.io/badge/version-0.127b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -26,8 +26,8 @@ Designed by Martijn Bosschaart, 2026.
 - **Audio output device picker** — choose which Mac speaker/headphones Stream64 uses locally (independent of the system default and of AirPlay)
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — a simplified Discover-first library with native Demo, Games, Graphics, Music, OneFile Demos, and Tools Top 200 lists, Recent Releases, rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
-- **HVSC SID browser** — interactive, rate-limited search of High Voltage SID Collection’s web session; browse dedicated 2-SID and 3-SID collections, inspect PSID/RSID, PAL/NTSC and multi-SID requirements, then download-and-play a SID on one Ultimate or **All Connected C64s**; persistent playlists, optional `Songlengths.md5` updates, validated per-subtune durations, and transient-503 retry support
-- **SID Station** — a random-playing personal station built from your liked HVSC SIDs and published SIDFlow similarity data; its persistent history and diversity-aware queue avoid immediate repeats, it fetches each SID just in time, uses Songlengths.md5 (with a configurable fallback) to advance, and can fade local output before switching tracks
+- **HVSC Browser** — choose an extracted HVSC corpus on your Mac; Stream64 indexes PSID/RSID headers and paths locally, searches full local metadata, and plays local SID files without HVSC search/detail/download APIs. It checks only `https://hvsc.de/api/v1/version` to announce releases.
+- **SID Station** — a random-playing personal station built from your liked local HVSC SIDs and published SIDFlow similarity data; its persistent history and diversity-aware queue avoid immediate repeats, resolves tunes from the selected corpus, uses Songlengths.md5 (with a configurable fallback) to advance, and can fade local output before switching tracks
 - **Movie recording** — save QuickTime `.mov` recordings with AAC audio from either the received indexed source stream or the active Metal-filtered viewer. Filtered exports can use fixed 4:3 or viewer-matched geometry and compact H.264 or high-gradient-quality ProRes 422 HQ; if no active Metal viewer can provide a capture target, recording safely falls back to Source
 - **Stream Health diagnostics** — an optional overlay shows video/audio receive rates and rejects, audio buffering/underruns, renderer queue/GPU pressure, and recording queue/drop state without disturbing the live viewer
 - **Palette Library** — create, name, edit, and delete shared custom 16-colour C64 palettes; select one per device alongside Pepto, Colodore, and VICE
@@ -68,6 +68,25 @@ Browse any configured Ultimate or mounted Mac volume in either pane, then queue 
 - macOS 14 (Sonoma) or newer, Apple Silicon or Intel with a Metal-capable GPU
 - Ultimate 64/Elite firmware **3.11+**, or C64 Ultimate firmware **1.1+**, on the same network
 - UDP path from device to Mac (no firewall blocking the stream ports)
+
+## HVSC Browser
+
+Choose an extracted corpus in **File → HVSC Browser…**, or use **Install HVSC**
+after checking a release. The installer asks you to choose a destination and
+downloads only the full/update URL supplied by
+`https://hvsc.de/api/v1/version`; it does not use HVSC search/detail/SID APIs
+or construct download URLs itself. Downloads are streamed to a temporary file,
+show progress, and can be cancelled while downloading.
+
+Before extraction, Stream64 rejects archive paths containing traversal,
+absolute paths, links, or case-folded duplicates. It extracts into a
+destination-local staging directory using only the bundled, SHA-256-checked
+`hvsc-7zz`, then rejects symlinks, aliases, special files, duplicate paths,
+and layouts without `MUSICIANS` and `.sid` files. Only after that validation
+and local indexing succeeds does it activate the corpus as `HVSC`; updates
+require a compatible Stream64-managed installation and preserve the previous
+corpus if activation fails. Stream64 never falls back to a PATH-discovered
+`7z`, `7zz`, Homebrew package, or shell tool.
 
 ## Upcoming Ultimate Firmware 3.15
 
@@ -328,10 +347,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.126b BUILD_NUMBER=126 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.127b BUILD_NUMBER=127 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.126b BUILD_NUMBER=126 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.127b BUILD_NUMBER=127 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

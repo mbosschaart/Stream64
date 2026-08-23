@@ -212,6 +212,10 @@ final class SIDEngine: ObservableObject {
     private var workingFilterStates: [SIDFilterRegisters] = []
     private var workingRegisterActivity = SIDRegisterActivity(chipCount: 1)
     private var workingKAOSRhythm = KAOSRhythmState()
+    /// Latest raw FFT evidence, kept private because KAOS publishes its
+    /// compact rhythm state at the normal bounded engine cadence instead of
+    /// causing an observable update per audio packet.
+    private var latestKAOSSpectrum = SIDSpectrumFeatures.silence
     private var lowpassStates: [Float] = []
     private var workingPostMixLowpassSamplesByChip: [[Float]] = []
     private var chipBaseAddresses: [UInt16] = [0xD400]
@@ -514,6 +518,7 @@ final class SIDEngine: ObservableObject {
         filterStates = workingFilterStates
         workingKAOSRhythm = KAOSRhythmState()
         kaosRhythm = workingKAOSRhythm
+        latestKAOSSpectrum = .silence
         lissajousBuffer.removeAll(keepingCapacity: true)
         lissajousPoints = []
         spectrogramHistory.removeAll(keepingCapacity: true)
@@ -594,10 +599,14 @@ final class SIDEngine: ObservableObject {
             lissajousPoints = lissajousBuffer
         }
 
-        if aggregateNeeds.usesSpectrumBars, let bars = spectrumAnalyzer.ingest(mono) {
-            spectrumBars = bars
+        if aggregateNeeds.usesSpectrumBars,
+           let frame = spectrumAnalyzer.ingestFrame(mono) {
+            spectrumBars = frame.bars
+            if aggregateNeeds.needsKAOSRhythm {
+                latestKAOSSpectrum = frame.features
+            }
             if aggregateNeeds.usesSpectrogramHistory {
-                spectrogramHistory.append(bars)
+                spectrogramHistory.append(frame.bars)
                 if spectrogramHistory.count > Self.spectrogramColumns {
                     spectrogramHistory.removeFirst(spectrogramHistory.count - Self.spectrogramColumns)
                 }
@@ -708,8 +717,10 @@ final class SIDEngine: ObservableObject {
             if aggregateNeeds.needsKAOSRhythm {
                 workingKAOSRhythm.advance(
                     timestamp: now.timeIntervalSinceReferenceDate,
-                    events: kaosEvents,
-                    spectrumBars: spectrumBars,
+                    evidence: KAOSRhythmEvidence(
+                        events: kaosEvents,
+                        spectrum: latestKAOSSpectrum,
+                        spectrumBars: spectrumBars),
                     channels: workingChannels)
                 kaosRhythm = workingKAOSRhythm
             }
@@ -774,8 +785,10 @@ final class SIDEngine: ObservableObject {
         if aggregateNeeds.needsKAOSRhythm {
             workingKAOSRhythm.advance(
                 timestamp: now.timeIntervalSinceReferenceDate,
-                events: kaosEvents,
-                spectrumBars: spectrumBars,
+                evidence: KAOSRhythmEvidence(
+                    events: kaosEvents,
+                    spectrum: latestKAOSSpectrum,
+                    spectrumBars: spectrumBars),
                 channels: workingChannels)
             kaosRhythm = workingKAOSRhythm
         }

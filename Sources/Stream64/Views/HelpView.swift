@@ -66,7 +66,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
         case .files: return "Loading Files"
         case .fileManager: return "Commander File Manager"
         case .assembly64: return "Assembly64 Library"
-        case .hvsc: return "HVSC SID Browser"
+        case .hvsc: return "HVSC Browser"
         case .multiDevice: return "Multiple Devices"
         case .machineControl: return "Machine Control"
         case .driveConfigMemory: return "Drive Bay, Config & Memory"
@@ -489,59 +489,48 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     """
 
     private static let hvscText = """
-    **HVSC SID Browser** searches the High Voltage SID Collection and sends a \
-    selected `.sid` directly to the Ultimate's built-in SID player. Open it \
-    from the toolbar, the picture's right-click menu, **Stream → HVSC SID \
-    Browser…**, or **File → Search HVSC…** (⇧⌘H).
+    **HVSC Browser** indexes an extracted High Voltage SID Collection on \
+    your Mac and sends selected local `.sid` files to the Ultimate's built-in \
+    SID player. Open it \
+    from the toolbar, the picture's right-click menu, **Stream → HVSC \
+    Browser…**, or **File → HVSC Browser…** (⇧⌘H).
 
-    **Interactive search only** — Stream64 uses the same search, tune-detail, \
-    and one-file download requests as the HVSC website. It does not crawl, \
-    bulk-index, prefetch, or automatically page through HVSC. Searches wait \
-    briefly while you type, require at least three characters, and cancel \
-    obsolete requests. Transient service-unavailable responses are retried \
-    before Stream64 reports a search failure.
+    **Local corpus only** — choose the top-level folder of an already extracted \
+    HVSC release, or select **Install HVSC** after checking a release. The \
+    installer asks for a destination and uses only the full/update archive URL \
+    in the public `https://hvsc.de/api/v1/version` manifest. Stream64 indexes \
+    the paths and PSID/RSID headers in the background, then searches and plays \
+    only those files. It uses no HVSC search, detail, or SID-download API.
 
-    **Filters** narrow results by title, author, release, filename, SID model, \
-    video standard, and year. Select a result to inspect its PSID/RSID format, \
+    Search matches local title, author, release, filename, and path metadata. \
+    Select a result to inspect its PSID/RSID format, \
     subtune count, PAL/NTSC setting, SID model, and additional SID-chip \
     requirements. RSID, 2SID, and 3SID tunes are flagged; the Ultimate's SID \
     player remains the final compatibility authority.
 
-    **SID compatibility** — Stream64 checks the selected target's configured \
-    SID sockets before playing multi-SID tunes. A warning pill identifies a \
-    missing/incorrect chip model or address. When an enabled, detected second \
-    SID only has the wrong address, **Fix** changes that socket address to the \
-    value declared by the SID and saves the Ultimate configuration. It never \
-    enables hardware or changes a physical SID's model automatically.
+    **Play** — use the button to validate the selected local SID and upload it \
+    once to the selected device. The browser reports Ultimate playback errors.
 
-    **Play** — use the button or double-click a selected result — downloads \
-    the SID only after that explicit action, validates its PSID/RSID header, \
-    then uploads it once to the selected device or to \
-    **All Connected C64s**. The browser reports any Ultimate playback error \
-    per target.
-
-    **Playlist** — add a selected tune to the persistent playlist, then use \
-    the playlist toolbar button to play, remove, or move entries up/down. \
-    Double-clicking a playlist entry plays it on the current target. Stream64 \
-    does not auto-advance yet: the Ultimate SID runner does not expose a \
-    playback-complete event.
-
-    **Song lengths** — choose **Song Lengths → Update Songlengths Database** \
-    to retrieve the current HVSC `Songlengths.md5` database, or import a \
-    previously downloaded copy. Stream64 validates and caches its entries \
-    atomically; a failed update keeps the last working cache. When a selected \
-    downloaded SID has a full-file MD5 match, its per-subtune durations appear \
+    **Song lengths** — import a local `Songlengths.md5` database. Stream64 \
+    validates and caches its entries atomically; a failed import keeps the \
+    last working cache. When a selected local SID has a full-file MD5 match, \
+    its per-subtune durations appear \
     in the playback panel. Song lengths are informational and can differ when \
     a PAL/NTSC tune runs on a different video standard.
 
-    HVSC is an independent collection. Stream64 is not affiliated with HVSC; \
-    use **Open HVSC** to visit its official website.
+    **Safe installation** — downloads stream to a temporary file with progress \
+    and can be cancelled before extraction. Stream64 rejects unsafe archive \
+    paths and links before extraction, validates the staged output for links, \
+    aliases, special files, duplicate paths, `MUSICIANS`, and SID files, then \
+    activates only a valid indexed corpus. Updates require a compatible \
+    Stream64-managed installation. Extraction uses the signed, SHA-256-checked \
+    bundled `hvsc-7zz`; Stream64 never invokes PATH-discovered archive tools.
 
     **SID Station** — open **SID Station…** from the main toolbar or File \
     menu to start a random-playing personal station based on the HVSC SIDs you \
     have liked. Recommendations use published [SIDFlow](https://github.com/chrisgleissner/sidflow) \
-    data by Chris Gleissner; the next SID is fetched just in time and is never \
-    stored. Songlengths.md5 drives automatic advance when an entry exists, \
+    data by Chris Gleissner; the next SID is resolved from your local corpus. \
+    Songlengths.md5 drives automatic advance when an entry exists, \
     with a configurable fallback otherwise. Play, Previous, Next, Shuffle, \
     and Loop control the selected C64; the optional end-of-track fade avoids \
     abrupt local audio switches.

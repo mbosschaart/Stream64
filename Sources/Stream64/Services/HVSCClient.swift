@@ -1,12 +1,10 @@
 import CryptoKit
 import Foundation
 
-/// Interactive client for the endpoints used by HVSC's own web application.
-///
-/// This deliberately has no paging/crawl API: callers submit one user-entered
-/// search, inspect one result, and explicitly download one SID to play.
+/// Legacy metadata types retained for existing persisted Songlengths/playlist
+/// data. Live HVSC browsing uses `HVSCLocalLibrary`, not website SID APIs.
 struct HVSCClient: Sendable {
-    static let baseURL = URL(string: "https://www.hvsc.c64.org")!
+    static let baseURL = HVSCManifestClient.manifestURL
     static let maximumSearchBytes: Int64 = 2 * 1024 * 1024
     static let maximumSIDBytes: Int64 = 2 * 1024 * 1024
     static let maximumSonglengthBytes: Int64 = 5 * 1024 * 1024
@@ -177,6 +175,7 @@ struct HVSCClient: Sendable {
         case invalidContentType(String?)
         case invalidSID(String)
         case malformedResponse
+        case localLibraryRequired
 
         var errorDescription: String? {
             switch self {
@@ -194,6 +193,8 @@ struct HVSCClient: Sendable {
                 return "The downloaded file is not a supported SID: \(reason)"
             case .malformedResponse:
                 return "HVSC returned an invalid response."
+            case .localLibraryRequired:
+                return "Choose an extracted HVSC folder in the local library."
             }
         }
     }
@@ -202,8 +203,8 @@ struct HVSCClient: Sendable {
         query: String,
         filters: SearchFilters = .init()
     ) async throws -> [SearchResult] {
-        let url = try Self.searchURL(query: query, filters: filters)
-        return try await get(url, maximumBytes: Self.maximumSearchBytes)
+        _ = try Self.searchURL(query: query, filters: filters)
+        throw ClientError.localLibraryRequired
     }
 
     /// Retrieves HVSC's conventionally named multi-SID sets through one
@@ -224,46 +225,29 @@ struct HVSCClient: Sendable {
     ) throws -> URL {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 3 else { throw ClientError.emptyQuery }
-
-        var components = URLComponents(
-            url: Self.baseURL.appendingPathComponent("/api/v1/sids"),
-            resolvingAgainstBaseURL: false)!
-        var items = [URLQueryItem(name: "q", value: trimmed)]
-        if !filters.field.rawValue.isEmpty {
-            items.append(URLQueryItem(name: "type", value: filters.field.rawValue))
-        }
-        if !filters.model.rawValue.isEmpty {
-            items.append(URLQueryItem(name: "model", value: filters.model.rawValue))
-        }
-        if !filters.clock.rawValue.isEmpty {
-            items.append(URLQueryItem(name: "clock", value: filters.clock.rawValue))
-        }
-        if let year = filters.year {
-            items.append(URLQueryItem(name: "year", value: String(year)))
-        }
-        components.queryItems = items
-        return components.url!
+        _ = filters
+        // Compatibility-only validation helper: no internal website URL is
+        // constructed or requested by the local-library implementation.
+        return HVSCManifestClient.manifestURL
     }
 
     func details(id: Int) async throws -> TuneDetail {
-        try await get(
-            Self.baseURL.appendingPathComponent("/api/v1/sids/\(id)"),
-            maximumBytes: Self.maximumSearchBytes)
+        _ = id
+        throw ClientError.localLibraryRequired
     }
 
     func collectionVersion() async throws -> CollectionVersion {
-        try await get(
-            Self.baseURL.appendingPathComponent("/api/v1/version/7z"),
-            maximumBytes: Self.maximumSearchBytes)
+        let manifest = try await HVSCManifestClient().fetch()
+        return CollectionVersion(
+            version: manifest.version,
+            update: .init(url: manifest.update.url),
+            complete: .init(url: manifest.complete.url))
     }
 
     /// Downloads one SID after an explicit user Play action.
     func downloadSID(id: Int) async throws -> Data {
-        let data = try await download(
-            Self.baseURL.appendingPathComponent("/download/sids/\(id)"),
-            maximumBytes: Self.maximumSIDBytes)
-        _ = try SIDHeader(data: data)
-        return data
+        _ = id
+        throw ClientError.localLibraryRequired
     }
 
     /// Resolves a SIDFlow `(sid_path, song_index)` key only when the user
@@ -274,29 +258,14 @@ struct HVSCClient: Sendable {
     ///
     /// This intentionally does not cache or prefetch SID files.
     func downloadSID(for key: SIDFlowTrackKey) async throws -> Data {
-        var filters = SearchFilters()
-        filters.field = .filename
-        let filename = (key.sidPath as NSString).lastPathComponent
-        let matches = try await search(query: filename, filters: filters)
-        let expectedPath = Self.normalizedHVSCPath(key.sidPath)
-        for result in matches.prefix(24) {
-            let detail = try await details(id: result.id)
-            guard Self.normalizedHVSCPath(detail.relativePath) == expectedPath else {
-                continue
-            }
-            return try await downloadSID(id: detail.id)
-        }
-        throw ClientError.invalidSID("HVSC could not resolve \(key.sidPath)")
+        _ = key
+        throw ClientError.localLibraryRequired
     }
 
     /// The current HVSC distribution exposes this document alongside STIL.
     /// It may be temporarily unavailable; callers retain the previous cache.
     func downloadSonglengths() async throws -> Data {
-        try await download(
-            Self.baseURL.appendingPathComponent(
-                "/download/C64Music/DOCUMENTS/Songlengths.md5"),
-            maximumBytes: Self.maximumSonglengthBytes,
-            requiresTextContent: true)
+        throw ClientError.localLibraryRequired
     }
 
     private func get<T: Decodable>(
@@ -662,23 +631,8 @@ final class HVSCLibraryStore: ObservableObject {
     }
 
     func updateSonglengths(using client: HVSCClient = HVSCClient()) async {
-        updateStatus = "Checking HVSC song lengths…"
-        do {
-            let version = try await client.collectionVersion()
-            updateStatus = "Downloading Songlengths.md5…"
-            let data = try await client.downloadSonglengths()
-            updateStatus = "Validating Songlengths.md5…"
-            let parsed = try await Task.detached(priority: .utility) {
-                try HVSCSonglengthDatabase.parse(data)
-            }.value
-            try installSonglengths(
-                parsed,
-                hvscVersion: version.version,
-                updatedAt: Date())
-            updateStatus = "Song lengths updated for HVSC #\(version.version)."
-        } catch {
-            updateStatus = "Song lengths were not updated: \(error.localizedDescription)"
-        }
+        _ = client
+        updateStatus = "Songlengths updates are local-only. Import Songlengths.md5 from your HVSC corpus."
     }
 
     func importSonglengths(from url: URL) {

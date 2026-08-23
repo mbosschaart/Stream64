@@ -3,6 +3,95 @@ import XCTest
 @testable import Stream64
 
 final class HVSCTests: XCTestCase {
+    func testLocalCollectionFiltersUseIndexedSIDHeaderCounts() {
+        let tunes = [
+            makeLocalTune(path: "One.sid", sidCount: 1),
+            makeLocalTune(path: "Two.sid", sidCount: 2),
+            makeLocalTune(path: "Three.sid", sidCount: 3),
+        ]
+
+        XCTAssertEqual(
+            HVSCLocalLibrary.filteredTunes(tunes, collection: .twoSID)
+                .map(\.relativePath),
+            ["Two.sid"])
+        XCTAssertEqual(
+            HVSCLocalLibrary.filteredTunes(tunes, collection: .threeSID)
+                .map(\.relativePath),
+            ["Three.sid"])
+        XCTAssertEqual(
+            HVSCLocalLibrary.filteredTunes(tunes, terms: ["three"], collection: .all)
+                .map(\.relativePath),
+            ["Three.sid"])
+    }
+
+    func testCompatibleUpdateRequiresManifestVersionMatch() {
+        let manifest = HVSCManifestClient.Manifest(
+            version: 84,
+            update: .init(
+                requiredVersion: 83,
+                url: URL(string: "https://hvsc.de/HVSC_83_to_84.7z")!),
+            complete: .init(
+                requiredVersion: nil,
+                url: URL(string: "https://hvsc.de/HVSC_84_AllOfIt.7z")!))
+
+        XCTAssertTrue(HVSCLocalLibrary.isCompatibleUpdate(
+            installedVersion: 83,
+            manifest: manifest))
+        XCTAssertFalse(HVSCLocalLibrary.isCompatibleUpdate(
+            installedVersion: 82,
+            manifest: manifest))
+    }
+
+    func testHVSCArchiveValidationRejectsTraversalLinksAndDuplicatePaths() {
+        XCTAssertThrowsError(try HVSCLocalLibrary.validateArchiveEntries([
+            .init(path: "../outside.sid", isLinkOrSpecial: false),
+        ]))
+        XCTAssertThrowsError(try HVSCLocalLibrary.validateArchiveEntries([
+            .init(path: "HVSC/MUSICIANS/A/Tune.sid", isLinkOrSpecial: true),
+        ]))
+        XCTAssertThrowsError(try HVSCLocalLibrary.validateArchiveEntries([
+            .init(path: "HVSC/MUSICIANS/A/Tune.sid", isLinkOrSpecial: false),
+            .init(path: "hvsc/musicians/a/tune.SID", isLinkOrSpecial: false),
+        ]))
+    }
+
+    func testHVSCExtractedCorpusRequiresMusiciansAndSIDFiles() throws {
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        try FileManager.default.createDirectory(
+            at: staging.appendingPathComponent("HVSC/MUSICIANS/A", isDirectory: true),
+            withIntermediateDirectories: true)
+        try Data([0]).write(to: staging.appendingPathComponent("HVSC/MUSICIANS/A/Test.sid"))
+
+        XCTAssertEqual(
+            try HVSCLocalLibrary.validatedCorpusRoot(in: staging).lastPathComponent,
+            "HVSC")
+
+        try FileManager.default.removeItem(at: staging.appendingPathComponent("HVSC/MUSICIANS/A/Test.sid"))
+        XCTAssertThrowsError(try HVSCLocalLibrary.validatedCorpusRoot(in: staging))
+    }
+
+    @MainActor
+    func testChoosingLocalHVSCRequiresC64MusicFolder() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent("C64Music/MUSICIANS", isDirectory: true),
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent("C64Music/DOCUMENTS", isDirectory: true),
+            withIntermediateDirectories: true)
+
+        let library = HVSCLocalLibrary()
+        library.chooseRoot(parent)
+        guard case let .failed(message) = library.status else {
+            return XCTFail("Expected parent folder to be rejected")
+        }
+        XCTAssertTrue(message.contains("C64Music"))
+    }
+
     func testSonglengthDatabaseParsesCurrentFormatAndMilliseconds() throws {
         let database = try HVSCSonglengthDatabase.parse(Data("""
         [Database]
@@ -92,6 +181,34 @@ final class HVSCTests: XCTestCase {
         XCTAssertEqual(reloaded.playlist.map(\.tune.title), ["Playlist Tune"])
     }
 
+    @MainActor
+    func testLocalPathPlaylistPersistsOrderAndRetainsUnavailableEntries() {
+        let playlistURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: playlistURL) }
+
+        let first = makeLocalTune(path: "MUSICIANS/A/First.sid", sidCount: 1)
+        let second = makeLocalTune(path: "MUSICIANS/B/Second.sid", sidCount: 1)
+        let library = HVSCLocalLibrary(playlistURL: playlistURL)
+        library.addToPlaylist(first)
+        library.addToPlaylist(second)
+        library.addToPlaylist(first)
+        library.movePlaylistEntry(from: 1, by: -1)
+
+        XCTAssertEqual(library.playlist.map(\.relativePath), [
+            "MUSICIANS/B/Second.sid",
+            "MUSICIANS/A/First.sid",
+        ])
+        XCTAssertNil(library.tune(for: library.playlist[0]))
+
+        let reloaded = HVSCLocalLibrary(playlistURL: playlistURL)
+        XCTAssertEqual(reloaded.playlist.map(\.relativePath), [
+            "MUSICIANS/B/Second.sid",
+            "MUSICIANS/A/First.sid",
+        ])
+    }
+
     func testSIDHeaderParsesPSIDv4AndAdditionalSIDs() throws {
         var data = Data(repeating: 0, count: 0x90)
         data.replaceSubrange(0..<4, with: Data("PSID".utf8))
@@ -177,7 +294,7 @@ final class HVSCTests: XCTestCase {
         XCTAssertEqual(detail.sidRequirements, "6581")
     }
 
-    func testHVSCSIDCollectionsUseVerifiedSearchTokensAndLocallyNarrowResults() throws {
+    func testLegacySearchAPIIsLocalOnlyAndResultsCanStillBeNarrowed() throws {
         var filters = HVSCClient.SearchFilters()
         filters.model = .mos8580
         filters.collection = .twoSID
@@ -185,22 +302,13 @@ final class HVSCTests: XCTestCase {
         let twoSIDURL = try HVSCClient.searchURL(
             query: try XCTUnwrap(filters.collection.searchToken),
             filters: filters)
-        let items = try XCTUnwrap(
-            URLComponents(url: twoSIDURL, resolvingAgainstBaseURL: false)?
-                .queryItems)
-        XCTAssertEqual(items.first(where: { $0.name == "q" })?.value, "2SID")
-        XCTAssertEqual(items.first(where: { $0.name == "model" })?.value, "8580")
+        XCTAssertEqual(twoSIDURL, HVSCManifestClient.manifestURL)
 
         filters.collection = .threeSID
         let threeSIDURL = try HVSCClient.searchURL(
             query: try XCTUnwrap(filters.collection.searchToken),
             filters: filters)
-        let threeSIDItems = try XCTUnwrap(
-            URLComponents(url: threeSIDURL, resolvingAgainstBaseURL: false)?
-                .queryItems)
-        XCTAssertEqual(
-            threeSIDItems.first(where: { $0.name == "q" })?.value,
-            "3SID")
+        XCTAssertEqual(threeSIDURL, HVSCManifestClient.manifestURL)
 
         let result = HVSCClient.SearchResult(
             id: 1,
@@ -367,6 +475,19 @@ final class HVSCTests: XCTestCase {
              "model8580Sid3":false,"sid3BaseAddress":null,
              "filePath":"/MUSICIANS/T/Test/"}
             """.utf8))
+    }
+
+    private func makeLocalTune(path: String, sidCount: Int) -> LocalHVSCTune {
+        .init(
+            relativePath: path,
+            title: path,
+            author: "Author",
+            released: "2026",
+            format: "PSID",
+            songs: 1,
+            startSong: 1,
+            sidRequirements: "\(sidCount)SID",
+            sidCount: sidCount)
     }
 }
 

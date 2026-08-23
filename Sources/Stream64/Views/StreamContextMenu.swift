@@ -20,6 +20,7 @@ struct StreamContextMenu: View {
     let display: DisplaySettings
     let input: InputSettings
     @EnvironmentObject var settings: AppSettings
+    @State private var isConnectedSnapshot = false
     /// Host view's power-off path (shows the confirmation dialog when the
     /// preference asks for it).
     let requestPowerOff: () -> Void
@@ -56,8 +57,9 @@ struct StreamContextMenu: View {
     }
 
     var body: some View {
+        Group {
         // Connection
-        if session.isConnected {
+        if isConnectedSnapshot {
             Button("Disconnect", systemImage: "bolt.slash") {
                 Task { await session.disconnect() }
             }
@@ -82,29 +84,29 @@ struct StreamContextMenu: View {
         Button("Reset C64", systemImage: "arrow.counterclockwise") {
             Task { await session.reset() }
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         Button(session.isPaused ? "Resume" : "Pause",
                systemImage: session.isPaused ? "play.fill" : "pause.fill") {
             Task { await session.togglePause() }
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         Menu("Power", systemImage: "power") {
             Button("Reboot Ultimate", systemImage: "power.circle") {
                 Task { await session.reboot() }
             }
-            .disabled(!session.isConnected)
+            .disabled(!isConnectedSnapshot)
             Button("Power Off…", systemImage: "power", role: .destructive) {
                 requestPowerOff()
             }
-            .disabled(!session.isConnected)
+            .disabled(!isConnectedSnapshot)
         }
 
         Button("Save Screenshot…", systemImage: "camera") {
             session.saveScreenshot()
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         Button(
             session.isRecording ? "Stop Recording" : "Record Movie…",
@@ -112,13 +114,13 @@ struct StreamContextMenu: View {
         ) {
             session.toggleRecording()
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         Button("Assembly64…", systemImage: "books.vertical") {
             Stream64ToolWindows.showAssembly64()
         }
 
-        Button("HVSC SID Browser…", systemImage: "music.note.list") {
+        Button("HVSC Browser…", systemImage: "music.note.list") {
             Stream64ToolWindows.showHVSC()
         }
 
@@ -129,28 +131,28 @@ struct StreamContextMenu: View {
         Button("Drive Bay…", systemImage: "externaldrive") {
             DriveBayWindowController.show(session: session)
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         Button("Ultimate Config…", systemImage: "gearshape.2") {
             UltimateConfigWindowController.show(session: session)
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         Button("Memory Console…", systemImage: "memorychip") {
             MemoryConsoleWindowController.show(session: session)
         }
-        .disabled(!session.isConnected)
+        .disabled(!isConnectedSnapshot)
 
         if session.supportsDebugFeatures {
             Button("Debug Trace…", systemImage: "waveform.path.ecg") {
                 DebugTraceWindowController.show(session: session)
             }
-            .disabled(!session.isConnected)
+            .disabled(!isConnectedSnapshot)
 
             Button("Ultimate Menu…", systemImage: "terminal") {
                 session.openTelnetMonitor()
             }
-            .disabled(!session.isConnected)
+            .disabled(!isConnectedSnapshot)
 
         }
 
@@ -158,7 +160,7 @@ struct StreamContextMenu: View {
         // capability probe settles. The window itself will report a trace
         // failure if this device ultimately lacks debug support.
         SIDVisualizationsMenu(session: session)
-            .disabled(!session.isConnected)
+            .disabled(!isConnectedSnapshot)
 
         Divider()
 
@@ -253,6 +255,12 @@ struct StreamContextMenu: View {
             Button("Recheck Input Capability") {
                 Task { await session.input.probeCapability() }
             }
+        }
+        }
+        .onAppear {
+            // Context-menu hosts deliberately do not observe DeviceSession;
+            // capture the live connection state once as the menu opens.
+            isConnectedSnapshot = session.isConnected
         }
     }
 

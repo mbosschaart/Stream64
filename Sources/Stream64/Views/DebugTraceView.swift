@@ -345,6 +345,7 @@ struct DebugTraceView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 170)
+            .help("Switch between the decoded trace table and memory map")
         }
 
         if model.displayMode == .memoryMap {

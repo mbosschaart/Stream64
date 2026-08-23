@@ -1,6 +1,25 @@
 import Accelerate
 import Foundation
 
+/// Un-normalized audio evidence retained alongside the display-oriented FFT
+/// bars. Unlike bars, these values are not auto-gained: KAOS can therefore
+/// distinguish a genuine transient from a quiet passage that happens to be
+/// scaled up for display.
+struct SIDSpectrumFeatures: Equatable {
+    var rms: Float = 0
+    var lowBandEnergy: Float = 0
+    var midBandEnergy: Float = 0
+    var highBandEnergy: Float = 0
+    var spectralFlux: Float = 0
+
+    static let silence = SIDSpectrumFeatures()
+}
+
+struct SIDSpectrumFrame: Equatable {
+    let bars: [Float]
+    let features: SIDSpectrumFeatures
+}
+
 /// A small `vDSP`-based FFT wrapper: feeds real (mono-folded) audio samples
 /// in, produces a log-frequency-spaced magnitude spectrum as a fixed number
 /// of 0...1 bars. Shared by the Spectrum Analyzer (shows only the latest
@@ -54,6 +73,10 @@ final class SIDSpectrumAnalyzer {
     private let fftSetup: FFTSetup
     private var window: [Float]
     private var inputBuffer: [Float] = []
+    /// Log magnitudes from the prior frame for a scale-independent spectral
+    /// flux calculation. This deliberately tracks the raw FFT, not bars:
+    /// display auto-gain must never manufacture beat evidence.
+    private var previousLogMagnitudes: [Float] = []
     private let sampleRate: Double
 
     init(sampleRate: Double) {
@@ -82,14 +105,21 @@ final class SIDSpectrumAnalyzer {
     /// the visualizations still show clear activity for a noticeable
     /// moment after playback actually stopped.
     func ingest(_ monoSamples: [Float]) -> [Float]? {
+        ingestFrame(monoSamples)?.bars
+    }
+
+    /// As `ingest(_:)`, but retains raw spectral evidence needed by rhythmic
+    /// consumers. A single frame is returned for the newest available audio;
+    /// callers that fall behind never process a stale FFT backlog.
+    func ingestFrame(_ monoSamples: [Float]) -> SIDSpectrumFrame? {
         inputBuffer.append(contentsOf: monoSamples)
         guard inputBuffer.count >= Self.fftSize else { return nil }
         let frame = Array(inputBuffer.suffix(Self.fftSize))
         inputBuffer.removeAll(keepingCapacity: true)
-        return computeBars(frame)
+        return computeFrame(frame)
     }
 
-    private func computeBars(_ frame: [Float]) -> [Float] {
+    private func computeFrame(_ frame: [Float]) -> SIDSpectrumFrame {
         var rms: Float = 0
         vDSP_rmsqv(frame, 1, &rms, vDSP_Length(frame.count))
         guard rms >= Self.silenceRMSThreshold else {
@@ -97,7 +127,10 @@ final class SIDSpectrumAnalyzer {
             // silence too, so playback resuming later doesn't inherit a
             // stale peak from before it stopped.
             runningPeakDb = max(runningPeakDb - Self.peakDecayPerFrameDb, -60)
-            return [Float](repeating: 0, count: Self.barCount)
+            previousLogMagnitudes = []
+            return SIDSpectrumFrame(
+                bars: [Float](repeating: 0, count: Self.barCount),
+                features: .silence)
         }
 
         var windowed = [Float](repeating: 0, count: Self.fftSize)
@@ -120,6 +153,36 @@ final class SIDSpectrumAnalyzer {
                 vDSP_zvmags(&split, 1, &magnitudes, 1, vDSP_Length(Self.fftSize / 2))
             }
         }
+
+        let logMagnitudes = magnitudes.map { 10 * log10(max($0, 1e-12)) }
+        let flux: Float
+        if previousLogMagnitudes.count == logMagnitudes.count {
+            var total: Float = 0
+            for index in 2..<logMagnitudes.count {
+                total += max(0, logMagnitudes[index] - previousLogMagnitudes[index])
+            }
+            flux = total / Float(logMagnitudes.count - 2)
+        } else {
+            flux = 0
+        }
+        previousLogMagnitudes = logMagnitudes
+
+        func bandEnergy(from lowHz: Double, to highHz: Double) -> Float {
+            let low = max(1, Int(lowHz / sampleRate * Double(Self.fftSize)))
+            let high = min(magnitudes.count - 1, Int(highHz / sampleRate * Double(Self.fftSize)))
+            guard low <= high else { return 0 }
+            var meanSquare: Float = 0
+            for value in magnitudes[low...high] {
+                meanSquare += value
+            }
+            return sqrt(meanSquare / Float(high - low + 1))
+        }
+        let features = SIDSpectrumFeatures(
+            rms: rms,
+            lowBandEnergy: bandEnergy(from: 45, to: 280),
+            midBandEnergy: bandEnergy(from: 280, to: 2_200),
+            highBandEnergy: bandEnergy(from: 2_200, to: 8_000),
+            spectralFlux: flux)
 
         // Track the loudest bin this frame (skipping the first couple of
         // bins — near-DC content is often dominated by window/leakage
@@ -149,6 +212,6 @@ final class SIDSpectrumAnalyzer {
             let db = 10 * log10(max(peak, 1e-9))
             bars[bar] = Float(max(0, min(1, (db - floorDb) / Self.dynamicRangeDb)))
         }
-        return bars
+        return SIDSpectrumFrame(bars: bars, features: features)
     }
 }

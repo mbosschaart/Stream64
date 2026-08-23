@@ -271,6 +271,7 @@ struct Assembly64View: View {
             } label: {
                 Label("Saved Searches", systemImage: "bookmark")
             }
+            .help("Save, run, or remove Assembly64 searches")
         }
     }
 
