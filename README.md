@@ -605,9 +605,12 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 
 Requests carry the `X-Password` header when the device has an API password set.
 
-## Input Design Credits
+## Credits
 
-The matrix-input protocol, ordered fallback strategy, focus-release safety, and keymap concepts were informed by [chrisgleissner/c64stream](https://github.com/chrisgleissner/c64stream) (GPL-2.0-or-later). Stream64 reimplements these concepts natively in Swift and adds Apple GameController support.
+- **Assembly64** — Stream64's software discovery and loading integration uses the [Assembly64 library and API](https://hackerswithstyle.se/leet/swagger-ui/index.html).
+- **High Voltage SID Collection (HVSC)** — local collection browsing and playback are based on the [HVSC project](https://www.hvsc.c64.org/). Stream64 respects the collection's copyright and uses the official version manifest for collection downloads and updates.
+- **SIDFlow / Chris Gleissner** — SID Station's similarity recommendations use the published [SIDFlow data](https://github.com/chrisgleissner/sidflow) and [SIDFlow data releases](https://github.com/chrisgleissner/sidflow-data) by Chris Gleissner.
+- **Input design** — the matrix-input protocol, ordered fallback strategy, focus-release safety, and keymap concepts were informed by [chrisgleissner/c64stream](https://github.com/chrisgleissner/c64stream) (GPL-2.0-or-later). Stream64 reimplements these concepts natively in Swift and adds Apple GameController support.
 
 ## License
 
