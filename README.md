@@ -69,26 +69,6 @@ Browse any configured Ultimate or mounted Mac volume in either pane, then queue 
 - Ultimate 64/Elite firmware **3.11+**, or C64 Ultimate firmware **1.1+**, on the same network
 - UDP path from device to Mac (no firewall blocking the stream ports)
 
-## HVSC Browser
-
-Choose an extracted corpus in **File → HVSC Browser…**, or download and install
-the latest HVSC archive directly from Stream64 using **Install HVSC** after
-checking a release. The installer asks you to choose a destination and
-downloads only the full/update URL supplied by
-`https://hvsc.de/api/v1/version`; it does not use HVSC search/detail/SID APIs
-or construct download URLs itself. Downloads are streamed to a temporary file,
-show progress, and can be cancelled while downloading.
-
-Before extraction, Stream64 rejects archive paths containing traversal,
-absolute paths, links, or case-folded duplicates. It extracts into a
-destination-local staging directory using only the bundled, SHA-256-checked
-`hvsc-7zz`, then rejects symlinks, aliases, special files, duplicate paths,
-and layouts without `MUSICIANS` and `.sid` files. Only after that validation
-and local indexing succeeds does it activate the corpus as `HVSC`; updates
-require a compatible Stream64-managed installation and preserve the previous
-corpus if activation fails. Stream64 never falls back to a PATH-discovered
-`7z`, `7zz`, Homebrew package, or shell tool.
-
 ## Upcoming Ultimate Firmware 3.15
 
 Matrix-level keyboard capture, virtual joystick injection, and the remote \
@@ -556,7 +536,25 @@ The **Discover** scope provides the native Assembly64 chart feeds—**Demos** (D
 
 ### HVSC Integration
 
-Stream64 uses a user-authorized local copy of the [High Voltage SID Collection](https://www.hvsc.c64.org/). Choose the extracted `C64Music` folder, or install/update the official archive from the sanctioned `https://hvsc.de/api/v1/version` manifest. The browser indexes SID headers and paths locally and does not use HVSC's internal search, detail, or SID-download APIs, reducing load on the HVSC website and keeping playback available when those web APIs change or are unavailable.
+Choose an extracted corpus in **File → HVSC Browser…**, or download and install
+the latest HVSC archive directly from Stream64 using **Install HVSC** after
+checking a release. The installer asks you to choose a destination and
+downloads only the full/update URL supplied by
+`https://hvsc.de/api/v1/version`; it does not use HVSC search/detail/SID APIs
+or construct download URLs itself. Downloads are streamed to a temporary file,
+show progress, and can be cancelled while downloading.
+
+Before extraction, Stream64 rejects archive paths containing traversal,
+absolute paths, links, or case-folded duplicates. It extracts into a
+destination-local staging directory using only the bundled, SHA-256-checked
+`hvsc-7zz`, then rejects symlinks, aliases, special files, duplicate paths,
+and layouts without `MUSICIANS` and `.sid` files. Only after that validation
+and local indexing succeeds does it activate the corpus as `HVSC`; updates
+require a compatible Stream64-managed installation and preserve the previous
+corpus if activation fails. Stream64 never falls back to a PATH-discovered
+`7z`, `7zz`, Homebrew package, or shell tool.
+
+The active corpus is a user-authorized local copy of the [High Voltage SID Collection](https://www.hvsc.c64.org/). The browser indexes SID headers and paths locally and does not use HVSC's internal search, detail, or SID-download APIs, reducing load on the HVSC website and keeping playback available when those web APIs change or are unavailable.
 
 The local index supports search across filename, title, author, release, and path, plus dedicated **2-SID Collection** and **3-SID Collection** filters derived from parsed SID headers. **All SIDs** also provides folder browsing for the local corpus. Results are sortable, selection is highlighted, and double-clicking a tune selects its details and plays its default subtune. The browser includes an ordered local playlist with play, previous, next, shuffle, loop, reorder, remove, and clear controls; SID Station exposes the same playlist alongside its recommendation station.
 
