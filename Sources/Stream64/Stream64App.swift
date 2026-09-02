@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.127b"
+            ?? "0.128b"
     }
 }
 

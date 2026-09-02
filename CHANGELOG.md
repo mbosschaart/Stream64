@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.128b — 2026-09-02
+
+### Improved
+
+- **Multi-SID address routing.** Before SID playback, Stream64 remaps the active second SID address to match the tune: physical sockets Enabled → only `SID Socket 1/2 Address` (UltiSID settings untouched); sockets Disabled → UltiSID addresses, including assigning a previously `Unmapped` UltiSID 2.
+- **UltiSID filter-curve matching.** All-UltiSID setups pick a live Filter Curve choice from the device (`6581` / `6581 Alt` on current firmware, with fallback for older `6581 R2` names) instead of sending obsolete values that returned HTTP 400.
+- **SID playback tolerance.** Quirky song-count / start-song header fields no longer block Assembly64 or other SID uploads; Stream64 clamps them for local metadata and always hands the bytes to the Ultimate player.
+- **Dual-SID visualizations.** SID Oscilloscope chip bases follow the mapped physical socket addresses when sockets are enabled—even if detection reports `None`—so `$D400`/`$D420` dual-SID debug writes show as 6 channels while UltiSID 2 remains Unmapped.
+- **Ultimate Config choice pickers.** Config items that expose device `values`/`options` use a menu picker instead of free-text entry.
+
+### Fixed
+
+- **Dual-SID play failures** caused by obsolete UltiSID Filter Curve names and by refusing to remap an available second SID/socket address.
+- **Assembly64 SID rejection** for community files with out-of-range song counts.
+- **Single-chip SID visualizations** on UltiSID range-split / undetected-socket dual-SID setups.
+
 ## 0.127b — 2026-08-23
 
 ### Added

@@ -383,12 +383,13 @@ struct SIDHeader: Equatable, Sendable {
               dataOffset < data.count else {
             throw HVSCClient.ClientError.invalidSID("invalid data offset")
         }
-        let songCount = Self.word(data, at: 0x0E)
-        let startSong = Self.word(data, at: 0x10)
-        guard (1...256).contains(songCount),
-              (1...songCount).contains(startSong) else {
-            throw HVSCClient.ClientError.invalidSID("invalid song count")
-        }
+        let rawSongCount = Self.word(data, at: 0x0E)
+        let rawStartSong = Self.word(data, at: 0x10)
+        // Some community SIDs ship with out-of-range song fields. The Ultimate
+        // SID player tolerates them, so clamp for local metadata instead of
+        // refusing to upload the file.
+        let songCount = min(max(rawSongCount == 0 ? 1 : rawSongCount, 1), 256)
+        let startSong = min(max(rawStartSong == 0 ? 1 : rawStartSong, 1), songCount)
         let flags = version >= 2 ? UInt16(Self.word(data, at: 0x76)) : 0
         self.format = format
         self.version = version

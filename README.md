@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.127b-purple)
+![Version](https://img.shields.io/badge/version-0.128b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -328,10 +328,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.127b BUILD_NUMBER=127 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.128b BUILD_NUMBER=128 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.127b BUILD_NUMBER=127 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.128b BUILD_NUMBER=128 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -558,7 +558,7 @@ The active corpus is a user-authorized local copy of the [High Voltage SID Colle
 
 The local index supports search across filename, title, author, release, and path, plus dedicated **2-SID Collection** and **3-SID Collection** filters derived from parsed SID headers. **All SIDs** also provides folder browsing for the local corpus. Results are sortable, selection is highlighted, and double-clicking a tune selects its details and plays its default subtune. The browser includes an ordered local playlist with play, previous, next, shuffle, loop, reorder, remove, and clear controls; SID Station exposes the same playlist alongside its recommendation station.
 
-The optional **Song Lengths** updater reads and validates the current [Songlengths.md5 format](https://hvsc.de/download/C64Music/DOCUMENTS/Songlengths.faq) from the local corpus into Application Support. It atomically preserves the last valid cache if an update fails. Full-file MD5 (including SID header) maps a tune to millisecond-accurate duration entries for each subtune; no legacy `Songlengths.txt` algorithm is used. Before playback, Stream64 validates the SID header and persistently routes a declared second SID address; this automatic address configuration is supported for 2-SID playback. With physical SIDs installed, model mismatches remain advisory; all-UltiSID setups can adapt their curve to the tune. PSID/RSID v3/v4 files ask once to install upstream PSID64, then run as relocated PRGs for real-C64 compatibility. Local HVSC installation is staged, validated, indexed with progress reporting, and activated safely without replacing the previous working corpus until validation succeeds.
+The optional **Song Lengths** updater reads and validates the current [Songlengths.md5 format](https://hvsc.de/download/C64Music/DOCUMENTS/Songlengths.faq) from the local corpus into Application Support. It atomically preserves the last valid cache if an update fails. Full-file MD5 (including SID header) maps a tune to millisecond-accurate duration entries for each subtune; no legacy `Songlengths.txt` algorithm is used. Before playback, Stream64 best-effort parses the SID header and persistently remaps a declared second SID address: when physical sockets are Enabled it only adjusts `SID Socket` addresses (never UltiSID settings); when sockets are Disabled it maps UltiSID addresses—including a previously `Unmapped` UltiSID 2—and adapts UltiSID filter curves from the device’s live choices. Quirky song-count fields no longer block upload; the Ultimate player remains the compatibility authority. Physical-model mismatches remain advisory. SID visualizations follow those same mapped chip bases so dual-SID debug writes show six channels even when UltiSID 2 is Unmapped or socket detection reports None. PSID/RSID v3/v4 files ask once to install upstream PSID64, then run as relocated PRGs for real-C64 compatibility. Local HVSC installation is staged, validated, indexed with progress reporting, and activated safely without replacing the previous working corpus until validation succeeds.
 
 ### SID Station
 

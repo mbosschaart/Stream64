@@ -615,10 +615,7 @@ final class SIDEngine: ObservableObject {
     }
 
     private func configure(with config: UltimateAPIClient.SIDConfiguration) {
-        chipBaseAddresses = [config.socket1Address]
-        if let socket2 = config.socket2Address {
-            chipBaseAddresses.append(socket2)
-        }
+        chipBaseAddresses = config.visualizationChipBases
         chipBasesLock.lock()
         observerChipBases = chipBaseAddresses
         chipBasesLock.unlock()

@@ -1569,14 +1569,16 @@ final class DeviceSession: ObservableObject {
                 }
             case "sid":
                 await awaitDebugPrewarmBeforeSIDPlayback()
+                // Best-effort local header/routing only. Always hand the SID
+                // bytes to the Ultimate; its player is the compatibility
+                // authority for song count and other quirks.
                 transferStatus = .uploading("Configuring SID routing for \(filename)")
-                let header = try SIDHeader(data: data)
-                _ = try await client.ensureSIDRouting(for: header)
-                await SIDEngine.refreshConfiguration(for: self)
-                // v1/v2 play reliably through the Ultimate runner. v3/v4
-                // add multi-SID metadata, and PSID64's relocated real-C64
-                // driver is safer for both PSID and RSID execution.
-                if header.version >= 3 {
+                let header = try? SIDHeader(data: data)
+                if let header {
+                    _ = try? await client.ensureSIDRouting(for: header)
+                    await SIDEngine.refreshConfiguration(for: self)
+                }
+                if let header, header.version >= 3 {
                     if let songNumber, songNumber != header.startSong {
                         transferStatus = .failed(
                             "\(filename): PSID64 cannot yet select subtune \(songNumber).")

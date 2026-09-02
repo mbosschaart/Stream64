@@ -478,7 +478,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     the KERNAL keyboard buffer so the program starts after load; \
     **Mount** just inserts the disk in drive A
     • **.prg** — **Run**: uploaded and started immediately
-    • **.sid** — **Play**: sent to the Ultimate's built-in SID player
+    • **.sid** — **Play**: sent to the Ultimate's built-in SID player. \
+    Stream64 remaps the second SID address when needed (physical sockets \
+    only when sockets are Enabled; UltiSID otherwise) and does not reject \
+    files over quirky song-count header fields — the Ultimate decides \
+    whether the tune plays.
     • **.crt** — **Run**: started as a cartridge
 
     Files load onto the **selected device** — shown in the status bar at the \
@@ -508,8 +512,10 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     requirements. RSID, 2SID, and 3SID tunes are flagged; the Ultimate's SID \
     player remains the final compatibility authority.
 
-    **Play** — use the button to validate the selected local SID and upload it \
-    once to the selected device. The browser reports Ultimate playback errors.
+    **Play** — uploads the selected local SID to the selected device. Header \
+    parsing and second-SID address routing are best-effort; the Ultimate's \
+    SID player remains the final compatibility authority. The browser reports \
+    Ultimate playback errors.
 
     **Song lengths** — import a local `Songlengths.md5` database. Stream64 \
     validates and caches its entries atomically; a failed import keeps the \
@@ -667,8 +673,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **SID Oscilloscope** — right-click menu → **SID Visualizations**
 
-    A 20-mode SID visualizer — 3 channels normally, 6 when a second SID is \
-    configured. Pick any mode from **SID Visualizations** to open it in its \
+    A 20-mode SID visualizer — 3 channels normally, 6 when a second SID \
+    address is mapped (physical Socket 2 or UltiSID 2). Chip bases follow \
+    the same physical-vs-UltiSID routing rule as playback, so dual-SID \
+    debug writes stay visible even when UltiSID 2 is Unmapped or socket \
+    detection reports None. Pick any mode from **SID Visualizations** to open it in its \
     own window; any number of modes can be open side by side, or use \
     **Open All in Grid** to open every mode at once, automatically tiled to \
     fit the screen. **Close All Visualizations** dismisses every open SID \

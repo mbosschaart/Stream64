@@ -247,7 +247,7 @@ final class HVSCTests: XCTestCase {
         XCTAssertThrowsError(try SIDHeader(data: data))
     }
 
-    func testSIDHeaderRejectsInvalidMagicAndSongRange() {
+    func testSIDHeaderRejectsInvalidMagicAndClampsSongRange() throws {
         XCTAssertThrowsError(try SIDHeader(data: Data(repeating: 0, count: 0x7C)))
 
         var data = Data(repeating: 0, count: 0x80)
@@ -256,7 +256,15 @@ final class HVSCTests: XCTestCase {
         writeWord(0x7C, at: 0x06, in: &data)
         writeWord(1, at: 0x0E, in: &data)
         writeWord(2, at: 0x10, in: &data)
-        XCTAssertThrowsError(try SIDHeader(data: data))
+        let header = try SIDHeader(data: data)
+        XCTAssertEqual(header.numberOfSongs, 1)
+        XCTAssertEqual(header.startSong, 1)
+
+        writeWord(0, at: 0x0E, in: &data)
+        writeWord(0, at: 0x10, in: &data)
+        let zeroSongs = try SIDHeader(data: data)
+        XCTAssertEqual(zeroSongs.numberOfSongs, 1)
+        XCTAssertEqual(zeroSongs.startSong, 1)
     }
 
     func testHVSCSearchAndDetailDecodeWebsitePayloads() throws {
@@ -418,6 +426,7 @@ final class HVSCTests: XCTestCase {
         XCTAssertEqual(configuration.socket2Address, 0xD420)
         XCTAssertEqual(configuration.socket2Model, "8580")
         XCTAssertEqual(configuration.secondSIDSource, .ultiSID)
+        XCTAssertFalse(configuration.physicalSocketsEnabled)
 
         var twoSID6581 = makeSIDHeader(version: 3, flags: 0x0050)
         twoSID6581[0x7A] = 0x42
@@ -425,15 +434,105 @@ final class HVSCTests: XCTestCase {
             for: SIDHeader(data: twoSID6581))
         XCTAssertEqual(route?.warnings, [])
         let requests = await transport.recordedRequests()
-        XCTAssertEqual(
-            requests.filter {
-                $0.url?.path.contains("UltiSID") == true
-                    && $0.url?.path.contains("Filter Curve") == true
-            }.count,
-            2)
+        let filterCurvePuts = requests.filter {
+            $0.httpMethod == "PUT"
+                && $0.url?.path.contains("UltiSID") == true
+                && $0.url?.path.contains("Filter Curve") == true
+        }
+        XCTAssertEqual(filterCurvePuts.count, 2)
+        for put in filterCurvePuts {
+            let value = URLComponents(
+                url: put.url!,
+                resolvingAgainstBaseURL: false
+            )?.queryItems?.first(where: { $0.name == "value" })?.value
+            XCTAssertEqual(value, "6581")
+        }
+        XCTAssertFalse(requests.contains {
+            $0.httpMethod == "PUT"
+                && $0.url?.path.contains("SID Socket") == true
+        })
         XCTAssertTrue(requests.contains {
             $0.url?.path == "/v1/configs/UltiSID Configuration:save_to_flash"
         })
+    }
+
+    func testFounderMapsUnmappedUltiSID2AddressForDualSID() async throws {
+        let transport = SIDConfigurationTransport(
+            founder: true, unmappedSecondSID: true)
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Founder", host: "172.16.10.64"),
+            transport: transport)
+        var twoSID = makeSIDHeader(version: 3, flags: 0x00A0)
+        twoSID[0x7A] = 0x50
+
+        let route = try await client.ensureSIDRouting(
+            for: SIDHeader(data: twoSID))
+        XCTAssertTrue(route.configuredSlots.contains(.ultiSID2))
+
+        let requests = await transport.recordedRequests()
+        let addressRequest = try XCTUnwrap(requests.first {
+            $0.httpMethod == "PUT"
+                && $0.url?.path.contains("UltiSID 2 Address") == true
+        })
+        let value = URLComponents(
+            url: addressRequest.url!,
+            resolvingAgainstBaseURL: false
+        )?.queryItems?.first(where: { $0.name == "value" })?.value
+        XCTAssertEqual(value, "$D500")
+        XCTAssertFalse(requests.contains {
+            $0.httpMethod == "PUT"
+                && $0.url?.path.contains("SID Socket") == true
+        })
+    }
+
+    func testPhysicalSocketsEnabledNeverMutatesUltiSID() async throws {
+        let transport = SIDConfigurationTransport(unmappedSecondSID: true)
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Elite", host: "192.168.1.64"),
+            transport: transport)
+        let configuration = await client.fetchSIDConfiguration()
+        XCTAssertTrue(configuration.physicalSocketsEnabled)
+        XCTAssertEqual(configuration.secondSIDSource, .physicalSocket)
+
+        var twoSID = makeSIDHeader(version: 3, flags: 0x00A0)
+        twoSID[0x7A] = 0x50
+        let route = try await client.ensureSIDRouting(
+            for: SIDHeader(data: twoSID))
+        XCTAssertEqual(route.configuredSlots, [.socket2])
+
+        let requests = await transport.recordedRequests()
+        let addressRequest = try XCTUnwrap(requests.first {
+            $0.httpMethod == "PUT"
+                && $0.url?.path.contains("SID Socket 2 Address") == true
+        })
+        let value = URLComponents(
+            url: addressRequest.url!,
+            resolvingAgainstBaseURL: false
+        )?.queryItems?.first(where: { $0.name == "value" })?.value
+        XCTAssertEqual(value, "$D500")
+        XCTAssertFalse(requests.contains {
+            $0.httpMethod == "PUT"
+                && ($0.url?.path.contains("UltiSID") == true)
+        })
+    }
+
+    func testUndetectedPhysicalSocketsStillExposeDualVisualizationBases() async {
+        let transport = SIDConfigurationTransport(
+            unmappedSecondSID: true, undetectedPhysical: true)
+        let client = UltimateAPIClient(
+            device: UltimateDevice(name: "Elite", host: "192.168.1.64"),
+            transport: transport)
+
+        let configuration = await client.fetchSIDConfiguration()
+        XCTAssertTrue(configuration.physicalSocketsEnabled)
+        XCTAssertEqual(configuration.socket1Address, 0xD400)
+        XCTAssertEqual(configuration.socket2Address, 0xD420)
+        XCTAssertEqual(
+            configuration.visualizationChipBases, [0xD400, 0xD420])
+        XCTAssertNil(
+            configuration.slots.first(where: {
+                $0.source == UltimateAPIClient.SIDConfiguration.Slot.Source.ultiSID2
+            })?.address)
     }
 
     private func writeWord(_ value: Int, at offset: Int, in data: inout Data) {
@@ -494,9 +593,17 @@ final class HVSCTests: XCTestCase {
 private actor SIDConfigurationTransport: HTTPTransport {
     private var requests: [URLRequest] = []
     private let founder: Bool
+    private let unmappedSecondSID: Bool
+    private let undetectedPhysical: Bool
 
-    init(founder: Bool = false) {
+    init(
+        founder: Bool = false,
+        unmappedSecondSID: Bool = false,
+        undetectedPhysical: Bool = false
+    ) {
         self.founder = founder
+        self.unmappedSecondSID = unmappedSecondSID
+        self.undetectedPhysical = undetectedPhysical
     }
 
     func recordedRequests() -> [URLRequest] { requests }
@@ -506,15 +613,28 @@ private actor SIDConfigurationTransport: HTTPTransport {
         let path = request.url?.path ?? ""
         let body: Data
         if path.contains("SID Addressing"), request.httpMethod == "GET" {
+            // Undetected physical dual-SID setups still keep Socket 2 mapped
+            // (e.g. $D420) while UltiSID 2 stays Unmapped — that used to hide
+            // the second visualization chip.
+            let socket2: String
+            if unmappedSecondSID && !founder && !undetectedPhysical {
+                socket2 = "Unmapped"
+            } else {
+                socket2 = "$D420"
+            }
+            let ultiSID2 = (unmappedSecondSID || undetectedPhysical) && !founder
+                ? "Unmapped"
+                : (unmappedSecondSID && founder ? "Unmapped" : "$D420")
             body = Data("""
             {"SID Addressing":{
               "SID Socket 1 Address":"$D400",
-              "SID Socket 2 Address":"$D420",
+              "SID Socket 2 Address":"\(socket2)",
               "UltiSID 1 Address":"$D400",
-              "UltiSID 2 Address":"$D420"
+              "UltiSID 2 Address":"\(ultiSID2)"
             },"errors":[]}
             """.utf8)
         } else if path.contains("SID Sockets Configuration") {
+            let detected = (founder || undetectedPhysical) ? "None" : "8580"
             body = Data((founder
                 ? """
                 {"SID Sockets Configuration":{
@@ -528,17 +648,32 @@ private actor SIDConfigurationTransport: HTTPTransport {
                 {"SID Sockets Configuration":{
                   "SID Socket 1":"Enabled",
                   "SID Socket 2":"Enabled",
-                  "SID Detected Socket 1":"8580",
-                  "SID Detected Socket 2":"8580"
+                  "SID Detected Socket 1":"\(detected)",
+                  "SID Detected Socket 2":"\(detected)"
                 },"errors":[]}
                 """).utf8)
         } else if path.contains("UltiSID Configuration") {
-            body = Data("""
-            {"UltiSID Configuration":{
-              "UltiSID 1 Filter Curve":"8580 Lo",
-              "UltiSID 2 Filter Curve":"8580 Lo"
-            },"errors":[]}
-            """.utf8)
+            if path.contains("Filter Curve"), request.httpMethod == "GET" {
+                let item = path.contains("UltiSID 1")
+                    ? "UltiSID 1 Filter Curve"
+                    : "UltiSID 2 Filter Curve"
+                body = Data("""
+                {"UltiSID Configuration":{
+                  "\(item)":{
+                    "current":"8580 Lo",
+                    "values":["8580 Lo","8580 Hi","6581","6581 Alt","U2 Low","U2 Mid","U2 High"],
+                    "default":"8580 Lo"
+                  }
+                },"errors":[]}
+                """.utf8)
+            } else {
+                body = Data("""
+                {"UltiSID Configuration":{
+                  "UltiSID 1 Filter Curve":"8580 Lo",
+                  "UltiSID 2 Filter Curve":"8580 Lo"
+                },"errors":[]}
+                """.utf8)
+            }
         } else {
             body = Data(#"{"errors":[]}"#.utf8)
         }

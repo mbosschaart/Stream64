@@ -173,7 +173,8 @@ struct UltimateAPIClient {
             }
 
             let source: Source
-            let address: UInt16
+            /// `nil` when the Ultimate reports the slot as `Unmapped`.
+            let address: UInt16?
             let model: String?
 
             var id: Source { source }
@@ -192,16 +193,42 @@ struct UltimateAPIClient {
 
         let socket1Address: UInt16
         let socket1Model: String?
-        /// nil when a second SID isn't enabled/detected.
+        /// nil when a second SID isn't enabled/detected / is Unmapped.
         let socket2Address: UInt16?
         let socket2Model: String?
         /// Which address entry owns `socket2Address`; used by the explicit
         /// compatibility Fix action without guessing physical hardware.
         let secondSIDSource: SecondSIDSource?
+        /// When true, playback routing may remap physical socket addresses
+        /// only — UltiSID address/filter settings must stay untouched.
+        let physicalSocketsEnabled: Bool
         /// Every addressable SID source currently available to the Ultimate.
         /// This lets playback route a 3-SID tune without discarding UltiSIDs
         /// just because physical sockets are present.
         let slots: [Slot]
+
+        /// Chip base addresses for debug-trace visualizations. Follows the
+        /// same physical-vs-UltiSID rule as playback routing, and includes
+        /// every currently mapped address in that mode.
+        var visualizationChipBases: [UInt16] {
+            let preferred = physicalSocketsEnabled
+                ? slots.filter(\.isPhysical)
+                : slots.filter { !$0.isPhysical }
+            var bases: [UInt16] = []
+            var seen = Set<UInt16>()
+            for address in preferred.compactMap(\.address) {
+                if seen.insert(address).inserted {
+                    bases.append(address)
+                }
+            }
+            if bases.isEmpty {
+                bases = [socket1Address]
+                if let socket2Address {
+                    bases.append(socket2Address)
+                }
+            }
+            return bases
+        }
     }
 
     struct SIDRoutingResult: Equatable {
@@ -251,6 +278,7 @@ struct UltimateAPIClient {
             socket2Address: nil,
             socket2Model: nil,
             secondSIDSource: nil,
+            physicalSocketsEnabled: false,
             slots: [])
         guard let addressing = try? await fetchConfigCategory("SID Addressing"),
               let sockets = try? await fetchConfigCategory("SID Sockets Configuration"),
@@ -263,19 +291,25 @@ struct UltimateAPIClient {
         let socket2Enabled = (sockets["SID Socket 2"] as? String) == "Enabled"
         let physicalSocket2Model = Self.detectedSIDModel(
             sockets["SID Detected Socket 2"] as? String)
+        let physicalSocketsEnabled = physicalSocket1Enabled || socket2Enabled
 
         var slots: [SIDConfiguration.Slot] = []
-        if physicalSocket1Enabled, let physicalSocket1Model {
+        // Enabled physical sockets stay routable even when currently
+        // Unmapped or undetected — playback remaps their addresses and
+        // must not fall through to UltiSID mutation.
+        if physicalSocket1Enabled {
             slots.append(.init(
                 source: .socket1,
                 address: Self.parseHexAddress(
                     addressing["SID Socket 1 Address"] as? String) ?? 0xD400,
                 model: physicalSocket1Model))
         }
-        if socket2Enabled, let physicalSocket2Model,
-           let address = Self.parseHexAddress(
-            addressing["SID Socket 2 Address"] as? String) {
-            slots.append(.init(source: .socket2, address: address, model: physicalSocket2Model))
+        if socket2Enabled {
+            slots.append(.init(
+                source: .socket2,
+                address: Self.parseHexAddress(
+                    addressing["SID Socket 2 Address"] as? String),
+                model: physicalSocket2Model))
         }
         let ultiSID1 = Self.parseHexAddress(
             addressing["UltiSID 1 Address"] as? String) ?? 0xD400
@@ -286,29 +320,38 @@ struct UltimateAPIClient {
             address: ultiSID1,
             model: Self.ultiSIDModel(
                 ultiSID["UltiSID 1 Filter Curve"] as? String)))
-        if let ultiSID2 {
-            slots.append(.init(
-                source: .ultiSID2,
-                address: ultiSID2,
-                model: Self.ultiSIDModel(
-                    ultiSID["UltiSID 2 Filter Curve"] as? String)))
-        }
+        // Keep UltiSID 2 visible for all-UltiSID routing even when Unmapped
+        // so playback can assign the tune's second-SID address.
+        slots.append(.init(
+            source: .ultiSID2,
+            address: ultiSID2,
+            model: Self.ultiSIDModel(
+                ultiSID["UltiSID 2 Filter Curve"] as? String)))
 
         // On U64 hardware, active physical sockets are still the preferred
-        // oscilloscope source, while auto-routing also keeps UltiSIDs visible.
-        if physicalSocket1Enabled, physicalSocket1Model != nil {
+        // oscilloscope source. Publish their mapped addresses even when
+        // detection reports None — dual-SID debug writes still land at
+        // Socket 2's address (e.g. $D420), and visualizations must follow.
+        if physicalSocketsEnabled {
             let socket1 = Self.parseHexAddress(
                 addressing["SID Socket 1 Address"] as? String) ?? 0xD400
-            let socket2 = (socket2Enabled && physicalSocket2Model != nil)
+            let socket2 = socket2Enabled
                 ? Self.parseHexAddress(
                     addressing["SID Socket 2 Address"] as? String)
                 : nil
             return SIDConfiguration(
                 socket1Address: socket1,
-                socket1Model: physicalSocket1Model,
+                socket1Model: physicalSocket1Model
+                    ?? Self.ultiSIDModel(
+                        ultiSID["UltiSID 1 Filter Curve"] as? String),
                 socket2Address: socket2,
-                socket2Model: socket2 == nil ? nil : physicalSocket2Model,
-                secondSIDSource: socket2 == nil ? nil : .physicalSocket,
+                socket2Model: socket2Enabled
+                    ? (physicalSocket2Model
+                        ?? Self.ultiSIDModel(
+                            ultiSID["UltiSID 2 Filter Curve"] as? String))
+                    : nil,
+                secondSIDSource: socket2Enabled ? .physicalSocket : nil,
+                physicalSocketsEnabled: true,
                 slots: slots)
         }
 
@@ -317,15 +360,20 @@ struct UltimateAPIClient {
             socket1Model: Self.ultiSIDModel(
                 ultiSID["UltiSID 1 Filter Curve"] as? String),
             socket2Address: ultiSID2,
-            socket2Model: ultiSID2 == nil ? nil : Self.ultiSIDModel(
+            socket2Model: Self.ultiSIDModel(
                 ultiSID["UltiSID 2 Filter Curve"] as? String),
-            secondSIDSource: ultiSID2 == nil ? nil : .ultiSID,
+            secondSIDSource: .ultiSID,
+            physicalSocketsEnabled: false,
             slots: slots)
     }
 
     /// Applies the addresses declared by a PSID/RSID header immediately before
     /// native playback. Address changes are deliberately persisted: the user
     /// asked the Ultimate to retain the routing that made the tune playable.
+    ///
+    /// Physical sockets Enabled → remap socket addresses only; never touch
+    /// UltiSID address or filter-curve settings. Sockets Disabled → remap
+    /// UltiSID addresses (including `Unmapped`) and adapt filter curves.
     func ensureSIDRouting(for header: SIDHeader) async throws -> SIDRoutingResult {
         guard !header.isPlaySIDSpecific else {
             throw SIDRoutingError.playSIDSpecific
@@ -338,14 +386,15 @@ struct UltimateAPIClient {
         var addressChanges: [SIDConfiguration.Slot.Source] = []
         var modelChanges: [SIDConfiguration.Slot.Source] = []
         var warnings: [String] = []
-        let hasPhysicalSID = configuration.slots.contains(where: \.isPhysical)
-        let physicalSIDCount = configuration.slots.filter(\.isPhysical).count
+        let usePhysical = configuration.physicalSocketsEnabled
 
         for (index, requirement) in requirements.enumerated() {
             let (address, requiredModel) = requirement
-            let candidates = hasPhysicalSID && index < physicalSIDCount
-                ? available.indices.filter { available[$0].isPhysical }
-                : Array(available.indices)
+            let candidates = available.indices.filter {
+                usePhysical
+                    ? available[$0].isPhysical
+                    : !available[$0].isPhysical
+            }
             guard !candidates.isEmpty else {
                 throw SIDRoutingError.noCompatibleSlot(
                     address: address, model: requiredModel)
@@ -361,14 +410,16 @@ struct UltimateAPIClient {
             }!
             let selected = available.remove(at: selectedIndex)
             if let requiredModel, selected.model != requiredModel {
-                if hasPhysicalSID {
+                if usePhysical {
                     warnings.append(
                         "\(selected.source.label) is \(selected.model ?? "unknown"); tune requests \(requiredModel).")
                 } else if let item = selected.modelConfigItem {
+                    let curve = await ultiSIDFilterCurve(
+                        for: requiredModel, item: item)
                     try await setConfigItem(
                         category: "UltiSID Configuration",
                         item: item,
-                        value: Self.ultiSIDFilterCurve(for: requiredModel))
+                        value: curve)
                     modelChanges.append(selected.source)
                 }
             }
@@ -396,18 +447,68 @@ struct UltimateAPIClient {
         address: UInt16,
         ordinal: Int
     ) -> Int {
-        let addressPenalty = slot.address == address ? 0 : 100
+        let addressPenalty: Int
+        if slot.address == address {
+            addressPenalty = 0
+        } else if slot.address == nil {
+            // Prefer assigning an Unmapped slot over relocating a mapped one.
+            addressPenalty = 50
+        } else {
+            addressPenalty = 100
+        }
         let preferredSource: SIDConfiguration.Slot.Source = switch ordinal {
-        case 0: .socket1
-        case 1: .socket2
+        case 0: slot.isPhysical ? .socket1 : .ultiSID1
+        case 1: slot.isPhysical ? .socket2 : .ultiSID2
         default: .ultiSID1
         }
         let sourcePenalty = slot.source == preferredSource ? 0 : 10
         return addressPenalty + sourcePenalty
     }
 
-    private static func ultiSIDFilterCurve(for model: String) -> String {
-        model == "6581" ? "6581 R2" : "8580 Lo"
+    /// Maps a SID header model to an UltiSID Filter Curve choice.
+    /// Current firmware uses `6581` / `6581 Alt`; older builds used
+    /// `6581 R2`. Prefer a live choice from the device when available.
+    private func ultiSIDFilterCurve(
+        for model: String,
+        item: String
+    ) async -> String {
+        let preferred: [String] = model == "6581"
+            ? ["6581", "6581 R2", "6581 Alt"]
+            : ["8580 Lo", "8580 Hi", "8580"]
+        let available = (try? await fetchConfigItemOptions(
+            category: "UltiSID Configuration",
+            item: item)) ?? []
+        if let match = preferred.first(where: { available.contains($0) }) {
+            return match
+        }
+        if let match = available.first(where: {
+            $0.uppercased().contains(model.uppercased())
+        }) {
+            return match
+        }
+        return preferred[0]
+    }
+
+    private func fetchConfigItemOptions(
+        category: String,
+        item: String
+    ) async throws -> [String] {
+        let request = try makeRequest(
+            path: "/v1/configs/\(category)/\(item)", method: "GET")
+        let data = try await perform(request)
+        guard let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let categoryObject = object[category] as? [String: Any]
+        else {
+            return []
+        }
+        if let detail = categoryObject[item] as? [String: Any] {
+            return (detail["values"] as? [String])
+                ?? (detail["options"] as? [String])
+                ?? (detail["choices"] as? [String])
+                ?? []
+        }
+        return []
     }
 
     /// Applies the address needed by a PSIDv3/4 second SID. This never
@@ -415,18 +516,18 @@ struct UltimateAPIClient {
     /// must only expose it after explicit user confirmation.
     func setSecondSIDAddress(_ address: UInt16) async throws {
         let configuration = await fetchSIDConfiguration()
-        guard let source = configuration.secondSIDSource,
-              configuration.socket2Address != nil else {
+        let slot = configuration.physicalSocketsEnabled
+            ? configuration.slots.first(where: { $0.source == .socket2 })
+            : configuration.slots.first(where: { $0.source == .ultiSID2 })
+        guard let slot else {
             throw APIError.httpError(
                 400,
                 "No configured second SID is available.")
         }
-        guard configuration.socket2Address != address else { return }
+        guard slot.address != address else { return }
         try await setConfigItem(
             category: "SID Addressing",
-            item: source == .physicalSocket
-                ? "SID Socket 2 Address"
-                : "UltiSID 2 Address",
+            item: slot.source.configItem,
             value: String(format: "$%04X", address))
         // Persist the specific dirty store rather than relying on a global
         // save sweep. Founder firmware keeps UltiSID addressing in this
@@ -793,17 +894,43 @@ struct UltimateAPIClient {
     }
 
     /// Key/value items inside one config category.
-    func fetchConfigItems(category: String) async throws -> [(key: String, value: String)] {
+    struct ConfigItem {
+        let key: String
+        let value: String
+        let options: [String]
+    }
+
+    func fetchConfigItems(category: String) async throws -> [ConfigItem] {
         let inner = try await fetchConfigCategory(category)
         return inner.keys.sorted().compactMap { key in
             guard let value = inner[key] else { return nil }
+            if let object = value as? [String: Any] {
+                let current = (object["value"] as? String)
+                    ?? (object["current"] as? String)
+                    ?? (object["selected"] as? String)
+                    ?? ""
+                let options = (object["options"] as? [String])
+                    ?? (object["choices"] as? [String])
+                    ?? (object["values"] as? [String])
+                    ?? []
+                return ConfigItem(
+                    key: key,
+                    value: current.isEmpty ? String(describing: value) : current,
+                    options: options)
+            }
+            if let options = value as? [String], !options.isEmpty {
+                return ConfigItem(
+                    key: key, value: options[0], options: options)
+            }
             if let string = value as? String {
-                return (key, string)
+                return ConfigItem(key: key, value: string, options: [])
             }
             if let number = value as? NSNumber {
-                return (key, number.stringValue)
+                return ConfigItem(
+                    key: key, value: number.stringValue, options: [])
             }
-            return (key, String(describing: value))
+            return ConfigItem(
+                key: key, value: String(describing: value), options: [])
         }
     }
 

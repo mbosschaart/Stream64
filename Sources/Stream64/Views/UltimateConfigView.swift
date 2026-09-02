@@ -35,13 +35,29 @@ struct UltimateConfigView: View {
                         }
                         .width(min: 160, ideal: 220)
                         TableColumn("Value") { item in
-                            TextField(
-                                "",
-                                text: Binding(
-                                    get: { model.draftValues[item.key] ?? item.value },
-                                    set: { model.draftValues[item.key] = $0 }))
-                                .textFieldStyle(.roundedBorder)
+                            if item.options.isEmpty {
+                                TextField(
+                                    "",
+                                    text: Binding(
+                                        get: { model.draftValues[item.key] ?? item.value },
+                                        set: { model.draftValues[item.key] = $0 }))
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.body.monospaced())
+                            } else {
+                                Picker(
+                                    "",
+                                    selection: Binding(
+                                        get: { model.draftValues[item.key] ?? item.value },
+                                        set: { model.draftValues[item.key] = $0 })
+                                ) {
+                                    ForEach(item.options, id: \.self) { option in
+                                        Text(option).tag(option)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
                                 .font(.body.monospaced())
+                            }
                         }
                         TableColumn("") { item in
                             Button("Set") {
@@ -119,6 +135,7 @@ struct UltimateConfigItem: Identifiable, Hashable {
     var id: String { key }
     let key: String
     let value: String
+    let options: [String]
 }
 
 @MainActor
@@ -177,7 +194,10 @@ final class UltimateConfigViewModel: ObservableObject {
         defer { busy = false }
         do {
             let pairs = try await session.api.fetchConfigItems(category: category)
-            items = pairs.map { UltimateConfigItem(key: $0.key, value: $0.value) }
+            items = pairs.map {
+                UltimateConfigItem(
+                    key: $0.key, value: $0.value, options: $0.options)
+            }
             draftValues = Dictionary(uniqueKeysWithValues: pairs.map { ($0.key, $0.value) })
             statusMessage = "\(items.count) items in \(category)."
         } catch {
