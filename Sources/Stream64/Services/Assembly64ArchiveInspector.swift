@@ -28,6 +28,7 @@ struct Assembly64ArchiveInspector {
             (filename as NSString).pathExtension.lowercased()
         }
         var isSupportedByDevice: Bool {
+            if ManagedFileKind.isMODFilename(filename) { return true }
             switch fileExtension {
             case "prg", "d64", "g64", "d71", "g71", "d81", "sid", "crt":
                 return true
@@ -49,6 +50,7 @@ struct Assembly64ArchiveInspector {
         case suspiciousCompression(String)
         case missingEntry(String)
         case extractedSizeExceeded(String)
+        case noSupportedFile
 
         var errorDescription: String? {
             switch self {
@@ -74,6 +76,8 @@ struct Assembly64ArchiveInspector {
                 return "Archive member is no longer available: \(path)"
             case .extractedSizeExceeded(let path):
                 return "Archive member exceeded its declared size: \(path)"
+            case .noSupportedFile:
+                return "ZIP contains no supported file (.prg, disk image, .sid, .mod / mod.*, or .crt)."
             }
         }
     }
@@ -191,6 +195,30 @@ struct Assembly64ArchiveInspector {
             throw InspectionError.extractedSizeExceeded(item.normalizedPath)
         }
         return output
+    }
+
+    /// Pick one supported payload for drag-and-drop ZIP loading: shallowest
+    /// path first, then alphabetical. Nested archives are not opened.
+    static func firstSupportedPayload(
+        from data: Data,
+        limits: Limits = .default
+    ) throws -> (filename: String, data: Data) {
+        let items = try inspect(data, limits: limits)
+        guard let item = items
+            .filter(\.isSupportedByDevice)
+            .min(by: { lhs, rhs in
+                let leftDepth = lhs.normalizedPath.split(separator: "/").count
+                let rightDepth = rhs.normalizedPath.split(separator: "/").count
+                if leftDepth != rightDepth { return leftDepth < rightDepth }
+                return lhs.normalizedPath.localizedStandardCompare(
+                    rhs.normalizedPath) == .orderedAscending
+            })
+        else {
+            throw InspectionError.noSupportedFile
+        }
+        let bytes = try extract(
+            item, from: data, inspected: items, limits: limits)
+        return (item.filename, bytes)
     }
 
     private static func normalizedPath(_ path: String) throws -> String {

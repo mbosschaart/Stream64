@@ -365,21 +365,42 @@ final class DriveBayViewModel: ObservableObject {
 final class DriveBayWindowController: NSWindowController, NSWindowDelegate {
     private static var windows: [UUID: DriveBayWindowController] = [:]
     private let deviceID: UUID
+    private let workspaceTracker: WorkspaceWindowTracker
 
-    static func show(session: DeviceSession) {
+    static func show(session: DeviceSession, frame: NSRect? = nil) {
         if let existing = windows[session.device.id] {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.workspaceTracker.upsertFromWindow()
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }
         let controller = DriveBayWindowController(session: session)
         windows[session.device.id] = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.workspaceTracker.upsertFromWindow()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    static func captureOpenWindows() -> [WorkspaceWindowEntry] {
+        windows.values.compactMap { controller in
+            guard let window = controller.window else { return nil }
+            return WorkspaceRestorer.entry(
+                kind: .driveBay,
+                window: window,
+                deviceID: controller.deviceID)
+        }
+    }
+
     private init(session: DeviceSession) {
         deviceID = session.device.id
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .driveBay, deviceID: session.device.id)
         let model = DriveBayViewModel(session: session)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
@@ -394,11 +415,13 @@ final class DriveBayWindowController: NSWindowController, NSWindowDelegate {
         window.contentViewController = NSHostingController(
             rootView: DriveBayView(model: model))
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
+        workspaceTracker.noteClosed()
         Self.windows.removeValue(forKey: deviceID)
     }
 }

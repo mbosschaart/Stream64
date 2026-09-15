@@ -49,14 +49,24 @@ struct ManagedPath: Hashable, Codable, CustomStringConvertible {
 enum ManagedFileKind: String, Codable {
     case directory, symlink, prg, disk, sid, mod, crt, zip, regular
 
+    /// True for `tune.mod` and Amiga-style `mod.tune` names.
+    static func isMODFilename(_ name: String) -> Bool {
+        let base = (name as NSString).lastPathComponent
+        if (base as NSString).pathExtension.lowercased() == "mod" {
+            return true
+        }
+        let lower = base.lowercased()
+        return lower.hasPrefix("mod.") && lower.count > 4
+    }
+
     static func classify(name: String, isDirectory: Bool, isSymbolicLink: Bool = false) -> Self {
         if isSymbolicLink { return .symlink }
         if isDirectory { return .directory }
+        if isMODFilename(name) { return .mod }
         switch (name as NSString).pathExtension.lowercased() {
         case "prg": return .prg
         case "d64", "g64", "d71", "g71", "d81": return .disk
         case "sid": return .sid
-        case "mod": return .mod
         case "crt": return .crt
         case "zip": return .zip
         default: return .regular

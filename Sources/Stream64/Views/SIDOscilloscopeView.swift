@@ -824,6 +824,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     private var deviceName: String
     private var model: SIDOscilloscopeViewModel
     private var startupTask: Task<Void, Never>?
+    private var workspaceTracker: WorkspaceWindowTracker
 
     /// Always opens a brand-new, independent window already set to
     /// `mode` — never reuses or replaces any existing window, including
@@ -919,6 +920,17 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             }
     }
 
+    static func captureOpenWindows() -> [WorkspaceWindowEntry] {
+        windows.values.compactMap { controller in
+            guard let window = controller.window else { return nil }
+            return WorkspaceRestorer.entry(
+                kind: .sidOscilloscope,
+                window: window,
+                deviceID: controller.deviceID,
+                sidMode: controller.model.visualizationMode.rawValue)
+        }
+    }
+
     /// Closes every currently open SID Oscilloscope window for
     /// `deviceID`. Snapshots the matching controllers into a plain array
     /// first — closing a window synchronously fires `windowWillClose`,
@@ -974,8 +986,16 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         newModel.visualizationMode = mode
         newModel.phosphorGlowEnabled = glow
         model = newModel
+        WorkspaceSnapshotStore.remove(
+            kind: .sidOscilloscope,
+            deviceID: previousDeviceID,
+            sidMode: mode.rawValue)
         deviceID = session.device.id
         deviceName = session.device.name
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .sidOscilloscope,
+            deviceID: session.device.id,
+            sidMode: mode.rawValue)
         window?.contentViewController = NSHostingController(
             rootView: SIDOscilloscopeView(model: newModel, session: session))
         if let window {
@@ -986,6 +1006,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
             if let frame {
                 window.setFrame(frame, display: false)
             }
+            workspaceTracker.attach(to: window)
         }
         updateTitle()
         Self.reconcileUIActivity(for: previousDeviceID)
@@ -1038,6 +1059,10 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
     private init(session: DeviceSession, mode: SIDVisualizationMode) {
         deviceID = session.device.id
         deviceName = session.device.name
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .sidOscilloscope,
+            deviceID: session.device.id,
+            sidMode: mode.rawValue)
         model = SIDOscilloscopeViewModel(session: session)
         model.visualizationMode = mode
         let window = NSWindow(
@@ -1059,6 +1084,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         // mode always opens another window rather than changing this
         // one), so the title only needs to be set once here.
         updateTitle()
+        workspaceTracker.attach(to: window)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -1069,6 +1095,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        workspaceTracker.upsertFromWindow()
         startupTask?.cancel()
         startupTask = Task { [weak self] in
             if startDelay > 0 {
@@ -1105,6 +1132,7 @@ final class SIDOscilloscopeWindowController: NSWindowController, NSWindowDelegat
         startupTask?.cancel()
         startupTask = nil
         model.stop()
+        workspaceTracker.noteClosed()
         Self.windows.removeValue(forKey: windowID)
         Self.reconcileUIActivity(for: deviceID)
     }

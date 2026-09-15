@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.129b — 2026-09-15
+
+### Added
+
+- **Workspace restore.** Open tool windows (Assembly64, HVSC, File Manager, SID Station, Drive Bay, Config, Memory Console, Debug Trace, Ultimate Menu, Picture Controls, SID visualizations) and the main viewer persist continuously on open/move/resize/close. Quitting is only a backup snapshot; the next launch restores that live workspace, including main-viewer size and sidebar visibility.
+- **MOD playback.** Drag-and-drop and Commander can play `.mod` files and Amiga-style `mod.name` names via the Ultimate's tracker player (`POST /v1/runners:modplay`). PowerPacker (`PP20`) compressed modules are decrunched on the Mac before upload.
+- **ZIP drag-and-drop.** Dropping a `.zip` onto a stream safely unwraps it in memory and loads the shallowest supported member (`.prg`, disk image, `.sid`, `.mod` / `mod.*`, or `.crt`).
+
+### Fixed
+
+- **Workspace quit backup** no longer replaces the live open-set with an incomplete window scan, so tool windows reopen after relaunch.
+- **Main viewer sidebar** collapse/expand state is remembered across launches (fullscreen still hides it temporarily).
 
 ## 0.128b — 2026-09-02
 

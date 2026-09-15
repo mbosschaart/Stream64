@@ -8,7 +8,7 @@ enum Stream64Version {
     static var display: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.128b"
+            ?? "0.129b"
     }
 }
 
@@ -48,9 +48,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let instanceLock = SingleInstanceLock()
     private var isTerminatingCompletely = false
     private var didReplyToTerminate = false
+    private var deviceStore: DeviceStore?
+    private var settings: AppSettings?
     /// Strong on purpose: quit must still reach sessions after SwiftUI has
     /// torn down the main window / `onAppear` wiring.
     var sessionManager: SessionManager?
+
+    func attachWorkspaceDependencies(
+        deviceStore: DeviceStore,
+        settings: AppSettings,
+        sessionManager: SessionManager
+    ) {
+        self.deviceStore = deviceStore
+        self.settings = settings
+        self.sessionManager = sessionManager
+    }
+
     private var splashWindow: NSWindow?
     private var hiddenLaunchWindows: [NSWindow] = []
     private var windowOrderObserver: NSObjectProtocol?
@@ -136,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// stop without going through the AppKit terminate path (which can stall
     /// on the update sheet).
     func prepareForUpdateRelaunch() {
+        WorkspaceRestorer.captureAndSave()
         sessionManager?.prepareForAppTermination()
     }
 
@@ -150,6 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return didReplyToTerminate ? .terminateNow : .terminateLater
         }
         isTerminatingCompletely = true
+
+        // Snapshot open windows before they are ordered out / closed.
+        WorkspaceRestorer.captureAndSave()
 
         // Stop music and free UDP ports before any await / window teardown.
         sessionManager?.prepareForAppTermination()
@@ -288,6 +305,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         splashWindow?.orderOut(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Reopen the previous quit-time workspace after the viewer is visible.
+        // Re-apply main viewer size first — splash/SwiftUI often resets it.
+        WorkspaceRestorer.applySavedMainViewerFrameIfPossible()
+        if let deviceStore, let settings, let sessionManager {
+            WorkspaceRestorer.restoreIfNeeded(
+                deviceStore: deviceStore,
+                settings: settings,
+                sessionManager: sessionManager)
+        }
     }
 }
 
@@ -325,7 +352,10 @@ struct Stream64App: App {
         // Keep AppKit tool-window presenters wired even before the viewer
         // finishes appearing (menu bar Assembly64 / File Manager).
         let _ = {
-            appDelegate.sessionManager = sessionManager
+            appDelegate.attachWorkspaceDependencies(
+                deviceStore: deviceStore,
+                settings: settings,
+                sessionManager: sessionManager)
             Stream64ToolWindows.configure(
                 deviceStore: deviceStore,
                 settings: settings,
@@ -344,7 +374,10 @@ struct Stream64App: App {
                 .environmentObject(sidFlowRecommendations)
                 .independentFullScreenWindow()
                 .onAppear {
-                    appDelegate.sessionManager = sessionManager
+                    appDelegate.attachWorkspaceDependencies(
+                        deviceStore: deviceStore,
+                        settings: settings,
+                        sessionManager: sessionManager)
                     Stream64ToolWindows.configure(
                         deviceStore: deviceStore,
                         settings: settings,
@@ -353,6 +386,22 @@ struct Stream64App: App {
                         hvscLibrary: hvscLibrary,
                         localHVSCLibrary: localHVSCLibrary,
                         sidFlowRecommendations: sidFlowRecommendations)
+                }
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: .restoreHelpWindowRequested)
+                ) { note in
+                    openWindow(id: "help")
+                    let frame = (note.object as? NSValue)?.rectValue
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        guard let help = NSApp.windows.first(where: {
+                            $0.title == "Stream64 Help"
+                        }) else { return }
+                        if let frame {
+                            help.setFrame(frame, display: true)
+                        }
+                        help.makeKeyAndOrderFront(nil)
+                    }
                 }
                 .task {
                     try? await Task.sleep(for: .seconds(2))
@@ -365,6 +414,10 @@ struct Stream64App: App {
                 }
                 .frame(minWidth: 900, minHeight: 620)
         }
+        .defaultSize(
+            width: MainViewerFrameStore.preferredSize.width,
+            height: MainViewerFrameStore.preferredSize.height)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Stream64") {

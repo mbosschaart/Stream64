@@ -110,6 +110,7 @@ struct Assembly64Client {
         var fileExtension: String { (filename as NSString).pathExtension.lowercased() }
 
         var kind: FileKind {
+            if ManagedFileKind.isMODFilename(filename) { return .mod }
             switch fileExtension {
             case "prg": return .prg
             case "d64", "g64", "d71", "g71", "d81": return .disk
@@ -121,7 +122,7 @@ struct Assembly64Client {
     }
 
     enum FileKind {
-        case prg, disk, sid, cartridge, other
+        case prg, disk, sid, mod, cartridge, other
     }
 
     struct Category: Codable, Identifiable, Hashable {

@@ -40,10 +40,14 @@ enum Stream64ToolWindows {
         self.sidFlowRecommendations = sidFlowRecommendations
     }
 
-    static func showAssembly64() {
+    static func showAssembly64(frame: NSRect? = nil) {
         guard let deviceStore, let settings, let sessionManager,
               let assembly64Library else { return }
         if let existing = assembly64Controller {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.syncWorkspaceEntry()
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -57,14 +61,22 @@ enum Stream64ToolWindows {
             }
         )
         assembly64Controller = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.syncWorkspaceEntry()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    static func showFileManager() {
+    static func showFileManager(frame: NSRect? = nil) {
         guard let deviceStore, let settings, let sessionManager else { return }
         if let existing = fileManagerController {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.syncWorkspaceEntry()
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -75,15 +87,23 @@ enum Stream64ToolWindows {
             sessionManager: sessionManager
         )
         fileManagerController = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.syncWorkspaceEntry()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    static func showHVSC() {
+    static func showHVSC(frame: NSRect? = nil) {
         guard let deviceStore, let settings, let sessionManager,
               let hvscLibrary, let localHVSCLibrary, let sidFlowRecommendations else { return }
         if let existing = hvscController {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.syncWorkspaceEntry()
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -99,15 +119,23 @@ enum Stream64ToolWindows {
             }
         )
         hvscController = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.syncWorkspaceEntry()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    static func showSIDRadio() {
+    static func showSIDRadio(frame: NSRect? = nil) {
         guard let deviceStore, let settings, let sessionManager,
               let sidFlowRecommendations, let hvscLibrary, let localHVSCLibrary else { return }
         if let existing = sidRadioController {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.syncWorkspaceEntry()
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -122,9 +150,34 @@ enum Stream64ToolWindows {
                 sessionManager.session(for: device, settings: settings)
             })
         sidRadioController = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.syncWorkspaceEntry()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    static func captureOpenWindows() -> [WorkspaceWindowEntry] {
+        var entries: [WorkspaceWindowEntry] = []
+        if let window = assembly64Controller?.window {
+            entries.append(WorkspaceRestorer.entry(
+                kind: .assembly64, window: window))
+        }
+        if let window = fileManagerController?.window {
+            entries.append(WorkspaceRestorer.entry(
+                kind: .fileManager, window: window))
+        }
+        if let window = hvscController?.window {
+            entries.append(WorkspaceRestorer.entry(
+                kind: .hvsc, window: window))
+        }
+        if let window = sidRadioController?.window {
+            entries.append(WorkspaceRestorer.entry(
+                kind: .sidRadio, window: window))
+        }
+        return entries
     }
 
     fileprivate static func assembly64DidClose() {
@@ -150,6 +203,7 @@ final class Assembly64WindowController: NSWindowController, NSWindowDelegate {
     private let settings: AppSettings
     private let library: Assembly64LibraryStore
     private let sessionProvider: (UltimateDevice) -> DeviceSession
+    private let workspaceTracker = WorkspaceWindowTracker(kind: .assembly64)
 
     init(
         deviceStore: DeviceStore,
@@ -180,18 +234,26 @@ final class Assembly64WindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(library)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+    func syncWorkspaceEntry() {
+        workspaceTracker.upsertFromWindow()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        workspaceTracker.noteClosed()
         Stream64ToolWindows.assembly64DidClose()
     }
 }
 
 @MainActor
 final class HVSCWindowController: NSWindowController, NSWindowDelegate {
+    private let workspaceTracker = WorkspaceWindowTracker(kind: .hvsc)
+
     init(
         deviceStore: DeviceStore,
         settings: AppSettings,
@@ -221,18 +283,26 @@ final class HVSCWindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(sidFlowRecommendations)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+    func syncWorkspaceEntry() {
+        workspaceTracker.upsertFromWindow()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        workspaceTracker.noteClosed()
         Stream64ToolWindows.hvscDidClose()
     }
 }
 
 @MainActor
 final class SIDRadioWindowController: NSWindowController, NSWindowDelegate {
+    private let workspaceTracker = WorkspaceWindowTracker(kind: .sidRadio)
+
     init(
         deviceStore: DeviceStore,
         settings: AppSettings,
@@ -262,18 +332,26 @@ final class SIDRadioWindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(localLibrary)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+    func syncWorkspaceEntry() {
+        workspaceTracker.upsertFromWindow()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        workspaceTracker.noteClosed()
         Stream64ToolWindows.sidRadioDidClose()
     }
 }
 
 @MainActor
 final class FileManagerWindowController: NSWindowController, NSWindowDelegate {
+    private let workspaceTracker = WorkspaceWindowTracker(kind: .fileManager)
+
     init(
         deviceStore: DeviceStore,
         settings: AppSettings,
@@ -298,12 +376,18 @@ final class FileManagerWindowController: NSWindowController, NSWindowDelegate {
                     .environmentObject(sessionManager)
             })
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+    func syncWorkspaceEntry() {
+        workspaceTracker.upsertFromWindow()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        workspaceTracker.noteClosed()
         Stream64ToolWindows.fileManagerDidClose()
     }
 }

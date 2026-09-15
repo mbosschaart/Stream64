@@ -727,6 +727,20 @@ struct UltimateAPIClient {
         ])
     }
 
+    /// Upload a tracker module (`.mod` or Amiga-style `mod.name`) and play it.
+    /// Callers should decrunch PowerPacker (`PP20`) payloads first.
+    /// Matches the Ultimate API's binary attachment (`POST /v1/runners:modplay`),
+    /// same shape as PRG/CRT uploads.
+    func playMOD(data: Data, filename: String = "tune.mod") async throws {
+        guard Self.isSafeMultipartFilename(filename) else {
+            throw APIError.invalidURL
+        }
+        var request = try makeRequest(path: "/v1/runners:modplay", method: "POST")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        try await perform(request)
+    }
+
     /// Upload a cartridge image and run it.
     func runCRT(data: Data) async throws {
         var request = try makeRequest(path: "/v1/runners:run_crt", method: "POST")

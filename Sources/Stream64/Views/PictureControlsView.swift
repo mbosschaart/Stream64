@@ -179,10 +179,15 @@ final class PictureControlsPanelController:
     ] = [:]
 
     private let deviceID: UUID
+    private let workspaceTracker: WorkspaceWindowTracker
 
-    static func show(display: DisplaySettings) {
+    static func show(display: DisplaySettings, frame: NSRect? = nil) {
         if let existing = panels[display.deviceID],
            let window = existing.window {
+            if let frame {
+                window.setFrame(frame, display: true)
+            }
+            existing.workspaceTracker.upsertFromWindow()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -190,13 +195,29 @@ final class PictureControlsPanelController:
 
         let controller = PictureControlsPanelController(display: display)
         panels[display.deviceID] = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.workspaceTracker.upsertFromWindow()
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    static func captureOpenWindows() -> [WorkspaceWindowEntry] {
+        panels.values.compactMap { controller in
+            guard let window = controller.window else { return nil }
+            return WorkspaceRestorer.entry(
+                kind: .pictureControls,
+                window: window,
+                deviceID: controller.deviceID)
+        }
+    }
+
     private init(display: DisplaySettings) {
         deviceID = display.deviceID
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .pictureControls, deviceID: display.deviceID)
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
             styleMask: [.titled, .closable, .utilityWindow],
@@ -218,6 +239,7 @@ final class PictureControlsPanelController:
                 onDone: { [weak self] in self?.close() }
             )
         )
+        workspaceTracker.attach(to: panel)
     }
 
     required init?(coder: NSCoder) {
@@ -225,6 +247,7 @@ final class PictureControlsPanelController:
     }
 
     func windowWillClose(_ notification: Notification) {
+        workspaceTracker.noteClosed()
         Self.panels.removeValue(forKey: deviceID)
     }
 }

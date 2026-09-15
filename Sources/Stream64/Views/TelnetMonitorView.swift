@@ -233,22 +233,43 @@ final class TelnetMonitorWindowController: NSWindowController, NSWindowDelegate 
 
     private let deviceID: UUID
     private let model: TelnetMonitorViewModel
+    private let workspaceTracker: WorkspaceWindowTracker
 
-    static func show(session: DeviceSession) {
+    static func show(session: DeviceSession, frame: NSRect? = nil) {
         if let existing = windows[session.device.id] {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.workspaceTracker.upsertFromWindow()
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }
         let controller = TelnetMonitorWindowController(session: session)
         windows[session.device.id] = controller
+        if let frame {
+            controller.window?.setFrame(frame, display: false)
+        }
         controller.showWindow(nil)
+        controller.workspaceTracker.upsertFromWindow()
         controller.window?.makeKeyAndOrderFront(nil)
         controller.model.start()
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    static func captureOpenWindows() -> [WorkspaceWindowEntry] {
+        windows.values.compactMap { controller in
+            guard let window = controller.window else { return nil }
+            return WorkspaceRestorer.entry(
+                kind: .telnetMonitor,
+                window: window,
+                deviceID: controller.deviceID)
+        }
+    }
+
     private init(session: DeviceSession) {
         deviceID = session.device.id
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .telnetMonitor, deviceID: session.device.id)
         model = TelnetMonitorViewModel(session: session)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
@@ -267,12 +288,14 @@ final class TelnetMonitorWindowController: NSWindowController, NSWindowDelegate 
                 model: model,
                 close: { [weak self] in self?.close() }))
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
         model.stop()
+        workspaceTracker.noteClosed()
         Self.windows.removeValue(forKey: deviceID)
     }
 }

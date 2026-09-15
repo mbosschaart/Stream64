@@ -741,7 +741,7 @@ struct Assembly64View: View {
                 load(entry, result: result, behavior: .mountOnly, action: "mount")
             }
             .disabled(targetDevices.isEmpty)
-        case .sid:
+        case .sid, .mod:
             Button("Play") {
                 load(entry, result: result, behavior: .mountOnly, action: "play")
             }
@@ -762,7 +762,7 @@ struct Assembly64View: View {
         switch kind {
         case .prg: return "doc.badge.play"
         case .disk: return "opticaldisc"
-        case .sid: return "music.note"
+        case .sid, .mod: return "music.note"
         case .cartridge: return "memorychip"
         case .other: return "doc"
         }
@@ -1166,23 +1166,26 @@ struct Assembly64View: View {
     @ViewBuilder
     private func archiveActions(_ item: Assembly64ArchiveInspector.Item,
                                 preview: ArchivePreview) -> some View {
-        switch item.fileExtension {
-        case "d64", "g64", "d71", "g71", "d81":
-            Button("Mount & Run") {
-                loadArchiveItem(
-                    item, preview: preview, behavior: .mountAndRun)
-            }
-            Button("Mount") {
-                loadArchiveItem(
-                    item, preview: preview, behavior: .mountOnly)
-            }
-        case "sid":
+        if ManagedFileKind.isMODFilename(item.filename)
+            || item.fileExtension == "sid" {
             Button("Play") {
                 loadArchiveItem(item, preview: preview, behavior: .mountOnly)
             }
-        default:
-            Button("Run") {
-                loadArchiveItem(item, preview: preview, behavior: .mountOnly)
+        } else {
+            switch item.fileExtension {
+            case "d64", "g64", "d71", "g71", "d81":
+                Button("Mount & Run") {
+                    loadArchiveItem(
+                        item, preview: preview, behavior: .mountAndRun)
+                }
+                Button("Mount") {
+                    loadArchiveItem(
+                        item, preview: preview, behavior: .mountOnly)
+                }
+            default:
+                Button("Run") {
+                    loadArchiveItem(item, preview: preview, behavior: .mountOnly)
+                }
             }
         }
     }
@@ -1229,6 +1232,9 @@ struct Assembly64View: View {
     }
 
     private func archiveIcon(_ item: Assembly64ArchiveInspector.Item) -> String {
+        if ManagedFileKind.isMODFilename(item.filename) {
+            return "music.note"
+        }
         switch item.fileExtension {
         case "prg": return "doc.badge.play"
         case "d64", "g64", "d71", "g71", "d81": return "opticaldisc"

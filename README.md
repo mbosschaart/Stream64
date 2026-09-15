@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.128b-purple)
+![Version](https://img.shields.io/badge/version-0.129b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -22,7 +22,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
 - **App-wide AirPlay audio** — one global toolbar route picker sends whichever C64 is currently selected to an AirPlay receiver without changing the Mac's system output; once selected, the route remains locked until explicitly stopped, including during view/C64 switching, resets, and transient transport gaps (AirPlay adds roughly 1–3 seconds of buffering)
 - **In-app updates** — optionally checks the latest stable GitHub release at startup, downloads the architecture-matched ZIP, verifies SHA-256 and Developer ID Team ID, then replaces the app and relaunches (with a GitHub release-page fallback)
-- **File loading** — drag a `.prg`, `.sid`, `.crt`, or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
+- **File loading** — drag a `.prg`, `.sid`, `.mod` (or Amiga-style `mod.name`, including PowerPacker/`PP20`), `.crt`, `.zip` (first supported member), or disk image (`.d64/.g64/.d71/.g71/.d81`) onto any stream; hold ⌃ to **Multi Drop** onto every connected machine at once
 - **Audio output device picker** — choose which Mac speaker/headphones Stream64 uses locally (independent of the system default and of AirPlay)
 - **Commander file manager** — dual panes independently browse Home/internal/USB Mac volumes or any configured Ultimate, with C64-to-C64 transfers, Space-to-mark batch selection, Finder drag-and-drop, queued file operations, direct remote run/mount/play, and simultaneous **All Connected C64s** targets
 - **Assembly64 search browser** — a simplified Discover-first library with native Demo, Games, Graphics, Music, OneFile Demos, and Tools Top 200 lists, Recent Releases, rich filters, favorites, previews, safe ZIP inspection, remembered actions, and Run/Play/Mount/Mount & Run targeting one machine or **All Connected C64s** simultaneously
@@ -243,9 +243,11 @@ window for that device. However the windows end up arranged — from "Open \
 All in Grid" or hand-picked and nudged into place — "Save Window Layout" \
 (also in both menus) remembers every open window's mode, position, and size \
 per device, so "Restore Window Layout" can bring back that exact arrangement \
-later, even after quitting and relaunching the app (Save overwrites whatever \
-was stored for that device); both are on the stream's menu too so restoring \
-works even with no SID windows currently open.
+later (Save overwrites whatever was stored for that device); both are on the \
+stream's menu too so restoring works even with no SID windows currently open. \
+Separately, Stream64 continuously remembers the whole open workspace \
+(viewer size, sidebar visibility, tools, SID windows, etc.) as windows \
+open, move, resize, or close, and restores it on the next launch.
 
 Fourteen modes are register-driven — reconstructed from SID register *writes* \
 seen on a 6510-capable Debug Trace, since there's no way to read individual \
@@ -328,10 +330,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.128b BUILD_NUMBER=128 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.129b BUILD_NUMBER=129 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.128b BUILD_NUMBER=128 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.129b BUILD_NUMBER=129 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -401,6 +403,7 @@ Sources/Stream64/
 │   ├── SIDRegisterActivity.swift, SIDSpectrumAnalyzer.swift
 │   │                            SID register heatmaps and audio FFT analysis
 │   ├── SIDWindowLayout.swift    Persisted SID visualization window layouts
+│   ├── WorkspaceSnapshot.swift  Continuous workspace window restore
 │   ├── UltimateMenuScreen.swift Remote menu-screen decoding model
 │   └── VT100Screen.swift        ANSI/VT100 terminal buffer and parser
 ├── Services/
@@ -524,7 +527,7 @@ All held keyboard/controller state is released on focus loss, app deactivation, 
 
 ### File Loading
 
-Drag-and-drop accepts `.prg` (`POST /v1/runners:run_prg`), disk images (multipart `POST /v1/drives/a:mount`), `.sid` (`POST /v1/runners:sidplay`), and `.crt` (`POST /v1/runners:run_crt`). The file never needs to exist on Ultimate storage, and ⌃-drop fans it out to connected sessions. Assembly64 and Commander use the same runners for remote/library loads.
+Drag-and-drop accepts `.prg` (`POST /v1/runners:run_prg`), disk images (multipart `POST /v1/drives/a:mount`), `.sid` (`POST /v1/runners:sidplay`), tracker modules `.mod` or Amiga-style `mod.name` (`POST /v1/runners:modplay`, with automatic PowerPacker/`PP20` decrunch), `.crt` (`POST /v1/runners:run_crt`), and `.zip` (safe in-memory unwrap of the shallowest supported member). The file never needs to exist on Ultimate storage, and ⌃-drop fans it out to connected sessions. Assembly64 and Commander use the same runners for remote/library loads.
 
 **Mount & Run** (Assembly64 browser / Commander) chains `POST /v1/drives/a:mount` → machine reset → a 3 s BASIC-boot wait → DMA keyboard-buffer injection of `LOAD"*",8,1\rRUN\r` in ≤10-byte chunks so `RUN` is already queued while LOAD executes — fully automatic disk boot (there is no Ultimate “mount and run” REST endpoint).
 
@@ -601,6 +604,7 @@ Decisions that came out of real debugging, preserved here so they don't get "sim
 | `POST /v1/runners:run_prg` | Upload + run a PRG (binary body) |
 | `POST /v1/drives/a:mount` | Upload + mount a disk image (multipart) |
 | `POST /v1/runners:sidplay` | Upload + play a SID tune |
+| `POST /v1/runners:modplay` | Upload + play a tracker module (MOD/S3M/XM) |
 | `POST /v1/runners:run_crt` | Upload + run a cartridge image |
 
 Requests carry the `X-Password` header when the device has an API password set.

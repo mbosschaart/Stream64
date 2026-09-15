@@ -338,7 +338,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     • **.prg** — uploaded and run immediately (reset + load + RUN)
     • **.d64 / .g64 / .d71 / .g71 / .d81** — disk image, mounted in drive A
     • **.sid** — played with the Ultimate's built-in SID player
+    • **.mod** / **mod.*** — played with the Ultimate's tracker/MOD player \
+    (also Amiga-style names like `mod.CoolTune`; PowerPacker/`PP20` files \
+    are decrunched automatically)
     • **.crt** — started as a cartridge
+    • **.zip** — opened safely in memory; the shallowest supported file \
+    inside is loaded (.prg, disk image, .sid, .mod / mod.*, or .crt)
 
     The file uploads straight from your Mac — it does not need to exist on \
     the Ultimate's storage. A banner shows upload progress and the result.
@@ -483,6 +488,8 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     only when sockets are Enabled; UltiSID otherwise) and does not reject \
     files over quirky song-count header fields — the Ultimate decides \
     whether the tune plays.
+    • **.mod** / **mod.*** — **Play**: sent to the Ultimate's tracker/MOD player \
+    (PowerPacker/`PP20` modules are decrunched first)
     • **.crt** — **Run**: started as a cartridge
 
     Files load onto the **selected device** — shown in the status bar at the \
@@ -587,7 +594,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     reconnect, for when the picture froze but the device is fine
 
     Closing any main viewer window fully quits Stream64 and closes every \
-    Assembly64, Help, Settings and additional viewer window.
+    Assembly64, Help, Settings and additional viewer window. On quit, \
+    Stream64 remembers the open windows and their positions/sizes and \
+    restores that workspace the next time you launch.
 
     **Full screen Spaces** — the viewer and other Stream64 windows \
     (Assembly64, File Manager, SID visualizations, Drive Bay, Config, \

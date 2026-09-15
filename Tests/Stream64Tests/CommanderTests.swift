@@ -197,6 +197,65 @@ final class CommanderTests: XCTestCase {
     }
 
 
+    func testFirstSupportedPayloadPrefersShallowestSupportedFile() throws {
+        let shallow = Data([0x01, 0x08, 0x60])
+        let nested = Data([0x01, 0x08, 0x61])
+        let data = try makeArchive([
+            ("docs/readme.txt", Data("notes".utf8), .file, .none),
+            ("nested/deep/game.prg", nested, .file, .deflate),
+            ("boot.prg", shallow, .file, .deflate),
+        ])
+
+        let payload = try Assembly64ArchiveInspector.firstSupportedPayload(
+            from: data)
+        XCTAssertEqual(payload.filename, "boot.prg")
+        XCTAssertEqual(payload.data, shallow)
+    }
+
+
+    func testFirstSupportedPayloadRejectsArchivesWithoutSupportedFiles() throws {
+        let data = try makeArchive([
+            ("readme.txt", Data("notes".utf8), .file, .none),
+            ("notes.md", Data("# hi".utf8), .file, .none),
+        ])
+        XCTAssertThrowsError(
+            try Assembly64ArchiveInspector.firstSupportedPayload(from: data)
+        ) {
+            XCTAssertEqual(
+                $0 as? Assembly64ArchiveInspector.InspectionError,
+                .noSupportedFile)
+        }
+    }
+
+
+    func testMODFilenameRecognizesAmigaPrefixStyle() {
+        XCTAssertTrue(ManagedFileKind.isMODFilename("tune.mod"))
+        XCTAssertTrue(ManagedFileKind.isMODFilename("TUNE.MOD"))
+        XCTAssertTrue(ManagedFileKind.isMODFilename("mod.CoolTune"))
+        XCTAssertTrue(ManagedFileKind.isMODFilename("MOD.song"))
+        XCTAssertFalse(ManagedFileKind.isMODFilename("mod."))
+        XCTAssertFalse(ManagedFileKind.isMODFilename("module.sid"))
+        XCTAssertFalse(ManagedFileKind.isMODFilename("readme.txt"))
+        XCTAssertEqual(
+            ManagedFileKind.classify(
+                name: "mod.CoolTune", isDirectory: false),
+            .mod)
+    }
+
+
+    func testFirstSupportedPayloadAcceptsAmigaMODName() throws {
+        let payload = Data([0x4D, 0x2E, 0x4B])
+        let data = try makeArchive([
+            ("readme.txt", Data("notes".utf8), .file, .none),
+            ("mod.CoolTune", payload, .file, .deflate),
+        ])
+        let result = try Assembly64ArchiveInspector.firstSupportedPayload(
+            from: data)
+        XCTAssertEqual(result.filename, "mod.CoolTune")
+        XCTAssertEqual(result.data, payload)
+    }
+
+
     func testArchiveRejectsTraversalPath() throws {
         let data = try makeArchive([
             ("../escape.prg", Data([1, 2, 3]), .file, .none),
@@ -611,6 +670,31 @@ final class CommanderTests: XCTestCase {
             body.contains(
                 "name=\"sid\"; filename=\"Singularity_2SID.sid\""))
         XCTAssertTrue(body.contains("name=\"songlengths\""))
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Password"), "secret")
+    }
+
+
+    func testMODUploadPostsOctetStreamBody() async throws {
+        let transport = RecordingHTTPTransport()
+        let client = UltimateAPIClient(
+            device: UltimateDevice(
+                name: "Test",
+                host: "192.168.1.64",
+                password: "secret"),
+            transport: transport)
+        let payload = Data("M.K.".utf8) + Data(repeating: 0, count: 32)
+
+        try await client.playMOD(data: payload, filename: "demo.mod")
+
+        let recordedRequest = await transport.recordedRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/v1/runners:modplay")
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "Content-Type"),
+            "application/octet-stream")
+        XCTAssertEqual(request.httpBody, payload)
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "X-Password"), "secret")
     }

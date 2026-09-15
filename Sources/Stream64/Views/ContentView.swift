@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject var sessionManager: SessionManager
     @State private var showingAddDevice = false
     @State private var isFullscreen = false
+    @AppStorage("mainViewerSidebarExpanded") private var sidebarExpanded = true
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var arrowKeyMonitor: Any?
     @State private var mouseMoveMonitor: Any?
@@ -61,8 +62,13 @@ struct ContentView: View {
             sessionManager.applyDebugStreamWarmPreference()
         }
         .onAppear {
+            columnVisibility = sidebarExpanded ? .all : .detailOnly
             applyAudioPolicy()
             sessionManager.applyAudioOutputDeviceUID(settings.audioOutputDeviceUID)
+        }
+        .onChange(of: columnVisibility) {
+            guard !isFullscreen else { return }
+            sidebarExpanded = columnVisibility != .detailOnly
         }
         .toolbar { airPlayToolbar }
         .toolbar(isFullscreen ? .hidden : .automatic, for: .windowToolbar)
@@ -87,7 +93,7 @@ struct ContentView: View {
             guard let window = note.object as? NSWindow,
                   window === mainViewerWindow else { return }
             isFullscreen = false
-            columnVisibility = .all
+            columnVisibility = sidebarExpanded ? .all : .detailOnly
             removeArrowKeyMonitor()
             removeCursorAutoHide()
         }
@@ -295,14 +301,17 @@ private final class MainViewerWindowObservationView: NSView {
     var onWindowChanged: ((NSWindow?) -> Void)?
     private weak var observedWindow: NSWindow?
     private var closeObserver: NSObjectProtocol?
+    private var endLiveResizeObserver: NSObjectProtocol?
+    private var moveObserver: NSObjectProtocol?
+    private var liveResizeObserver: NSObjectProtocol?
     private var isQuittingFromViewerClose = false
+    private var persistWorkItem: DispatchWorkItem?
+    private let workspaceTracker = WorkspaceWindowTracker(
+        kind: .mainViewer, removesOnClose: false, upsertOnAttach: false)
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
-            // SwiftUI tears the hosting view out of the NSWindow before
-            // willClose in some close paths. Keep observing the previous
-            // window so terminate still runs; only update the binding.
             onWindowChanged?(nil)
             return
         }
@@ -311,6 +320,11 @@ private final class MainViewerWindowObservationView: NSView {
         observedWindow = window
         onWindowChanged?(window)
         guard let window else { return }
+        window.identifier = NSWindow.stream64MainViewerIdentifier
+        window.setFrameAutosaveName(NSWindow.stream64MainViewerAutosaveName)
+        // Do not upsert on attach — SwiftUI's default launch frame must not
+        // overwrite the saved size. Restore applies after splash.
+        workspaceTracker.attach(to: window)
 
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -319,19 +333,67 @@ private final class MainViewerWindowObservationView: NSView {
         ) { [weak self] _ in
             self?.quitBecauseMainViewerClosed()
         }
+        endLiveResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didEndLiveResizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let window = self.observedWindow else { return }
+            self.commitMainViewerFrame(window)
+        }
+        moveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleCommitMainViewerFrame()
+        }
+        liveResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willStartLiveResizeNotification,
+            object: window,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                WorkspaceRestorer.cancelMainViewerFrameRestore()
+            }
+        }
     }
 
     deinit {
         removeObservation()
     }
 
+    private func scheduleCommitMainViewerFrame() {
+        persistWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let window = self.observedWindow else { return }
+            self.commitMainViewerFrame(window)
+        }
+        persistWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    private func commitMainViewerFrame(_ window: NSWindow) {
+        Task { @MainActor in
+            guard !WorkspaceSnapshotStore.isRestoring,
+                  !WorkspaceRestorer.isRestoringMainViewerFrame else { return }
+            guard window.frame.width >= 900, window.frame.height >= 400 else {
+                return
+            }
+            workspaceTracker.upsertFromWindow()
+        }
+    }
+
     private func quitBecauseMainViewerClosed() {
         guard !isQuittingFromViewerClose else { return }
         isQuittingFromViewerClose = true
+        persistWorkItem?.cancel()
+        if let window = observedWindow {
+            // Force-save size even during restore — explicit quit.
+            MainViewerFrameStore.save(from: window)
+            WorkspaceRestorer.captureAndSave(preferringMainViewer: window)
+        }
         removeObservation()
-        // Stop audio immediately — terminate may return `.terminateLater`
-        // while remote stream-stop awaits, and users close via the red
-        // traffic light far more often than ⌘Q.
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.sessionManager?.prepareForAppTermination()
         }
@@ -339,10 +401,18 @@ private final class MainViewerWindowObservationView: NSView {
     }
 
     private func removeObservation() {
-        if let closeObserver {
-            NotificationCenter.default.removeObserver(closeObserver)
-            self.closeObserver = nil
+        persistWorkItem?.cancel()
+        persistWorkItem = nil
+        for observer in [closeObserver, endLiveResizeObserver, moveObserver,
+                         liveResizeObserver] {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
         }
+        closeObserver = nil
+        endLiveResizeObserver = nil
+        moveObserver = nil
+        liveResizeObserver = nil
         observedWindow = nil
     }
 }
@@ -656,9 +726,7 @@ private struct ViewerTileContent: View {
                 .strokeBorder(dropBorderColor, lineWidth: tileBorderWidth)
         )
         .dropDestination(for: URL.self) { urls, _ in
-            let accepted = urls.filter {
-                ViewerPane.droppableExtensions.contains($0.pathExtension.lowercased())
-            }
+            let accepted = urls.filter { ViewerPane.isDroppableURL($0) }
             guard let url = accepted.first else { return false }
             // Control held at drop time = Multi Drop: every connected stream.
             if NSEvent.modifierFlags.contains(.control), let multiDrop {
@@ -920,8 +988,15 @@ struct ViewerPane: View {
     }
 
     static let droppableExtensions: Set<String> = [
-        "prg", "d64", "g64", "d71", "g71", "d81", "sid", "crt",
+        "prg", "d64", "g64", "d71", "g71", "d81", "sid",
+        "mod", "crt", "zip",
     ]
+
+    static func isDroppableURL(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        if ManagedFileKind.isMODFilename(name) { return true }
+        return droppableExtensions.contains(url.pathExtension.lowercased())
+    }
 
     var body: some View {
         ViewerPaneSessionContent(
@@ -997,7 +1072,7 @@ private struct ViewerPaneSessionContent: View {
         .ignoresSafeArea(.all, edges: isFullscreen ? .all : [])
         .animation(.easeInOut(duration: 0.2), value: showOnScreenKeyboard)
         .dropDestination(for: URL.self) { urls, _ in
-            let accepted = urls.filter { ViewerPane.droppableExtensions.contains($0.pathExtension.lowercased()) }
+            let accepted = urls.filter { ViewerPane.isDroppableURL($0) }
             guard let url = accepted.first else { return false }
             // Control held at drop time = Multi Drop: every connected stream.
             if NSEvent.modifierFlags.contains(.control), let multiDrop {
@@ -1158,7 +1233,7 @@ private struct ViewerPaneSessionContent: View {
                     .font(.largeTitle)
                 Text("Drop to load on the C64")
                     .font(.headline)
-                Text(".prg / .crt run · .sid plays · disk images mount in drive A")
+                Text(".prg / .crt run · .sid / .mod play · .zip unwraps · disks mount")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

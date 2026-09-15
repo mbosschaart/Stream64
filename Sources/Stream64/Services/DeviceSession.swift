@@ -212,6 +212,9 @@ final class DeviceSession: ObservableObject {
     /// schedule so connect/recovery/restart cannot stack overlapping
     /// stop/settle/start cycles.
     private var silentStreamWatchTask: Task<Void, Never>?
+    /// Restarts debug:start when an "active" bus-trace stops delivering
+    /// packets (C64 Ultimate Founder drops debug on VIC re-arm).
+    private var silentDebugWatchTask: Task<Void, Never>?
 
     /// onStats only fires while frames arrive; when the stream dies the
     /// callbacks just stop. This watchdog turns isStreaming off after
@@ -650,6 +653,8 @@ final class DeviceSession: ObservableObject {
         streamRecoveryTask = nil
         silentStreamWatchTask?.cancel()
         silentStreamWatchTask = nil
+        silentDebugWatchTask?.cancel()
+        silentDebugWatchTask = nil
     }
 
     private func recoverStaleStreams() {
@@ -828,10 +833,11 @@ final class DeviceSession: ObservableObject {
                 port: device.audioPort,
                 durationSeconds: settings.streamDurationSeconds)
         }
-        // Keep the existing warm debug stream untouched. In particular, do
-        // not issue a second debug:start after the video watchdog re-arms
-        // VIC: some SID/RSID programs are stable with an already-running
-        // trace but wedge if debug is restarted mid-playback.
+        // C64 Ultimate Founder (1.1.0) silently stops the debug bus-trace
+        // whenever VIC is stop/started. U64-II keeps debug running, but
+        // re-asserting an already-live destination is harmless there and
+        // restores SID/Debug Trace after video watchdog re-arms.
+        await reassertDebugStreamIfNeeded(generation: generation)
     }
 
     /// startStreaming for UI call sites: failures surface in `state`.
@@ -1073,6 +1079,7 @@ final class DeviceSession: ObservableObject {
             debugLifecycleLog(
                 "[Stream64 debug] active mode=\(mode.rawValue) "
                     + "packets=\(debugStreamReceiver.packetsReceived)")
+            watchForSilentDebugStream(generation: generation)
         } catch {
             debugStreamReceiver.stop()
             if isCurrentConnection(generation) {
@@ -1107,6 +1114,87 @@ final class DeviceSession: ObservableObject {
         }
         try await client.startDebugStream(
             destinationHost: destinationHost, port: port)
+    }
+
+    /// Re-issue debug:start when Stream64 still expects a live bus-trace.
+    /// Founder firmware drops debug whenever video is restarted; without this
+    /// SID visualizations and Debug Trace go quiet while `debugTraceState`
+    /// remains `.active`.
+    private func reassertDebugStreamIfNeeded(generation: UInt64) async {
+        guard isCurrentConnection(generation), isConnected || connecting else {
+            return
+        }
+        guard supportsDebugFeatures else { return }
+        let shouldRun = !debugTraceConsumers.isEmpty
+            || warmDebugTraceLease != nil
+            || {
+                if case .active = debugTraceState { return true }
+                return false
+            }()
+        guard shouldRun else { return }
+
+        let mode: DebugStreamMode = {
+            if case .active(let active) = debugTraceState { return active }
+            return reconnectDebugTraceMode ?? .cpu6510Only
+        }()
+
+        switch debugTraceState {
+        case .active:
+            guard let localIP = LocalNetwork.primaryIPv4Address(
+                reachingDevice: device.host) else { return }
+            do {
+                // Founder often accepts a bare debug:start (HTTP 200) after
+                // VIC re-arm but emits no packets until stop → settle → start.
+                try? await client.stopDebugStream()
+                try await Task.sleep(for: .seconds(1))
+                guard isCurrentConnection(generation),
+                      isConnected || connecting else { return }
+                try await client.startDebugStream(
+                    destinationHost: localIP,
+                    port: device.debugPort)
+                debugLifecycleLog(
+                    "[Stream64 debug] reasserted after video/audio start "
+                        + "mode=\(mode.rawValue)")
+                watchForSilentDebugStream(generation: generation)
+            } catch {
+                debugLifecycleLog(
+                    "[Stream64 debug] reassert failed: \(error.localizedDescription)")
+            }
+        case .inactive, .error:
+            await startDebugTrace(mode: mode)
+        case .starting:
+            break
+        }
+    }
+
+    /// If an "active" debug stream stops delivering packets (common after
+    /// Founder VIC re-arms), restart it while consumers still expect a trace.
+    private func watchForSilentDebugStream(generation: UInt64? = nil) {
+        let generation = generation ?? connectionGeneration
+        silentDebugWatchTask?.cancel()
+        silentDebugWatchTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentConnection(generation),
+                  self.isConnected else { return }
+            guard case .active = self.debugTraceState else { return }
+            guard !self.debugTraceConsumers.isEmpty
+                    || self.warmDebugTraceLease != nil else { return }
+            let baseline = self.debugStreamReceiver.packetsReceived
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled,
+                  self.isCurrentConnection(generation),
+                  self.isConnected,
+                  case .active = self.debugTraceState else { return }
+            guard self.debugStreamReceiver.packetsReceived <= baseline else {
+                self.watchForSilentDebugStream(generation: generation)
+                return
+            }
+            self.debugLifecycleLog(
+                "[Stream64 debug] silent while consumers active — restarting")
+            await self.reassertDebugStreamIfNeeded(generation: generation)
+        }
     }
 
     private func isHostResolveError(_ error: Error) -> Bool {
@@ -1181,6 +1269,8 @@ final class DeviceSession: ObservableObject {
     /// `startDebugTrace`, so there's nothing to restart here.
     func stopDebugTrace() async {
         guard debugTraceState != .inactive else { return }
+        silentDebugWatchTask?.cancel()
+        silentDebugWatchTask = nil
         try? await client.stopDebugStream()
         debugStreamReceiver.stop()
         debugTraceState = .inactive
@@ -1455,8 +1545,8 @@ final class DeviceSession: ObservableObject {
         await input.cancelAndRelease()
     }
 
-    /// Load a dropped file: `.prg`/`.crt` run, `.sid` plays, disk images
-    /// mount in drive A.
+    /// Load a dropped file: `.prg`/`.crt` run, `.sid`/tracker modules play,
+    /// disk images mount in drive A.
     func loadFile(
         at url: URL,
         mountBehavior: MountBehavior = .mountOnly
@@ -1479,7 +1569,12 @@ final class DeviceSession: ObservableObject {
         filename: String,
         mountBehavior: MountBehavior = .mountOnly
     ) async {
-        let ext = (filename as NSString).pathExtension.lowercased()
+        let ext: String
+        if ManagedFileKind.isMODFilename(filename) {
+            ext = "mod"
+        } else {
+            ext = (filename as NSString).pathExtension.lowercased()
+        }
         transferStatus = .uploading(filename)
         do {
             switch ext {
@@ -1546,7 +1641,12 @@ final class DeviceSession: ObservableObject {
         onUploadStarted: (() -> Void)? = nil,
         mountBehavior: MountBehavior = .mountOnly
     ) async -> LoadOutcome? {
-        let ext = (filename as NSString).pathExtension.lowercased()
+        let ext: String
+        if ManagedFileKind.isMODFilename(filename) {
+            ext = "mod"
+        } else {
+            ext = (filename as NSString).pathExtension.lowercased()
+        }
         transferStatus = .uploading(filename)
         onUploadStarted?()
         let outcome: LoadOutcome
@@ -1596,6 +1696,25 @@ final class DeviceSession: ObservableObject {
                     transferStatus = .done("Playing \(filename)")
                 }
                 outcome = .playing(filename)
+            case "mod":
+                let payload = try PowerPacker.decrunchIfNeeded(data)
+                if payload.count != data.count {
+                    transferStatus = .uploading(
+                        "Decrunching \(filename)…")
+                }
+                try await client.playMOD(data: payload, filename: filename)
+                transferStatus = .done("Playing \(filename)")
+                outcome = .playing(filename)
+            case "zip":
+                transferStatus = .uploading("Unpacking \(filename)…")
+                let payload = try Assembly64ArchiveInspector.firstSupportedPayload(
+                    from: data)
+                return await loadData(
+                    payload.data,
+                    filename: payload.filename,
+                    songNumber: songNumber,
+                    onUploadStarted: nil,
+                    mountBehavior: mountBehavior)
             case "crt":
                 try await client.runCRT(data: data)
                 transferStatus = .done("Running \(filename)")

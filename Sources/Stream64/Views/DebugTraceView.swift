@@ -643,6 +643,7 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
 
     private var deviceID: UUID
     private var model: DebugTraceViewModel
+    private var workspaceTracker: WorkspaceWindowTracker
 
     /// UI state preserved when auto-follow retargets the window to another
     /// machine (frame + display/visualization pickers).
@@ -655,12 +656,16 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         var fadeDuration: TimeInterval
     }
 
-    static func show(session: DeviceSession) {
+    static func show(session: DeviceSession, frame: NSRect? = nil) {
         if let existing = windows[session.device.id] {
+            if let frame {
+                existing.window?.setFrame(frame, display: true)
+            }
+            existing.workspaceTracker.upsertFromWindow()
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }
-        present(session: session, restoring: nil)
+        present(session: session, restoring: nil, frame: frame)
     }
 
     /// Retarget any open Debug Trace / Memory Map window to `session` in
@@ -681,16 +686,30 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         source.retarget(to: session)
     }
 
+    static func captureOpenWindows() -> [WorkspaceWindowEntry] {
+        windows.values.compactMap { controller in
+            guard let window = controller.window else { return nil }
+            return WorkspaceRestorer.entry(
+                kind: .debugTrace,
+                window: window,
+                deviceID: controller.deviceID)
+        }
+    }
+
     private static func present(
         session: DeviceSession,
-        restoring snapshot: FollowSnapshot?
+        restoring snapshot: FollowSnapshot?,
+        frame: NSRect? = nil
     ) {
         let controller = DebugTraceWindowController(session: session)
         if let snapshot {
             controller.applyFollowSnapshot(snapshot)
+        } else if let frame {
+            controller.window?.setFrame(frame, display: false)
         }
         windows[session.device.id] = controller
         controller.showWindow(nil)
+        controller.workspaceTracker.upsertFromWindow()
         controller.window?.makeKeyAndOrderFront(nil)
         controller.model.start()
         Task { [model = controller.model] in
@@ -701,6 +720,8 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
 
     private init(session: DeviceSession) {
         deviceID = session.device.id
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .debugTrace, deviceID: session.device.id)
         model = DebugTraceViewModel(session: session)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 480),
@@ -717,6 +738,7 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         window.contentViewController = NSHostingController(
             rootView: DebugTraceView(model: model, session: session))
         Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+        workspaceTracker.attach(to: window)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -747,16 +769,20 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
         let previousModel = model
         previousModel.stop()
         Task { await previousModel.stopTrace() }
+        WorkspaceSnapshotStore.remove(kind: .debugTrace, deviceID: deviceID)
         Self.windows.removeValue(forKey: deviceID)
 
         let newModel = DebugTraceViewModel(session: session)
         model = newModel
         deviceID = session.device.id
+        workspaceTracker = WorkspaceWindowTracker(
+            kind: .debugTrace, deviceID: session.device.id)
         window?.title = "\(session.device.name) Debug Trace"
         window?.contentViewController = NSHostingController(
             rootView: DebugTraceView(model: newModel, session: session))
         if let window {
             Stream64WindowPolicy.applyIndependentFullScreenSupport(to: window)
+            workspaceTracker.attach(to: window)
         }
         applyFollowSnapshot(snapshot)
         Self.windows[session.device.id] = self
@@ -768,6 +794,7 @@ final class DebugTraceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         model.stop()
+        workspaceTracker.noteClosed()
         Self.windows.removeValue(forKey: deviceID)
         Task { [model] in await model.stopTrace() }
     }
