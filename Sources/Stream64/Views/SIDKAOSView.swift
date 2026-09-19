@@ -2,14 +2,14 @@ import AppKit
 import SwiftUI
 
 /// Beat-cut acid-house/demoscene collage driven by the shared KAOS rhythm
-/// state. Every layer is procedural or adapted from real SID analysis data;
-/// no external imagery is needed.
+/// state, bundled artwork and live SID analysis.
 struct SIDKAOSView: View {
     let rhythm: KAOSRhythmState
     let bars: [Float]
     let channels: [SIDVoiceChannel]
     let lissajousPoints: [(left: Float, right: Float)]
     var glow = false
+    var logoKind: SIDLogoAsset.Kind = .c64Ultimate
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
@@ -21,7 +21,7 @@ struct SIDKAOSView: View {
                 // from established beats.
                 let sceneStep = rhythm.sceneIndex
                 let scene = KAOSScene(
-                    rawValue: shuffledSceneIndex(
+                    rawValue: Self.shuffledSceneIndex(
                         step: sceneStep,
                         phrase: rhythm.phraseIndex,
                         count: KAOSScene.allCases.count)
@@ -126,6 +126,10 @@ struct SIDKAOSView: View {
                     drawAssetScene(
                         context: &context, size: size, time: time,
                         asset: Self.driveAsset, palette: palette)
+                case .ultimateLogo:
+                    drawAssetScene(
+                        context: &context, size: size, time: time,
+                        asset: SIDLogoAsset.image(for: logoKind), palette: palette)
                 case .monitor:
                     drawAssetScene(
                         context: &context, size: size, time: time,
@@ -151,13 +155,13 @@ struct SIDKAOSView: View {
 
     // MARK: - Scene library
 
-    private enum KAOSScene: Int, CaseIterable {
+    enum KAOSScene: Int, CaseIterable {
         case acidGrid, wireTunnel, kaleidoscope, scopeWall
         case vuMatrix, noiseStorm, chromaWipe
         case dancers, c64Wireframe, floppy, acidOrbs
         case cassette, cityscape, hyperspace, rasterStorm
         case checkerboard, turntable, ribbon, cubes
-        case smiley, joystick, drive, monitor
+        case smiley, joystick, drive, monitor, ultimateLogo
     }
 
     private static let floppyAsset = lineArt(named: "kaos-floppy")
@@ -189,10 +193,10 @@ struct SIDKAOSView: View {
         }
     }
 
-    private func shuffledSceneIndex(step: Int, phrase: Int, count: Int) -> Int {
+    static func shuffledSceneIndex(step: Int, phrase: Int, count: Int) -> Int {
         // Coprime stride gives every scene a turn before repeating; the
         // phrase term changes the route through that cycle on each phrase.
-        let stride = count > 1 ? count - 2 : 1
+        let stride = count > 1 ? count - 1 : 1
         return (step * stride + phrase * 7 + phrase * phrase * 3) % count
     }
 
@@ -806,8 +810,9 @@ struct SIDKAOSView: View {
     ) -> Bool {
         guard let asset else { return false }
         let aspect = max(0.1, asset.size.width / asset.size.height)
-        let width = size.width * widthFraction * (1 + CGFloat(rhythm.beatPulse) * 0.08)
-        let height = min(size.height * 0.74, width / aspect)
+        let desiredWidth = size.width * widthFraction * (1 + CGFloat(rhythm.beatPulse) * 0.08)
+        let width = min(desiredWidth, size.height * 0.74 * aspect)
+        let height = width / aspect
         let rect = CGRect(
             x: size.width / 2 - width / 2,
             y: size.height / 2 - height / 2,

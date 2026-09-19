@@ -178,12 +178,15 @@ mkdir -p "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses"
 cp "$BIN_DIR/Stream64_Stream64.bundle/7-Zip-License.txt" \
     "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses/7-Zip-License.txt"
 KAOS_ASSETS=(
+    c64cu-logo.webp
+    u64_logo_badgeman.jpg
     kaos-1541.png
     kaos-c64.png
     kaos-cassette.png
     kaos-floppy.png
     kaos-joystick.png
     kaos-monitor.png
+    showcase-1702.png
     kaos-smiley.png
 )
 for asset in "${KAOS_ASSETS[@]}"; do

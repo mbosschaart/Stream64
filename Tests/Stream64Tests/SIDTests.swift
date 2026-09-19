@@ -337,7 +337,7 @@ final class SIDTests: XCTestCase {
         // level, or peak-hold level) should require it.
         let waveformDriven: Set<SIDVisualizationMode> = [
             .oscilloscope, .envelope, .mixerConsole, .vuMeterBank,
-            .colorfulWaveform, .kaos,
+            .colorfulWaveform, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode,
         ]
         for mode in SIDVisualizationMode.allCases {
             XCTAssertEqual(
@@ -352,7 +352,7 @@ final class SIDTests: XCTestCase {
         // audio for its optional low-pass kick overlay.
         for mode in SIDVisualizationMode.allCases {
             let expectedRegisterWrites =
-                mode == .kaos || mode == .oscilloscope || !mode.needsAudioTap
+                mode == .kaos || mode == .sidShowcase || mode.isGenerative || mode == .clubMode || mode == .oscilloscope || !mode.needsAudioTap
             XCTAssertEqual(
                 mode.needsRegisterWrites,
                 expectedRegisterWrites,
@@ -379,12 +379,12 @@ final class SIDTests: XCTestCase {
             // its beat/rhythm scene library.
             XCTAssertEqual(
                 needs.needsLissajousPoints,
-                mode == .lissajous || mode == .kaos,
+                mode == .lissajous || mode == .kaos || mode == .clubMode,
                 "\(mode.rawValue)")
-            XCTAssertEqual(needs.needsKAOSRhythm, mode == .kaos, "\(mode.rawValue)")
+            XCTAssertEqual(needs.needsKAOSRhythm, mode == .kaos || mode == .sidShowcase || mode.isGenerative || mode == .clubMode, "\(mode.rawValue)")
             XCTAssertEqual(
                 needs.needsPostMixScope,
-                mode == .oscilloscope,
+                mode == .oscilloscope || mode == .clubMode,
                 "\(mode.rawValue)")
         }
     }

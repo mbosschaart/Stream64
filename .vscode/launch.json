@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:UltimateViewer}",
+            "name": "Debug Stream64",
+            "target": "Stream64",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Stream64"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:UltimateViewer}",
+            "name": "Release Stream64",
+            "target": "Stream64",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Stream64"
+        }
+    ]
+}

@@ -1,83 +1,88 @@
 import SwiftUI
 
-/// A compact heatmap of the SID's own actual register bytes — not the
-/// derived audio/envelope state every other mode reconstructs from them.
-/// Each cell is one of the ~25 writable registers per chip, labeled by
-/// mnemonic and fading out after being written, the same "recent
-/// activity" idea `MemoryMapView` uses for the full 64K address space,
-/// just zoomed in to the SID's own tiny address range with meaningful
-/// names instead of raw addresses.
+/// Dim blue records every write; orange flashes only when the byte changes.
+/// The engine's existing visible-window updates drive decay, with no extra timer.
 struct SIDRegisterActivityView: View {
     let activity: SIDRegisterActivity
 
     var body: some View {
-        // Driven by the parent view model's engine pull — no extra 20 Hz
-        // TimelineView that would keep firing while other SID windows update.
-        let now = Date()
-        VStack(spacing: 14) {
-            ForEach(Array(activity.lastWrite.enumerated()), id: \.offset) { chipIndex, lastWrite in
-                SIDRegisterActivityChipGrid(
-                    chipIndex: chipIndex, lastWrite: lastWrite, now: now)
+        GeometryReader { geometry in
+            let chips = activity.lastWrite.count
+            let horizontal = chips > 1 && geometry.size.width > geometry.size.height * 1.4
+            let columns = horizontal ? chips : 1
+            let rows = horizontal ? 1 : chips
+            let reference = CGSize(width: CGFloat(columns) * 520,
+                                   height: CGFloat(rows) * 310 + 30)
+            let scale = SIDPanelSizing.scale(in: geometry.size, reference: reference)
+            VStack(spacing: 8) {
+                Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                    ForEach(0..<rows, id: \.self) { row in
+                        GridRow {
+                            ForEach(0..<columns, id: \.self) { column in
+                                chipGrid(row * columns + column)
+                            }
+                        }
+                    }
+                }
+                Text("BLUE · WRITE     ORANGE · VALUE CHANGE")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.65))
             }
+            .padding(10)
+            .frame(width: reference.width, height: reference.height)
+            .scaleEffect(scale)
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black)
     }
-}
 
-private struct SIDRegisterActivityChipGrid: View {
-    let chipIndex: Int
-    let lastWrite: [Date?]
-    let now: Date
-
-    /// How long a cell stays lit after being written — longer than
-    /// `MemoryMapView`'s 150ms default, since individual SID register
-    /// writes happen far less densely than a full 6510/VIC bus trace and
-    /// a quick flash would be easy to miss entirely.
-    private static let fadeDuration: Double = 0.6
-    private static let columns = 5
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("SID \(chipIndex + 1)")
-                .font(.caption).bold()
-                .foregroundStyle(.white.opacity(0.7))
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: Self.columns),
-                spacing: 4
-            ) {
-                ForEach(0..<SIDRegisterActivity.registerCount, id: \.self) { offset in
-                    SIDRegisterActivityCell(
-                        label: SIDRegisterActivity.mnemonics[offset],
-                        intensity: intensity(forOffset: offset))
+    private func chipGrid(_ chip: Int) -> some View {
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("SID \(chip + 1)")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+            Grid(horizontalSpacing: 5, verticalSpacing: 5) {
+                ForEach(0..<5, id: \.self) { row in
+                    GridRow {
+                        ForEach(0..<5, id: \.self) { column in
+                            let offset = row * 5 + column
+                            SIDRegisterActivityCell(
+                                label: SIDRegisterActivity.mnemonics[offset],
+                                value: activity.values[chip][offset],
+                                write: activity.intensity(chipIndex: chip, offset: offset, at: now, changes: false),
+                                change: activity.intensity(chipIndex: chip, offset: offset, at: now, changes: true))
+                        }
+                    }
                 }
             }
         }
-    }
-
-    private func intensity(forOffset offset: Int) -> Double {
-        guard lastWrite.indices.contains(offset), let time = lastWrite[offset] else { return 0 }
-        let age = now.timeIntervalSince(time)
-        guard age >= 0, age < Self.fadeDuration else { return 0 }
-        let t = 1 - age / Self.fadeDuration
-        return t * t // Squared falloff — matches MemoryMapView's fade curve.
+        .frame(width: 496, height: 296)
     }
 }
 
 private struct SIDRegisterActivityCell: View {
     let label: String
-    let intensity: Double
+    let value: UInt8?
+    let write: Double
+    let change: Double
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 8, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.6 + intensity * 0.4))
-            .lineLimit(1)
-            .minimumScaleFactor(0.6)
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .background(Color.orange.opacity(intensity * 0.85))
-            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Color.white.opacity(0.12)))
-            .cornerRadius(3)
+        VStack(spacing: 5) {
+            Text(label)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.75))
+            Text(value.map { String(format: "$%02X", Int($0)) } ?? "—")
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 95, height: 48)
+        .background(Color(white: 0.035))
+        .background(Color.black)
+        .overlay(RoundedRectangle(cornerRadius: 4).fill(Color.cyan.opacity(write * 0.14)))
+        .overlay(RoundedRectangle(cornerRadius: 4).fill(Color.orange.opacity(change * 0.65)))
+        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.orange.opacity(0.10 + change * 0.8)))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .accessibilityLabel("\(label), \(value.map { String($0) } ?? "unknown")")
     }
 }

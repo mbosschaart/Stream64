@@ -37,7 +37,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Independent full-screen Spaces** — viewer, Assembly64, File Manager, SID, Drive Bay, Config, Memory Console, Debug Trace and Help can each own a Mission Control Space instead of stacking into the viewer's fullscreen desktop
 - **Drive Bay, Ultimate Config, Memory Console** — mount/unmount and power IEC drives, switch 1541/1571/1581 mode, create blank D64/D71/D81 images; browse/edit flash config categories; DMA peek/poke hex dump via `readmem`/`writemem` (toolbar + stream context menu)
 - **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
-- **SID Oscilloscope** (Ultimate 64/Elite only) — a 20-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 20 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, sndpeek-style 3D Waterfall/3D Bar Field, and **KAOS**—a hybrid register/audio acid-house scene library with beat cuts, scopes, VU meters, spectral layers, and typography — with optional phosphor glow and per-SID post-mix lowpass/kick scopes
+- **SID Oscilloscope** (Ultimate 64/Elite only) — a 33-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 33 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, sndpeek-style 3D Waterfall/3D Bar Field — with optional phosphor glow and per-SID post-mix lowpass/kick scopes
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -224,7 +224,7 @@ sometimes need different handling on that transport.
 
 ### SID Oscilloscope
 
-A 20-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+A 33-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
 dual-8580 U64-II). Reached from the stream's right-click menu under "SID \
@@ -249,6 +249,51 @@ Separately, Stream64 continuously remembers the whole open workspace \
 (viewer size, sidebar visibility, tools, SID windows, etc.) as windows \
 open, move, resize, or close, and restores it on the next launch.
 
+**Club Mode** runs a shuffled tour of all 32 individual visualizations in one window,
+with a fresh random 0.5–3 second duration for every scene and hard VJ-style cuts.
+After a random 4–8 normal scenes, it inserts five rapid 0.2-second swaps
+between two effects (A → B → A → B → A → B), then resumes normal rotation.
+Every effect appears once in the underlying shuffled deck; burst revisits do
+not consume extra deck entries, and adjacent scenes never repeat.
+Its shared SID analysis and histories stay warm between cuts, playback continues
+without interruption, and the countdown pauses when the window is hidden.
+Club Mode supports fullscreen and restores as Club Mode, starting a fresh shuffle.
+
+**SID Showcase** keeps the computer, floppy drive, tape, disk, joystick and
+a matching abstract Commodore 1702 monitor on screen together. Voice assignments rotate every four seconds; each object
+uses its assigned voice for elastic distortion, pulsing and coloured glow.
+Three-voice SIDs share assignments; dual SID gives every voice its own graphic,
+with all six assignments rotating together.
+Flowing connections, radar rings and persistence echoes tie the scene together.
+It supports fullscreen, portrait layouts, Phosphor Glow and Club Mode.
+
+Twelve new Metal modes combine SID voice state with live audio energy:
+
+- **SID Bloom** — one neon radial flower per voice; pitch sets petals, envelopes expand the bloom, and pulse width shapes it.
+- **Pulse Vortex** — a pixelated ring tunnel driven by bass, attacks, and filter settings.
+- **Vector Flow** — a flowing arrow lattice steered by voice pitch/envelopes, with noise-driven turbulence.
+- **Neon Tide** — layered luminous waves shaped by voice pitch, envelopes, pulse width, and bass energy.
+- **Pixel Riptide** — broken pixel streaks stretch with sustained voices and tear on percussion/noise.
+- **Pulse Ribbons** — one luminous ribbon per SID voice, shaped by pitch and envelope.
+- **Echo Tunnel** — rotating, expanding feedback trails retain earlier frames and fade away.
+- **Neon Orbit** — sparse circles, nodes, and connecting lines orbit with the voices.
+- **Shard Storm** — lit 3D octahedral shards rotate and burst apart on attacks.
+- **Grain Nebula** — a depth-layered particle constellation expands with bass and trembles with higher energy.
+- **Dot Matrix** — halftone dots and graphic blocks pulse in voice-coloured patterns.
+- **Signal Collage** — the connected device’s bundled logo (Ultimate 64 or C64 Ultimate) is sliced, displaced, and colour-split with the music, without an additional video stream.
+
+All twelve support the existing independent-window/layout controls. They share SID analysis, cap render resolution, skip hidden windows, and reduce drawing under main-viewer pressure. Per-voice envelopes are reconstructed estimates, not isolated audio measurements.
+
+**Settings → General → Mirror unused SID in visualisations** optionally mirrors
+the active chip into an unused chip’s performance visuals after five seconds
+of inactivity. This includes Filter Curve, ADSR Knobs, Register Activity and
+Pulse Width. Real activity restores that chip immediately. Audio, Control Bits
+and SID Dashboard remain unchanged; the setting defaults to off.
+
+All visualization text grows with the window, including fullscreen and Club Mode. Instrument labels, legends and fixed-width gutters scale together; compact windows retain their existing sizing.
+
+Visualization implementations live in separate Swift files (one per effect). Shared Metal setup, uniforms, and rendering budgets stay in `SIDGenerativeRenderer`; new visualizations should follow this structure.
+
 Fourteen modes are register-driven — reconstructed from SID register *writes* \
 seen on a 6510-capable Debug Trace, since there's no way to read individual \
 voices off the wire (the audio stream is only the final post-mix output), \
@@ -265,7 +310,7 @@ as reference-accurate):
 - **Voice Lineup** — every channel as a stacked, time-aligned lane with note-name labels at each onset and dashed guide lines wherever two or more channels change notes at (nearly) the same moment — a chiptune's version of a chord hit, inspired by Sonic Lineup's multi-track alignment view
 - **Filter Curve** — an approximate frequency-response curve per chip from the (newly decoded) filter/resonance/mode registers, plus which channels are routed through it
 - **VU Meter Bank** — large, bold per-channel level meters with a peak-hold notch, laid out like a real mixing console's meter bridge
-- **Register Activity Grid** — a compact heatmap of the SID's own ~25 writable registers per chip, labeled by mnemonic (`V1 FREQ LO`, `V2 CTRL`, `FC HI`, etc.) and lighting up on each write — shows what the player routine is actually doing at the register level, not the resulting audio
+- **Register Activity Grid** — a compact heatmap of the SID's own ~25 writable registers per chip, labeled by mnemonic (`V1 FREQ LO`, `V2 CTRL`, `FC HI`, etc.) and lighting up on each write. Dim blue indicates writes; brighter orange pulses indicate changed values, with the current byte shown in hex. Repeated identical refreshes no longer keep every cell brightly lit. The grid, text, Control Bits dots/labels, and Dashboard readouts scale up with their windows
 - **ADSR Knobs** — the raw Attack/Decay/Sustain/Release register values (0-15) per channel as bars, each labeled with its real millisecond time — distinct from the ADSR Envelope mode, which shows the resulting curve, not the knob settings
 - **Pulse Width** — a duty-cycle gauge for the 12-bit pulse-width register per channel, with a small preview of the resulting pulse shape — surfaces PWM-sweep effects invisible in every other mode
 - **Control Bits** — an LED-style indicator grid per channel for all 8 control-register bits (Gate/Sync/Ring/Test/Triangle/Sawtooth/Pulse/Noise) at a glance
@@ -293,7 +338,9 @@ already — no prompt, no button. It can run alongside the Debug Trace \
 window watching the very same trace, and opening several SID Oscilloscope \
 windows at once only starts it the first time, not per window.
 
-### KAOS
+### KAOS (inactive)
+
+KAOS is excluded from visualization menus, Open All in Grid, saved-layout restoration, and Club Mode. Its Swift implementation and assets are retained for possible reactivation.
 
 **KAOS** is the hybrid acid-house/demoscene performance mode. It combines \
 SID gate/frequency/control events, `$D418` digi activity, and real post-mix \

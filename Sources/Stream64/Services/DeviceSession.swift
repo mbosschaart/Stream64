@@ -31,6 +31,9 @@ final class DeviceSession: ObservableObject {
     }
 
     @Published private(set) var state: ConnectionState = .disconnected
+    /// Hardware identity from /v1/info, not the user's editable device name.
+    /// Visualization mirrors read this on their existing refresh cadence.
+    private(set) var reportedProduct: String?
     /// Assembled UDP frames per second (receive path) — not Metal presents.
     /// Not `@Published`: UI reads `videoFrameStats` instead (see that type).
     private(set) var fps: Double = 0
@@ -508,6 +511,7 @@ final class DeviceSession: ObservableObject {
             return
         }
         guard isCurrentConnection(generation) else { return }
+        reportedProduct = info.product ?? info.displayProduct
         let description = info.connectionDescription
         do {
             // Start local UDP receivers first so no packets are dropped.

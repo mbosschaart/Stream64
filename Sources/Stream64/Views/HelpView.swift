@@ -682,7 +682,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **SID Oscilloscope** — right-click menu → **SID Visualizations**
 
-    A 20-mode SID visualizer — 3 channels normally, 6 when a second SID \
+    A 33-mode SID visualizer — 3 channels normally, 6 when a second SID \
     address is mapped (physical Socket 2 or UltiSID 2). Chip bases follow \
     the same physical-vs-UltiSID routing rule as playback, so dual-SID \
     debug writes stay visible even when UltiSID 2 is Unmapped or socket \
@@ -701,19 +701,42 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     also on the right-click menu, so restoring works even with no SID \
     windows currently open.
 
-    **KAOS** — an original acid-house/demoscene visual performance mode. It \
-    mixes SID gate/control and `$D418` digi events with real post-mix audio \
-    energy to infer beats, BPM, phrases, and patterns. Beat-directed cuts \
-    select a large procedural scene library: neon grids/tunnels, scope and \
-    VU walls, dancers, wireframe C64/floppy/cassette/turntable motifs, \
-    hyperspace, raster storms, checkerboards, cubes, and spectral layers. \
-    Rare full-screen `ACID`/`HOUSE`/`BASS`/`KAOS` digital word flashes hit on \
-    bars and bass pulses. Because it joins the shared SID trace and audio \
-    path, multiple KAOS windows stay synchronized.
+    **SID Bloom**, **Pulse Vortex**, **Vector Flow**, and **Neon Tide** add \
+    procedural Metal scenes: voice-shaped neon flowers, a bass-reactive pixel \
+    tunnel, swirling arrows, and layered luminous waves. They combine \
+    reconstructed SID envelopes/pitch/pulse width with live audio energy, \
+    support Phosphor Glow, and reduce rendering under main-viewer pressure.
+
+    **Pixel Riptide** tears coloured pixel streaks on percussion; **Pulse Ribbons** \
+    follows each voice with luminous bands; **Echo Tunnel** rotates and expands \
+    real frame feedback; **Neon Orbit** draws sparse circles and connections. \
+    **Shard Storm** fractures rotating 3D forms; **Grain Nebula** disperses a \
+    particle cloud; **Dot Matrix** pulses halftone dots; **Signal Collage** \
+    slices and colour-splits the connected device’s logo. These modes also \
+    join Club Mode automatically and share the same SID/audio analysis.
+
+    **Mirror unused SID in visualisations** (Settings → General, off by default) \
+    lets an inactive chip’s performance visuals follow the active chip after \
+    five seconds. Its own voices take over as soon as they become active. \
+    Filter Curve, ADSR Knobs, Register Activity and Pulse Width also mirror. \
+    Audio, Control Bits and SID Dashboard retain real hardware state.
+
+    **SID Showcase** keeps six graphics visible together: computer, \
+    floppy drive, tape, disk, joystick and a Commodore 1702 monitor. Each follows one SID voice for \
+    distortion, pulsing and coloured glow; assignments rotate every four \
+    seconds. Single SID shares three voices; dual SID cycles through all six. \
+    Labels identify the current assignments, with layouts for wide or tall windows.
+
+    **Club Mode** is a VJ-style shuffled tour of all individual visualizations \
+    in one window, with a fresh random 0.5–3 second interval for every scene. \
+    After 4–8 normal scenes, it inserts five rapid 0.2-second swaps between \
+    two effects, then resumes the shuffled deck. Burst revisits do not skip \
+    other effects. Shared SID/audio analysis keeps running between cuts. Hidden \
+    windows pause the countdown; workspace restore starts a fresh Club set.
 
     A window's mode is fixed once it's open — picking a different mode from \
     either menu always opens a *new* window rather than switching the \
-    current one, so e.g. an Oscilloscope window and a Spectrum Analyzer \
+    current one (Club Mode automatically rotates its inner scene), so e.g. an Oscilloscope window and a Spectrum Analyzer \
     window can both stay open and updating live side by side.
 
     Fourteen modes reconstruct their picture from SID register *writes*, \
