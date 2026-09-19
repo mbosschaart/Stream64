@@ -14,6 +14,9 @@ struct SIDGenerativeUniforms {
     var voice3 = SIMD4<Float>.zero
     var voice4 = SIMD4<Float>.zero
     var voice5 = SIMD4<Float>.zero
+    var voice6 = SIMD4<Float>.zero
+    var voice7 = SIMD4<Float>.zero
+    var voice8 = SIMD4<Float>.zero
 
     static func snapshot(
         mode: SIDVisualizationMode, channels: [SIDVoiceChannel],
@@ -39,13 +42,13 @@ struct SIDGenerativeUniforms {
                               unit(rhythm.impactPulse), unit(rhythm.masterLevel))
         result.rhythm = SIMD4(unit(rhythm.beatPulse * rhythm.beatConfidence * rhythm.masterLevel),
                               unit(rhythm.impactStrength), unit(rhythm.beatPhase), unit(rhythm.beatConfidence))
-        let count = channels.contains { $0.chipIndex == 1 } ? 6 : 3
+        let count = min(9, max(3, ((channels.map(\.chipIndex).max() ?? 0) + 1) * 3))
         result.style = SIMD4(
             unit(Float(filters.map(\.cutoffValue).max() ?? 0) / 2047),
             unit(Float(filters.map(\.resonance).max() ?? 0) / 15),
             Float(count), glow ? 1 : 0)
-        var voices = Array(repeating: SIMD4<Float>.zero, count: 6)
-        for channel in channels where (0..<6).contains(channel.id) {
+        var voices = Array(repeating: SIMD4<Float>.zero, count: 9)
+        for channel in channels where (0..<9).contains(channel.id) {
             let chip = filters.indices.contains(channel.chipIndex) ? filters[channel.chipIndex] : nil
             let muted = channel.registers.test || (channel.voiceIndex == 2 && chip?.voice3Disconnected == true)
             let volume = Float(chip?.volume ?? 15) / 15
@@ -57,6 +60,7 @@ struct SIDGenerativeUniforms {
         }
         result.voice0 = voices[0]; result.voice1 = voices[1]; result.voice2 = voices[2]
         result.voice3 = voices[3]; result.voice4 = voices[4]; result.voice5 = voices[5]
+        result.voice6 = voices[6]; result.voice7 = voices[7]; result.voice8 = voices[8]
         return result
     }
 }
@@ -234,7 +238,7 @@ final class SIDGenerativeRenderer: NSObject, MTKViewDelegate {
     using namespace metal;
     struct Uniforms {
         float4 viewport, energy, style, rhythm, motion;
-        float4 voices[6];
+        float4 voices[9];
     };
     struct Raster { float4 position [[position]]; };
     vertex Raster sidVisualVertex(uint id [[vertex_id]]) {

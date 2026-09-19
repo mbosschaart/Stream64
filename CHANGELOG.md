@@ -4,7 +4,13 @@
 
 ### Improved
 
-- Filter Curve, ADSR Knobs, Register Activity and Pulse Width now follow the unused-SID mirroring setting. Register Activity mirrors byte values and original write/change timestamps without modifying the raw trace.
+- SID Showcase artwork renders upright on the GPU; the top title is removed while rotating per-object voice captions remain.
+
+- Music Compo renders all 16 scenes directly in Metal, removing per-frame image snapshots and uploads. Spectrum, Bar Field, Colorful Waveform, Showcase, Waterfall and Spectrogram also use Metal in standalone/Club views; instrument panels use SwiftUI GPU composition. The opacity toolbar identifies the current scene.
+
+- Reset the native SID player before configuring and launching PSID64 tunes, preventing its temporary single-SID routing from carrying into the first multi-SID launch. Converted playback now reports routing failures.
+
+- SID visualisations now use uploaded tune metadata instead of silence detection. Instrument views, including Filter Curve, show participating chips only; abstract views mirror unused configured channels. Settings offers Auto, Force single SID and Show all configured SIDs. Voice Lineup has proportional fullscreen labels and note bands. Presentation and Metal inputs support nine voices for future three-SID integration.
 
 - KAOS is excluded from visualization menus, Open All in Grid, saved-layout restoration, and Club Mode. Its implementation and assets remain available for future reactivation.
 
@@ -27,7 +33,9 @@
 
 ### Added
 
-- **Mirror unused SID in visualisations** in Settings → General (off by default). In dual-SID setups, performance visuals can mirror the active chip after five seconds of inactivity on the other chip, with immediate return to actual data when it becomes active. Audio and diagnostic views remain untouched; detection and assignment are per device.
+- **Music Compo Mode** blends sixteen visualisations (including 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer) with live C64 video using Club Mode timing. A saved 0–100% video-opacity slider controls the background; its toolbar hides after two seconds of mouse inactivity. Effects render at the video’s exact resolution and pass through the same filters and screen boundary.
+
+
 
 - **SID Slideshow**: all five KAOS hardware graphics share a reactive neon stage, with rotating per-voice assignments, sliced distortions, pulse scaling, coloured glow, persistence echoes and flowing connections. Supports three/six voices, fullscreen/portrait layouts and Club Mode; reuses shared SID analysis and the existing bundled assets.
 

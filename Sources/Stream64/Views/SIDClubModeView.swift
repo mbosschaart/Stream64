@@ -12,6 +12,12 @@ struct SIDClubModeSequence {
 
     static let durationRange: ClosedRange<TimeInterval> = 0.5...3
     private var remaining: [SIDVisualizationMode] = []
+    private let modes: [SIDVisualizationMode]
+
+    init(modes: [SIDVisualizationMode] = SIDVisualizationMode.individualModes) {
+        precondition(modes.count >= 2)
+        self.modes = modes
+    }
     static let burstDuration: TimeInterval = 0.2
     static let normalScenesBetweenBursts = 4...8
     private var previous: SIDVisualizationMode?
@@ -41,7 +47,7 @@ struct SIDClubModeSequence {
 
     private mutating func drawMode<R: RandomNumberGenerator>(using random: inout R) -> SIDVisualizationMode {
         if remaining.isEmpty {
-            remaining = SIDVisualizationMode.individualModes.shuffled(using: &random)
+            remaining = modes.shuffled(using: &random)
             // popLast is the next cue. Avoid a repeat across deck boundaries
             // without removing any visualization from the next complete round.
             if remaining.count > 1, remaining.last == previous {
@@ -67,8 +73,8 @@ final class SIDClubModeController: ObservableObject {
     private var sequence = SIDClubModeSequence()
     private var random = SystemRandomNumberGenerator()
 
-    init() {
-        var sequence = SIDClubModeSequence()
+    init(modes: [SIDVisualizationMode] = SIDVisualizationMode.individualModes) {
+        var sequence = SIDClubModeSequence(modes: modes)
         var random = SystemRandomNumberGenerator()
         let cue = sequence.next(using: &random)
         currentMode = cue.mode

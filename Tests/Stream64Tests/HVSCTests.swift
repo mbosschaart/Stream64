@@ -367,6 +367,35 @@ final class HVSCTests: XCTestCase {
         })
     }
 
+    func testConvertedSIDHandoffResetsBeforeRoutingAndRunsOnlyAfterPreparation() async throws {
+        let transport = SIDConfigurationTransport()
+        let client = UltimateAPIClient(device: UltimateDevice(name: "Test", host: "192.168.1.64"), transport: transport)
+        var data = makeSIDHeader(version: 3, flags: 0x00A0)
+        data[0x7A] = 0x50
+        try await client.prepareSIDProgramPlayback(for: SIDHeader(data: data))
+        try await client.runPRG(data: Data([1, 8, 0]))
+        let requests = await transport.recordedRequests()
+        XCTAssertEqual(requests.first?.url?.path, "/v1/machine:reset")
+        let routing = try XCTUnwrap(requests.firstIndex {
+            $0.httpMethod == "PUT" && $0.url?.path.contains("SID Socket 2 Address") == true
+        })
+        let launch = try XCTUnwrap(requests.firstIndex { $0.url?.path == "/v1/runners:run_prg" })
+        XCTAssertGreaterThan(routing, 0)
+        XCTAssertGreaterThan(launch, routing)
+    }
+
+    func testConvertedSIDHandoffStopsOnResetFailure() async throws {
+        let transport = SIDConfigurationTransport(failReset: true)
+        let client = UltimateAPIClient(device: UltimateDevice(name: "Test", host: "192.168.1.64"), transport: transport)
+        do {
+            try await client.prepareSIDProgramPlayback(for: SIDHeader(data: makeSIDHeader(version: 3, flags: 0)))
+            XCTFail("Reset failure must prevent further routing and launch")
+        } catch { }
+        let requests = await transport.recordedRequests()
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.url?.path, "/v1/machine:reset")
+    }
+
     func testSIDAutoRoutingPersistsPSIDv3SecondAddressAndWarnsPhysicalMismatch() async throws {
         let transport = SIDConfigurationTransport()
         let client = UltimateAPIClient(
@@ -593,15 +622,18 @@ final class HVSCTests: XCTestCase {
 private actor SIDConfigurationTransport: HTTPTransport {
     private var requests: [URLRequest] = []
     private let founder: Bool
+    private let failReset: Bool
     private let unmappedSecondSID: Bool
     private let undetectedPhysical: Bool
 
     init(
         founder: Bool = false,
+        failReset: Bool = false,
         unmappedSecondSID: Bool = false,
         undetectedPhysical: Bool = false
     ) {
         self.founder = founder
+        self.failReset = failReset
         self.unmappedSecondSID = unmappedSecondSID
         self.undetectedPhysical = undetectedPhysical
     }
@@ -681,7 +713,7 @@ private actor SIDConfigurationTransport: HTTPTransport {
             body,
             HTTPURLResponse(
                 url: request.url!,
-                statusCode: 200,
+                statusCode: failReset && path == "/v1/machine:reset" ? 500 : 200,
                 httpVersion: "HTTP/1.1",
                 headerFields: nil)!
         )

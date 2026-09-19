@@ -682,7 +682,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     **SID Oscilloscope** — right-click menu → **SID Visualizations**
 
-    A 33-mode SID visualizer — 3 channels normally, 6 when a second SID \
+    A 34-mode SID visualizer — 3 channels normally, 6 when a second SID \
     address is mapped (physical Socket 2 or UltiSID 2). Chip bases follow \
     the same physical-vs-UltiSID routing rule as playback, so dual-SID \
     debug writes stay visible even when UltiSID 2 is Unmapped or socket \
@@ -715,17 +715,25 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     slices and colour-splits the connected device’s logo. These modes also \
     join Club Mode automatically and share the same SID/audio analysis.
 
-    **Mirror unused SID in visualisations** (Settings → General, off by default) \
-    lets an inactive chip’s performance visuals follow the active chip after \
-    five seconds. Its own voices take over as soon as they become active. \
-    Filter Curve, ADSR Knobs, Register Activity and Pulse Width also mirror. \
-    Audio, Control Bits and SID Dashboard retain real hardware state.
+    **SID visualisation layout** (Settings → General) defaults to **Auto (SID file)**. \
+    Uploaded SID headers determine which chips the tune needs: instrument views \
+    show only participating chips, while abstract visuals mirror unused channels. \
+    Silent passages never change this decision. Unknown playback shows all configured \
+    SIDs; use **Force single SID** for a known single-SID tune started elsewhere. \
+    **Show all configured SIDs** disables adaptation. Audio remains unchanged.
 
     **SID Showcase** keeps six graphics visible together: computer, \
     floppy drive, tape, disk, joystick and a Commodore 1702 monitor. Each follows one SID voice for \
     distortion, pulsing and coloured glow; assignments rotate every four \
     seconds. Single SID shares three voices; dual SID cycles through all six. \
     Labels identify the current assignments, with layouts for wide or tall windows.
+
+    **Music Compo Mode** blends sixteen scenes with the live C64 video \
+    in a separate window, using Club Mode’s rapid cuts and bursts. \
+    The rotation includes 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer. \
+    Adjust **C64 video opacity** below the picture (0–100%). Both layers use the video’s \
+    exact pixel resolution before the selected video filters, scaling and CRT \
+    screen boundary are applied, keeping the visualisations inside the bezel.
 
     **Club Mode** is a VJ-style shuffled tour of all individual visualizations \
     in one window, with a fresh random 0.5–3 second interval for every scene. \

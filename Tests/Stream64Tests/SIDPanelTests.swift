@@ -40,7 +40,7 @@ final class SIDPanelTests: XCTestCase {
 
     func testFullscreenTypographyScalesWithoutDoubleScalingResponsiveViews() {
         let modes: [SIDVisualizationMode] = [.oscilloscope, .envelope, .mixerConsole,
-            .pianoRoll, .pianoKeyboard, .voiceLineup, .filterCurve, .spectrogram,
+            .pianoRoll, .pianoKeyboard, .filterCurve, .spectrogram,
             .vuMeterBank, .adsrKnobs, .pulseWidth]
         for chips in [1, 2] {
             for mode in modes {
@@ -57,7 +57,7 @@ final class SIDPanelTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(1080 / fullscreen, chips == 2 ? 600 : 400)
             }
         }
-        for mode in [SIDVisualizationMode.kaos, .registerActivity, .controlBits, .dashboard, .alienFlower] {
+        for mode in [SIDVisualizationMode.voiceLineup, .kaos, .registerActivity, .controlBits, .dashboard, .alienFlower] {
             XCTAssertEqual(SIDVisualizationScale.factor(mode: mode, chipCount: 1,
                 size: CGSize(width: 1920, height: 1080)), 1)
         }
@@ -86,6 +86,10 @@ final class SIDPanelTests: XCTestCase {
                 voice.registers.frequency = 14000
                 voice.registers.attackDecay = 0x58
                 voice.registers.sustainRelease = 0xA6
+                for sample in 0..<6 {
+                    voice.registers.frequency = UInt16(4000 + index * 1200 + sample * 100)
+                    voice.pushNoteHistory()
+                }
                 return voice
             }
             for chip in 0..<chips {

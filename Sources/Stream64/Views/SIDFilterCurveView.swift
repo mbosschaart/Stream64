@@ -10,6 +10,7 @@ import SwiftUI
 struct SIDFilterCurveView: View {
     let channels: [SIDVoiceChannel]
     let filterStates: [SIDFilterRegisters]
+    var chipIndices: [Int]? = nil
 
     var body: some View {
         GeometryReader { geometry in
@@ -18,7 +19,7 @@ struct SIDFilterCurveView: View {
             VStack(spacing: 0) {
                 ForEach(0..<rows, id: \.self) { row in
                     SIDChipFilterPanel(
-                        chipIndex: row,
+                        chipIndex: chipIndices?[row] ?? row,
                         filter: filterStates.indices.contains(row) ? filterStates[row] : SIDFilterRegisters())
                         .frame(height: rowHeight)
                 }

@@ -337,7 +337,7 @@ final class SIDTests: XCTestCase {
         // level, or peak-hold level) should require it.
         let waveformDriven: Set<SIDVisualizationMode> = [
             .oscilloscope, .envelope, .mixerConsole, .vuMeterBank,
-            .colorfulWaveform, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode,
+            .colorfulWaveform, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode, .musicCompo,
         ]
         for mode in SIDVisualizationMode.allCases {
             XCTAssertEqual(
@@ -352,7 +352,7 @@ final class SIDTests: XCTestCase {
         // audio for its optional low-pass kick overlay.
         for mode in SIDVisualizationMode.allCases {
             let expectedRegisterWrites =
-                mode == .kaos || mode == .sidShowcase || mode.isGenerative || mode == .clubMode || mode == .oscilloscope || !mode.needsAudioTap
+                mode == .kaos || mode == .sidShowcase || mode.isGenerative || mode.isCyclingMode || mode == .oscilloscope || !mode.needsAudioTap
             XCTAssertEqual(
                 mode.needsRegisterWrites,
                 expectedRegisterWrites,
@@ -381,7 +381,7 @@ final class SIDTests: XCTestCase {
                 needs.needsLissajousPoints,
                 mode == .lissajous || mode == .kaos || mode == .clubMode,
                 "\(mode.rawValue)")
-            XCTAssertEqual(needs.needsKAOSRhythm, mode == .kaos || mode == .sidShowcase || mode.isGenerative || mode == .clubMode, "\(mode.rawValue)")
+            XCTAssertEqual(needs.needsKAOSRhythm, mode == .kaos || mode == .sidShowcase || mode.isGenerative || mode.isCyclingMode, "\(mode.rawValue)")
             XCTAssertEqual(
                 needs.needsPostMixScope,
                 mode == .oscilloscope || mode == .clubMode,

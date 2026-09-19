@@ -640,6 +640,18 @@ struct UltimateAPIClient {
 
     // MARK: - File loading
 
+    /// The native SID player's autoconfiguration sets a one-reset skip flag
+    /// (U64Config::SidAutoConfig / run_reset_task). Consume it before configuring
+    /// a PSID64 program, so runPRG's reset restores the intended user routing.
+    /// Configuration reads alone cannot reveal those temporary hardware mappings.
+    func prepareSIDProgramPlayback(for header: SIDHeader) async throws {
+        try await reset()
+        // The REST reset and the firmware's reset-handler task are separate.
+        // Let that handler finish before writing the next tune's configuration.
+        try await Task.sleep(for: .milliseconds(200))
+        _ = try await ensureSIDRouting(for: header)
+    }
+
     /// Upload a PRG and run it (reset + DMA load + RUN).
     func runPRG(data: Data) async throws {
         var request = try makeRequest(path: "/v1/runners:run_prg", method: "POST")

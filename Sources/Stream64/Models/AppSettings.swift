@@ -189,9 +189,9 @@ final class AppSettings: ObservableObject {
     /// newly selected C64. Sound always follows selection regardless.
     @AppStorage("visualizationsAutoFollowSelected")
     var visualizationsAutoFollowSelected: Bool = true
-    /// Presentation-only fallback for an unused chip in dual-SID setups.
-    @AppStorage("mirrorUnusedSIDVisualizations")
-    var mirrorUnusedSIDVisualizations: Bool = false
+    /// Metadata-based layouts; unknown playback retains all configured chips.
+    @AppStorage("sidVisualizationAdaptation")
+    var sidVisualizationAdaptation: SIDVisualizationAdaptation = .automatic
     /// Keep the U64 debug stream alive for supported connected devices so
     /// Debug Trace / register SID windows never need to start it on demand.
     @AppStorage("keepDebugStreamWarm")

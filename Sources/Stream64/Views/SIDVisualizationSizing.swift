@@ -27,7 +27,7 @@ enum SIDVisualizationScale {
         if mode.isGenerative { return 1 }
         switch mode {
         // These views already size their typography from their own geometry.
-        case .registerActivity, .controlBits, .dashboard, .kaos, .sidShowcase, .clubMode:
+        case .voiceLineup, .registerActivity, .controlBits, .dashboard, .kaos, .sidShowcase, .clubMode:
             return 1
         // Pure graphics without labels need no typography/layout adjustment.
         case .spectrum, .lissajous, .waterfall3D, .barField3D, .colorfulWaveform:

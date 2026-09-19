@@ -64,6 +64,21 @@ final class SIDGenerativeTests: XCTestCase {
         XCTAssertEqual(snapshot.voice5.x, 0)
     }
 
+    func testThirdSIDSnapshotAndRhythmKeepAllNineVoices() {
+        var channel = SIDVoiceChannel(id: 8, chipIndex: 2, voiceIndex: 2, bufferSize: 8, noteHistoryLength: 6)
+        channel.registers.control = 0x41
+        channel.registers.frequency = 4000
+        _ = channel.synth.step(dt: 0.1, registers: channel.registers, neighborPhase: 0)
+        var rhythm = KAOSRhythmState()
+        rhythm.advance(timestamp: 0, events: [], spectrumBars: [], channels: [channel])
+        XCTAssertEqual(rhythm.activeVoiceMask, 256)
+        XCTAssertEqual(rhythm.voiceLevels.count, 9)
+        let input = SIDGenerativeUniforms.snapshot(mode: .sea, channels: [channel],
+            filters: Array(repeating: SIDFilterRegisters(modeVolume: 15), count: 3), rhythm: rhythm, glow: false)
+        XCTAssertEqual(input.style.z, 9)
+        XCTAssertGreaterThan(input.voice8.x, 0)
+    }
+
     func testPressureRenderBudgetAndWorkspaceModeRoundTrip() throws {
         let size = CGSize(width: 3840, height: 2160)
         let normal = SIDGenerativeRenderer.renderSize(for: size, underPressure: false)
@@ -115,6 +130,14 @@ final class SIDGenerativeTests: XCTestCase {
             dual.voice5 = SIMD4(0.5, 0.8, 0.2, 0)
             XCTAssertNotEqual(pixels, try render(dual, device: device, queue: queue, pipeline: pipeline),
                               "\(mode.rawValue) ignores the second SID")
+            var triple = dual
+            triple.style.z = 9
+            triple.voice6 = SIMD4(0.9, 0.2, 0.8, 1)
+            triple.voice7 = SIMD4(0.3, 0.7, 0.2, 0)
+            triple.voice8 = SIMD4(0.6, 0.4, 0.5, 0)
+            XCTAssertNotEqual(try render(dual, device: device, queue: queue, pipeline: pipeline),
+                              try render(triple, device: device, queue: queue, pipeline: pipeline),
+                              "\(mode.rawValue) ignores the third SID")
             var later = active
             later.viewport.z += 1
             XCTAssertNotEqual(pixels, try render(later, device: device, queue: queue, pipeline: pipeline),

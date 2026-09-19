@@ -40,6 +40,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     case signalCollage = "Signal Collage"
     case sidShowcase = "SID Slideshow" // Preserve saved layouts after the Showcase rename.
     case clubMode = "Club Mode"
+    case musicCompo = "Music Compo Mode"
     // Raw values are stable persistence keys, including the original names
     // of the four generative effects. User-facing names may evolve separately.
     var id: String { rawValue }
@@ -58,7 +59,12 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     static var activeModes: [Self] { allCases.filter { $0 != .kaos } }
 
     /// All active effects eligible for Club Mode; the coordinator is not an effect.
-    static var individualModes: [Self] { activeModes.filter { $0 != .clubMode } }
+    static var individualModes: [Self] { activeModes.filter { !$0.isCyclingMode } }
+
+    var isCyclingMode: Bool { self == .clubMode || self == .musicCompo }
+    static var compoModes: [Self] {
+        activeModes.filter { $0.isGenerative || [.barField3D, .sidShowcase, .colorfulWaveform, .spectrum].contains($0) }
+    }
 
     var isGenerative: Bool {
         switch self {
@@ -74,7 +80,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     var needsAudioTap: Bool {
         switch self {
         case .oscilloscope, .spectrum, .lissajous, .spectrogram,
-             .waterfall3D, .barField3D, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode:
+             .waterfall3D, .barField3D, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode, .musicCompo:
             return true
         default: return false
         }
@@ -91,7 +97,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// paid for it unconditionally before this was added.
     var needsSampleSynthesis: Bool {
         switch self {
-        case .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode: return true
+        case .oscilloscope, .envelope, .mixerConsole, .vuMeterBank, .colorfulWaveform, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode, .musicCompo: return true
         default: return false
         }
     }
@@ -112,7 +118,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// — as opposed to Lissajous, which only needs raw L/R samples.
     var usesSpectrumBars: Bool {
         switch self {
-        case .spectrum, .spectrogram, .waterfall3D, .barField3D, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode: return true
+        case .spectrum, .spectrogram, .waterfall3D, .barField3D, .kaos, .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage, .sidShowcase, .clubMode, .musicCompo: return true
         default: return false
         }
     }
@@ -121,7 +127,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
     /// than just the latest one.
     var usesSpectrogramHistory: Bool {
         switch self {
-        case .spectrogram, .waterfall3D, .barField3D, .clubMode: return true
+        case .spectrogram, .waterfall3D, .barField3D, .clubMode, .musicCompo: return true
         default: return false
         }
     }
@@ -162,6 +168,7 @@ enum SIDVisualizationMode: String, CaseIterable, Identifiable {
         case .signalCollage: return "square.3.layers.3d"
         case .sidShowcase: return "photo.stack"
         case .clubMode: return "shuffle"
+        case .musicCompo: return "play.rectangle.on.rectangle"
         }
     }
 }
@@ -360,6 +367,8 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     let session: DeviceSession
     let engine: SIDEngine
     let clubMode = SIDClubModeController()
+    let compoMode = SIDClubModeController(modes: SIDVisualizationMode.compoModes)
+    private var cyclingController: SIDClubModeController { visualizationMode == .musicCompo ? compoMode : clubMode }
 
     @Published var visualizationMode: SIDVisualizationMode = .oscilloscope
     @Published var phosphorGlowEnabled = false
@@ -369,7 +378,8 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     /// rebuild Canvases when other SID windows update.
     @Published private(set) var channels: [SIDVoiceChannel] = []
     @Published private(set) var chipCount = 1
-    @Published private(set) var visualMirrorSourceChip: Int?
+    @Published private(set) var configuredSIDAddresses: [UInt16] = [0xD400]
+    @Published private(set) var tuneSIDAddresses: [UInt16]?
     @Published private(set) var filterStates: [SIDFilterRegisters] = []
     @Published private(set) var registerActivity = SIDRegisterActivity(chipCount: 1)
     @Published private(set) var spectrumBars: [Float] = []
@@ -405,15 +415,16 @@ final class SIDOscilloscopeViewModel: ObservableObject {
             // leased, but should not rebuild their SwiftUI canvases.
             guard let self, self.isVisiblyActive else { return }
             self.pullFromEngine(needs: needs)
-            if self.visualizationMode == .clubMode { self.clubMode.advance() }
+            if self.visualizationMode.isCyclingMode { self.cyclingController.advance() }
         }
         isVisiblyActive = true
-        if visualizationMode == .clubMode { clubMode.start() }
+        if visualizationMode.isCyclingMode { cyclingController.start() }
         pullFromEngine(needs: needs)
     }
 
     func stop() {
         clubMode.stop()
+        compoMode.stop()
         isVisiblyActive = false
         if let engineToken {
             engine.unsubscribe(engineToken)
@@ -425,7 +436,7 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     func setVisiblyActive(_ active: Bool) {
         guard active != isVisiblyActive else { return }
         isVisiblyActive = active
-        if visualizationMode == .clubMode { clubMode.setVisible(active) }
+        if visualizationMode.isCyclingMode { cyclingController.setVisible(active) }
         if active, let subscribedNeeds {
             pullFromEngine(needs: subscribedNeeds)
         }
@@ -433,7 +444,8 @@ final class SIDOscilloscopeViewModel: ObservableObject {
 
     private func pullFromEngine(needs: SIDEngineNeeds) {
         chipCount = engine.chipCount
-        visualMirrorSourceChip = engine.visualMirrorSourceChip
+        configuredSIDAddresses = engine.chipBaseAddresses
+        tuneSIDAddresses = session.sidPlayback.addresses
         if needs.needsSampleSynthesis || needs.needsRegisterWrites {
             channels = engine.channels
         }
@@ -488,6 +500,8 @@ private struct SIDOscilloscopeContent: View {
     var body: some View {
         if model.visualizationMode == .clubMode {
             SIDClubModeView(model: model, controller: model.clubMode)
+        } else if model.visualizationMode == .musicCompo {
+            SIDMusicCompoView(model: model, controller: model.compoMode)
         } else {
             SIDVisualizationContent(model: model, mode: model.visualizationMode)
         }
@@ -502,30 +516,41 @@ struct SIDVisualizationContent: View {
     @AppStorage("oscilloscopePostMixLowpassOverlay")
     private var showPostMixLowpassOverlay = false
 
-    @AppStorage("mirrorUnusedSIDVisualizations")
-    private var mirrorUnusedSID = false
+    @AppStorage("sidVisualizationAdaptation")
+    private var adaptation: SIDVisualizationAdaptation = .automatic
+
+    private var presentation: SIDVisualPresentation {
+        SIDVisualPresentation(channels: model.channels, filters: model.filterStates,
+            rhythm: model.kaosRhythm, topology: SIDVisualTopology(
+                configuredAddresses: model.configuredSIDAddresses, tuneAddresses: model.tuneSIDAddresses,
+                adaptation: adaptation), mode: mode, registerActivity: model.registerActivity)
+    }
 
     var body: some View {
-        SIDVisualizationSizing(mode: mode, chipCount: model.chipCount) {
-            scene
+        let presentation = presentation
+        SIDVisualizationSizing(mode: mode, chipCount: presentation.chipCount) {
+            if mode.isGenerative || SIDPerformanceGPU.Scene(mode: mode) != nil {
+                scene(presentation: presentation)
+            } else {
+                // Instrument UI keeps native SwiftUI text/accessibility while
+                // its paths, fills and effects are composited in a GPU layer.
+                scene(presentation: presentation).drawingGroup(opaque: true, colorMode: .linear)
+            }
         }
     }
 
     @ViewBuilder
-    private var scene: some View {
-        let presentation = SIDVisualPresentation(channels: model.channels, filters: model.filterStates,
-            rhythm: model.kaosRhythm, source: model.visualMirrorSourceChip,
-            enabled: mirrorUnusedSID, mode: mode, registerActivity: model.registerActivity)
+    private func scene(presentation: SIDVisualPresentation) -> some View {
         switch mode {
         case .oscilloscope:
             HStack(spacing: 8) {
-                SIDChannelGrid(channels: presentation.channels, chipCount: model.chipCount) { channel in
+                SIDChannelGrid(channels: presentation.channels, chipCount: presentation.chipCount) { channel in
                     SIDChannelPanel(channel: channel, glow: model.phosphorGlowEnabled)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if showPostMixLowpassOverlay {
                     VStack(spacing: 8) {
-                        ForEach(0..<max(model.chipCount, 1), id: \.self) { index in
+                        ForEach(presentation.displayedChipIndices, id: \.self) { index in
                             SIDPostMixKickScope(
                                 chipIndex: index,
                                 samples: model.postMixLowpassSamplesByChip.indices.contains(index)
@@ -539,11 +564,11 @@ struct SIDVisualizationContent: View {
                 }
             }
         case .envelope:
-            SIDChannelGrid(channels: presentation.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: presentation.channels, chipCount: presentation.chipCount) { channel in
                 SIDEnvelopePanel(channel: channel, glow: model.phosphorGlowEnabled)
             }
         case .mixerConsole:
-            SIDChannelGrid(channels: presentation.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: presentation.channels, chipCount: presentation.chipCount) { channel in
                 SIDMixerStripPanel(channel: channel)
             }
         case .pianoRoll:
@@ -553,7 +578,7 @@ struct SIDVisualizationContent: View {
         case .voiceLineup:
             SIDVoiceLineupView(channels: presentation.channels)
         case .filterCurve:
-            SIDFilterCurveView(channels: presentation.channels, filterStates: presentation.filters)
+            SIDFilterCurveView(channels: presentation.channels, filterStates: presentation.filters, chipIndices: presentation.displayedChipIndices)
         case .spectrum:
             SIDSpectrumView(bars: model.spectrumBars, glow: model.phosphorGlowEnabled)
         case .lissajous:
@@ -569,24 +594,24 @@ struct SIDVisualizationContent: View {
         case .vuMeterBank:
             SIDVUMeterBankView(channels: presentation.channels)
         case .registerActivity:
-            SIDRegisterActivityView(activity: presentation.registerActivity)
+            SIDRegisterActivityView(activity: presentation.registerActivity, chipIndices: presentation.displayedChipIndices)
         case .adsrKnobs:
-            SIDChannelGrid(channels: presentation.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: presentation.channels, chipCount: presentation.chipCount) { channel in
                 SIDADSRKnobPanel(channel: channel)
             }
         case .pulseWidth:
-            SIDChannelGrid(channels: presentation.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: presentation.channels, chipCount: presentation.chipCount) { channel in
                 SIDPulseWidthPanel(channel: channel)
             }
         case .controlBits:
-            SIDChannelGrid(channels: presentation.channels, chipCount: model.chipCount) { channel in
+            SIDChannelGrid(channels: presentation.channels, chipCount: presentation.chipCount) { channel in
                 SIDControlBitsPanel(channel: channel)
             }
         case .dashboard:
-            SIDDashboardView(channels: presentation.channels, filterStates: presentation.filters)
+            SIDDashboardView(channels: presentation.channels, filterStates: presentation.filters, chipIndices: presentation.displayedChipIndices)
         case .colorfulWaveform:
             SIDColorfulWaveformView(channels: presentation.channels, glow: model.phosphorGlowEnabled)
-        case .clubMode:
+        case .clubMode, .musicCompo:
             // Club's deck excludes itself. Never recursively mount a club.
             EmptyView()
         case .alienFlower, .blackhole, .arrowVectorField, .sea, .pixelRiptide, .pulseRibbons, .echoTunnel, .neonOrbit, .shardStorm, .grainNebula, .dotMatrix, .signalCollage:

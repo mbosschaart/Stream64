@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import MetalKit
 import AppKit
 @testable import Stream64
 
@@ -55,11 +56,29 @@ final class SIDShowcaseTests: XCTestCase {
 
     @MainActor
     private func render(_ input: SIDGenerativeUniforms, time: Double, size: CGSize, name: String) throws -> Data {
-        let renderer = ImageRenderer(content: SIDShowcaseStage(input: input, time: time)
-            .frame(width: size.width, height: size.height))
-        renderer.scale = 1
-        let image = try XCTUnwrap(renderer.nsImage)
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation)))
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let renderer = try SIDPerformanceGPU(device: device)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+            width: Int(size.width), height: Int(size.height), mipmapped: false)
+        descriptor.storageMode = .shared
+        descriptor.usage = [.renderTarget, .shaderRead]
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let command = try XCTUnwrap(queue.makeCommandBuffer())
+        XCTAssertTrue(renderer.encode(command: command, target: texture, scene: .showcase,
+            input: input, channels: [], history: [], time: Float(time)))
+        command.commit(); command.waitUntilCompleted()
+        XCTAssertEqual(command.status, .completed)
+        let w = texture.width, h = texture.height
+        var bytes = [UInt8](repeating: 0, count: w*h*4)
+        texture.getBytes(&bytes, bytesPerRow: w*4, from: MTLRegionMake2D(0,0,w,h), mipmapLevel: 0)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w,
+            pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: w*4, bitsPerPixel: 32))
+        let pixels = try XCTUnwrap(bitmap.bitmapData)
+        for p in stride(from: 0, to: bytes.count, by: 4) {
+            pixels[p] = bytes[p+2]; pixels[p+1] = bytes[p+1]; pixels[p+2] = bytes[p]; pixels[p+3] = 255
+        }
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         if let directory = ProcessInfo.processInfo.environment["STREAM64_SHOWCASE_PREVIEWS"] {
             let url = URL(fileURLWithPath: directory, isDirectory: true)

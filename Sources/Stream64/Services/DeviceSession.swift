@@ -99,6 +99,7 @@ final class DeviceSession: ObservableObject {
     /// reconstructed state proactively rather than keep showing
     /// whatever was last derived before the reset.
     @Published private(set) var machineResetToken = UUID()
+    @Published private(set) var sidPlayback = SIDPlaybackMetadata()
 
     let device: UltimateDevice
     let videoReceiver = VideoReceiver()
@@ -903,6 +904,7 @@ final class DeviceSession: ObservableObject {
     /// asynchronous `disconnect()` tail. Idempotent: a second call after
     /// locals are already down does not bump `connectionGeneration` again.
     func prepareForEviction() {
+        sidPlayback.beginPlayback()
         stopRecording()
         let needsInvalidate = state != .disconnected
             || streamingOp != nil
@@ -1286,11 +1288,13 @@ final class DeviceSession: ObservableObject {
     func reset() async {
         await flushPendingKeys()
         await run { try await self.client.reset() }
+        sidPlayback.beginPlayback()
         machineResetToken = UUID()
     }
     func reboot() async {
         await flushPendingKeys()
         await run { try await self.client.reboot() }
+        sidPlayback.beginPlayback()
         machineResetToken = UUID()
         // Rebooting stops the device-side streams; restart them once the
         // Ultimate is back up (poll until it responds, then re-arm).
@@ -1315,6 +1319,7 @@ final class DeviceSession: ObservableObject {
             state = .error("Reboot failed: \(error.localizedDescription)")
             return
         }
+        sidPlayback.beginPlayback()
         machineResetToken = UUID()
         for _ in 0..<20 {
             try? await Task.sleep(for: .seconds(1))
@@ -1333,6 +1338,7 @@ final class DeviceSession: ObservableObject {
             state = .error(error.localizedDescription)
             return
         }
+        sidPlayback.beginPlayback()
         machineResetToken = UUID()
 
         if display.filterMode == .crtTube {
@@ -1583,6 +1589,7 @@ final class DeviceSession: ObservableObject {
         do {
             switch ext {
             case "prg":
+                sidPlayback.beginPlayback()
                 await flushPendingKeys()
                 try await client.runPRG(path: path)
                 transferStatus = .done("Running \(filename)")
@@ -1595,6 +1602,7 @@ final class DeviceSession: ObservableObject {
                     transferStatus = .done("Mounted \(filename) in drive A")
                 }
             case "sid":
+                sidPlayback.beginPlayback()
                 // The file is already on Ultimate storage and the REST API
                 // has no read-by-path endpoint. Do not guess its topology or
                 // mutate hardware routing without inspecting its header.
@@ -1603,9 +1611,11 @@ final class DeviceSession: ObservableObject {
                 transferStatus = .done(
                     "Playing \(filename) (SID routing was not verified)")
             case "mod":
+                sidPlayback.beginPlayback()
                 try await client.playMOD(path: path)
                 transferStatus = .done("Playing \(filename)")
             case "crt":
+                sidPlayback.beginPlayback()
                 try await client.runCRT(path: path)
                 transferStatus = .done("Running \(filename)")
             default:
@@ -1657,6 +1667,7 @@ final class DeviceSession: ObservableObject {
         do {
             switch ext {
             case "prg":
+                sidPlayback.beginPlayback()
                 await flushPendingKeys()
                 try await client.runPRG(data: data)
                 transferStatus = .done("Running \(filename)")
@@ -1672,16 +1683,9 @@ final class DeviceSession: ObservableObject {
                     outcome = .mounted(filename)
                 }
             case "sid":
+                let playbackGeneration = sidPlayback.beginPlayback()
                 await awaitDebugPrewarmBeforeSIDPlayback()
-                // Best-effort local header/routing only. Always hand the SID
-                // bytes to the Ultimate; its player is the compatibility
-                // authority for song count and other quirks.
-                transferStatus = .uploading("Configuring SID routing for \(filename)")
                 let header = try? SIDHeader(data: data)
-                if let header {
-                    _ = try? await client.ensureSIDRouting(for: header)
-                    await SIDEngine.refreshConfiguration(for: self)
-                }
                 if let header, header.version >= 3 {
                     if let songNumber, songNumber != header.startSong {
                         transferStatus = .failed(
@@ -1690,17 +1694,33 @@ final class DeviceSession: ObservableObject {
                     }
                     transferStatus = .uploading("Converting \(filename) with PSID64")
                     let prg = try await psid64.convert(data, filename: filename)
+                    // Complete conversion before interrupting the current tune.
+                    // A native player leaves transient SID routing and a skip-reset
+                    // flag behind; clear that handoff before applying the new map.
+                    await flushPendingKeys()
+                    transferStatus = .uploading("Preparing SID routing for \(filename)")
+                    try await client.prepareSIDProgramPlayback(for: header)
+                    machineResetToken = UUID()
+                    await SIDEngine.refreshConfiguration(for: self)
                     try await client.runPRG(data: prg)
                     transferStatus = .done("Playing \(filename) via PSID64")
                 } else {
+                    // Native playback retains best-effort compatibility with quirky
+                    // headers; converted multi-SID playback requires valid routing.
+                    if let header {
+                        _ = try? await client.ensureSIDRouting(for: header)
+                        await SIDEngine.refreshConfiguration(for: self)
+                    }
                     try await client.playSID(
                         data: data,
                         filename: filename,
                         songNumber: songNumber)
                     transferStatus = .done("Playing \(filename)")
                 }
+                sidPlayback.didStart(addresses: header?.requiredSIDAddresses, generation: playbackGeneration)
                 outcome = .playing(filename)
             case "mod":
+                sidPlayback.beginPlayback()
                 let payload = try PowerPacker.decrunchIfNeeded(data)
                 if payload.count != data.count {
                     transferStatus = .uploading(
@@ -1720,6 +1740,7 @@ final class DeviceSession: ObservableObject {
                     onUploadStarted: nil,
                     mountBehavior: mountBehavior)
             case "crt":
+                sidPlayback.beginPlayback()
                 try await client.runCRT(data: data)
                 transferStatus = .done("Running \(filename)")
                 outcome = .running(filename)
@@ -1742,6 +1763,7 @@ final class DeviceSession: ObservableObject {
     /// sits in the buffer while LOAD executes. Matrix typing is too easy to
     /// lose during disk activity (Mount & Run would only LOAD).
     private func bootMountedDisk() async throws {
+        sidPlayback.beginPlayback()
         await flushPendingKeys()
         try await client.reset()
         // Give BASIC time to come up before typing.
