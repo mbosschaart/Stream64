@@ -32,50 +32,63 @@ private struct SIDChipDashboardPanel: View {
     let filter: SIDFilterRegisters
 
     var body: some View {
+        GeometryReader { geometry in
+            let reference = CGSize(width: 680, height: 230)
+            let scale = SIDPanelSizing.scale(in: geometry.size, reference: reference)
+            dashboard
+                .frame(width: reference.width, height: reference.height)
+                .scaleEffect(scale)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .background(Color(white: 0.08))
+    }
+
+    private var dashboard: some View {
         HStack(spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text("SID \(chipIndex + 1)")
-                    .font(.title3).bold()
+                    .font(.system(size: 32, weight: .bold))
                     .foregroundStyle(.white)
                 Text("\(activeVoiceCount)/\(voices.count) voices active")
-                    .font(.callout)
+                    .font(.system(size: 14))
                     .foregroundStyle(.white.opacity(0.75))
-                HStack(spacing: 6) {
+                HStack(spacing: 10) {
                     ForEach(voices) { voice in
                         Circle()
                             .fill(voice.registers.gate ? Color.green : Color.gray.opacity(0.3))
-                            .frame(width: 10, height: 10)
+                            .frame(width: 22, height: 22)
                     }
                 }
             }
-            .frame(width: 132, alignment: .leading)
-            Divider().background(Color.white.opacity(0.2)).frame(height: 60)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Master Volume")
-                    .font(.caption)
+            .frame(width: 154, alignment: .leading)
+            Divider().background(Color.white.opacity(0.2)).frame(height: 132)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("MASTER VOLUME")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.6))
-                SIDDashboardBar(value: filter.volume, maxValue: 15, color: .green)
-                    .frame(height: 10)
                 Text("\(filter.volume)/15")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .font(.system(size: 36, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.green)
+                SIDDashboardBar(value: filter.volume, maxValue: 15, color: .green)
+                    .frame(height: 18)
             }
-            // Leave the filter readout a stable, wider lane so its labels do
-            // not reflow as the dashboard updates.
-            .frame(width: 112)
-            Divider().background(Color.white.opacity(0.2)).frame(height: 60)
-            VStack(alignment: .leading, spacing: 6) {
+            .frame(width: 150)
+            Divider().background(Color.white.opacity(0.2)).frame(height: 132)
+            VStack(alignment: .leading, spacing: 10) {
                 Text("Filter: \(filterModeLabel)")
-                    .font(.callout).bold()
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.cyan)
-                Text("\(Int(SIDFilterRegisters.approximateCutoffHz(filter.cutoffValue))) Hz · Res \(filter.resonance)/15")
-                    .font(.system(.caption, design: .monospaced))
+                Text("\(Int(SIDFilterRegisters.approximateCutoffHz(filter.cutoffValue))) Hz")
+                    .font(.system(size: 28, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+                Text("Resonance \(filter.resonance)/15")
+                    .font(.system(size: 14, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.75))
                 Text(routedLabel)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

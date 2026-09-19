@@ -1556,12 +1556,12 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
 
             Menu {
-                ForEach(SIDVisualizationMode.allCases) { mode in
+                ForEach(SIDVisualizationMode.activeModes) { mode in
                     Button {
                         SIDOscilloscopeWindowController.showNewWindow(
                             session: session, mode: mode)
                     } label: {
-                        Label(mode.rawValue, systemImage: mode.systemImage)
+                        Label(mode.displayName, systemImage: mode.systemImage)
                     }
                 }
                 Divider()

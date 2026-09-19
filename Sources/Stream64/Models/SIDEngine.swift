@@ -24,13 +24,21 @@ struct SIDEngineNeeds: Hashable {
     var needsPostMixScope: Bool
 
     init(mode: SIDVisualizationMode) {
+        if mode == .clubMode {
+            // Keep one stable subscription and warm histories through cuts.
+            // No stop/start REST traffic or empty spectrum history per scene.
+            self = SIDVisualizationMode.individualModes.reduce(.none) {
+                $0.union(SIDEngineNeeds(mode: $1))
+            }
+            return
+        }
         needsRegisterWrites = mode.needsRegisterWrites
         needsSampleSynthesis = mode.needsSampleSynthesis
         needsAudioTap = mode.needsAudioTap
         usesSpectrumBars = mode.usesSpectrumBars
         usesSpectrogramHistory = mode.usesSpectrogramHistory
         needsLissajousPoints = mode == .lissajous || mode == .kaos
-        needsKAOSRhythm = mode == .kaos
+        needsKAOSRhythm = mode == .kaos || mode == .sidShowcase || mode.isGenerative
         needsPostMixScope = mode == .oscilloscope
     }
 
@@ -184,6 +192,8 @@ final class SIDEngine: ObservableObject {
     }
 
     let session: DeviceSession
+    private var visualMirrorDetector = SIDVisualMirrorDetector()
+    private(set) var visualMirrorSourceChip: Int?
 
     @Published private(set) var channels: [SIDVoiceChannel] = []
     @Published private(set) var chipCount = 1
@@ -324,6 +334,8 @@ final class SIDEngine: ObservableObject {
     }
 
     private func notifySubscribers() {
+        visualMirrorSourceChip = visualMirrorDetector.update(channels: workingChannels,
+            filters: workingFilterStates, at: ProcessInfo.processInfo.systemUptime)
         for subscriber in subscribers.values {
             subscriber.onFrame()
         }
@@ -510,6 +522,8 @@ final class SIDEngine: ObservableObject {
     /// was last derived from register writes before the reset on screen
     /// indefinitely.
     private func handleMachineReset() {
+        visualMirrorDetector = SIDVisualMirrorDetector()
+        visualMirrorSourceChip = nil
         for i in workingChannels.indices {
             workingChannels[i].resetToSilence()
         }
@@ -630,6 +644,8 @@ final class SIDEngine: ObservableObject {
         channels = workingChannels
         workingFilterStates = Array(repeating: SIDFilterRegisters(), count: chipBaseAddresses.count)
         filterStates = workingFilterStates
+        visualMirrorDetector = SIDVisualMirrorDetector()
+        visualMirrorSourceChip = nil
         workingRegisterActivity = SIDRegisterActivity(chipCount: chipBaseAddresses.count)
         registerActivity = workingRegisterActivity
     }
@@ -682,7 +698,7 @@ final class SIDEngine: ObservableObject {
                 kaosEvents.append(.frequencyChange)
             }
             workingChannels[index].registers.write(offset: registerOffset, value: write.value)
-            workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset, at: now)
+            workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset, value: write.value, at: now)
         }
         for write in filterWrites {
             guard workingFilterStates.indices.contains(write.chipIndex) else { continue }
@@ -700,7 +716,7 @@ final class SIDEngine: ObservableObject {
             // filter block (0..<4, reduced by -21 when first decoded in
             // the entries observer above) — add it back to land in the
             // same absolute 0..<25 numbering `SIDRegisterActivity` uses.
-            workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset + 21, at: now)
+            workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset + 21, value: write.value, at: now)
         }
 
         // Register-only visualizations do not need a full synthesis pass on

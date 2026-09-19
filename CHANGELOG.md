@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### Improved
+
+- Filter Curve, ADSR Knobs, Register Activity and Pulse Width now follow the unused-SID mirroring setting. Register Activity mirrors byte values and original write/change timestamps without modifying the raw trace.
+
+- KAOS is excluded from visualization menus, Open All in Grid, saved-layout restoration, and Club Mode. Its implementation and assets remain available for future reactivation.
+
+- Piano Keyboard now gives each SID voice a horizontal row and preserves natural key proportions at every window size. Keys fit within the available space instead of stretching vertically in fullscreen; black keys and press offsets scale with the white keys.
+
+- **SID Slideshow** is now **SID Showcase**, with a new abstract Commodore 1702 monitor as its sixth graphic. Dual SID now has one graphic per voice at every rotation; single SID shares three voices. Existing saved Slideshow layouts restore as Showcase.
+
+- Fullscreen typography now scales consistently across the remaining SID instrument views: oscilloscope and post-mix scope, envelopes, mixer, piano roll/keyboard, voice lineup, filter curve, spectrogram, VU meters, ADSR and pulse width. Labels, legends and their layout space enlarge together, including in Club Mode; already-responsive scenes are not scaled twice.
+
+- KAOS and Signal Collage select their logo from the connected hardware: Ultimate 64/Elite/II uses `u64_logo_badgeman.jpg`; C64 Ultimate uses `c64cu-logo.webp`. Selection follows each visualization’s device, including Club Mode and auto-follow.
+
+- Club Mode now cuts every 0.5–3 seconds and inserts five alternating 0.2-second swaps after 4–8 normal scenes. Generative Metal pipelines are reused across rapid scene changes.
+
+- Vector Flow uses brighter colours and thicker arrow strokes, with a higher quiet-level brightness while retaining its music-driven intensity.
+
+- Register Activity now distinguishes dim write activity from bright value-change pulses and displays each register's hex value. Repeated identical writes no longer retrigger the bright flash.
+- Register Activity, Control Bits, and SID Dashboard scale their text and indicators with window size, including fullscreen. Control Bits has larger proportional dots; Dashboard has larger primary readouts; dual-SID register grids adapt between stacked and side-by-side layouts.
+
+- Pulse Vortex now accelerates with bass, launches expanding attack rings, and responds with stronger bloom, tunnel deformation, and SID voice-driven colour. Motion is integrated smoothly and held energy does not repeatedly trigger flashes.
+
+### Added
+
+- **Mirror unused SID in visualisations** in Settings → General (off by default). In dual-SID setups, performance visuals can mirror the active chip after five seconds of inactivity on the other chip, with immediate return to actual data when it becomes active. Audio and diagnostic views remain untouched; detection and assignment are per device.
+
+- **SID Slideshow**: all five KAOS hardware graphics share a reactive neon stage, with rotating per-voice assignments, sliced distortions, pulse scaling, coloured glow, persistence echoes and flowing connections. Supports three/six voices, fullscreen/portrait layouts and Club Mode; reuses shared SID analysis and the existing bundled assets.
+
+- The supplied **64C Ultimate logo** now appears in KAOS’s scene rotation and supplies Signal Collage’s background image, retaining reactive slicing and colour separation. The WebP asset ships in both SwiftPM and packaged builds.
+
+- Eight more modular SID scenes: **Pixel Riptide**, **Pulse Ribbons**, **Echo Tunnel**, **Neon Orbit**, **Shard Storm**, **Grain Nebula**, **Dot Matrix**, and **Signal Collage**. Each has its own Swift file in `Views`, uses shared SID/audio analysis, and joins Club Mode. Echo Tunnel uses bounded GPU frame feedback; Signal Collage uses the bundled 64C Ultimate logo. The menu now contains 32 individual modes plus Club Mode.
+
+- **Club Mode**: random 0.5–3 second VJ-style cuts through all individual SID visualizations in one window, with complete shuffled rounds, no immediate repeats, and stable shared audio/debug subscriptions.
+- Generative visualizations now display as **SID Bloom**, **Pulse Vortex**, **Vector Flow**, and **Neon Tide**; existing saved layout identifiers remain compatible.
+
+- Four SID visualization modes: SID Bloom, Pulse Vortex, Vector Flow, and Neon Tide. Original Metal scenes share SID/audio analysis, support Phosphor Glow, and participate in window layout and workspace restore. Rendering is bounded and yields to the main viewer under pressure.
+
 ## 0.129b — 2026-09-15
 
 ### Added

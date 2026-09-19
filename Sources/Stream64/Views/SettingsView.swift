@@ -227,6 +227,9 @@ struct GeneralSettingsTab: View {
                 Toggle(
                     "Visualisations auto-follow selected C64",
                     isOn: $settings.visualizationsAutoFollowSelected)
+                Toggle("Mirror unused SID in visualisations",
+                       isOn: $settings.mirrorUnusedSIDVisualizations)
+                    .help("After five seconds of inactivity, an unused SID’s performance visuals follow the active SID. Audio, Control Bits and SID Dashboard remain unchanged.")
                 Toggle(
                     "Keep U64 debug stream running while connected",
                     isOn: $settings.keepDebugStreamWarm)

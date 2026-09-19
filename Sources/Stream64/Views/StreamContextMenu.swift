@@ -313,12 +313,12 @@ struct SIDVisualizationsMenu: View {
 
     var body: some View {
         Menu("SID Visualizations", systemImage: "waveform") {
-            ForEach(SIDVisualizationMode.allCases) { mode in
+            ForEach(SIDVisualizationMode.activeModes) { mode in
                 Button {
                     SIDOscilloscopeWindowController.showNewWindow(
                         session: session, mode: mode)
                 } label: {
-                    Label(mode.rawValue, systemImage: mode.systemImage)
+                    Label(mode.displayName, systemImage: mode.systemImage)
                 }
             }
             Divider()
