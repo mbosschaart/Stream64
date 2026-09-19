@@ -728,14 +728,14 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     seconds. Single SID shares three voices; dual SID cycles through all six. \
     Labels identify the current assignments, with layouts for wide or tall windows.
 
-    **Music Compo Mode** blends sixteen scenes with the live C64 video \
+    **Music Compo Mode** overlays visualisations directly onto the live C64 video stream, turning a static SID player screen into a music-reactive show. It blends sixteen scenes with the video \
     in a separate window, using Club Mode’s rapid cuts and bursts. \
     The rotation includes 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer. \
     Adjust **C64 video opacity** below the picture (0–100%). Both layers use the video’s \
     exact pixel resolution before the selected video filters, scaling and CRT \
     screen boundary are applied, keeping the visualisations inside the bezel.
 
-    **Club Mode** is a VJ-style shuffled tour of all individual visualizations \
+    **Club Mode replaces KAOS mode** with new visualisations and GPU-optimised rendering. It is a VJ-style shuffled tour of all individual visualizations \
     in one window, with a fresh random 0.5–3 second interval for every scene. \
     After 4–8 normal scenes, it inserts five rapid 0.2-second swaps between \
     two effects, then resumes the shuffled deck. Burst revisits do not skip \

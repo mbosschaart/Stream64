@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.129b-purple)
+![Version](https://img.shields.io/badge/version-0.130b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -249,7 +249,7 @@ Separately, Stream64 continuously remembers the whole open workspace \
 (viewer size, sidebar visibility, tools, SID windows, etc.) as windows \
 open, move, resize, or close, and restores it on the next launch.
 
-**Club Mode** runs a shuffled tour of all 32 individual visualizations in one window,
+**Club Mode replaces KAOS mode**, bringing new visualisations and GPU-optimised rendering. It runs a shuffled tour of all 32 individual visualizations in one window,
 with a fresh random 0.5–3 second duration for every scene and hard VJ-style cuts.
 After a random 4–8 normal scenes, it inserts five rapid 0.2-second swaps
 between two effects (A → B → A → B → A → B), then resumes normal rotation.
@@ -259,7 +259,7 @@ Its shared SID analysis and histories stay warm between cuts, playback continues
 without interruption, and the countdown pauses when the window is hidden.
 Club Mode supports fullscreen and restores as Club Mode, starting a fresh shuffle.
 
-**Music Compo Mode** opens a separate window blending sixteen scenes (the twelve abstract Metal
+**Music Compo Mode overlays visualisations directly onto the live C64 video stream**, turning even a plain, static SID player screen into a music-reactive show. It opens a separate window blending sixteen scenes (the twelve abstract Metal
 effects plus 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer)
 with the same device's live C64 video. It uses Club Mode's 0.5–3 second
 cuts and occasional five-swap 0.2-second bursts. **C64 video opacity** below the
@@ -362,28 +362,11 @@ already — no prompt, no button. It can run alongside the Debug Trace \
 window watching the very same trace, and opening several SID Oscilloscope \
 windows at once only starts it the first time, not per window.
 
-### KAOS (inactive)
+### KAOS replaced by Club Mode
 
-KAOS is excluded from visualization menus, Open All in Grid, saved-layout restoration, and Club Mode. Its Swift implementation and assets are retained for possible reactivation.
-
-**KAOS** is the hybrid acid-house/demoscene performance mode. It combines \
-SID gate/frequency/control events, `$D418` digi activity, and real post-mix \
-audio/FFT energy to infer beats, BPM, bars, phrases, active voices, and bass \
-pulses. Its scene director uses those patterns to cut between original \
-procedural effects: neon grids and tunnels, kaleidoscopes, scope/VU walls, \
-dancers, raster storms, hyperspace, checkerboards, turntables, cassette and \
-floppy motifs, plus wireframe C64/1541/monitor/joystick/smiley cut-ins.
-
-Large digital `ACID`, `HOUSE`, `DANCE`, `BASS`, `JACK`, `RAVE`, `BEAT`, \
-`GROOVE`, and `KAOS` cards are intentionally sparse—appearing on phrase \
-starts or high-confidence sparse bass/digi breaks with a quick flash/fade. \
-The included C64-era line-art assets are white-to-transparent composites \
-layered with the live palette, scopes, VU meters, and spectrum rather than \
-static images.
-
-KAOS shares the per-device SID register trace and audio tap with other SID \
-windows, so multiple KAOS windows remain synchronized and do not create \
-additional debug streams.
+Club Mode replaces KAOS with new visualisations and GPU-optimised rendering.
+The legacy KAOS Swift implementation and artwork remain in the source for
+possible future reuse, but KAOS is no longer an active visualisation.
 
 ## Building & Running
 
@@ -401,10 +384,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.129b BUILD_NUMBER=129 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.130b BUILD_NUMBER=130 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.129b BUILD_NUMBER=129 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.130b BUILD_NUMBER=130 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

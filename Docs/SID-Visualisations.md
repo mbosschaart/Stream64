@@ -47,12 +47,14 @@ instrument panels use the shared sizing rules without double scaling.
 
 ## Cycling modes
 
-Club Mode shuffles all active individual scenes, with random 0.5–3 second cuts.
+Club Mode replaces KAOS mode with new visualisations and GPU-optimised rendering.
+It shuffles all active individual scenes, with random 0.5–3 second cuts.
 After 4–8 regular cuts it alternates two scenes five times at 0.2 seconds each.
 Burst revisits do not consume the shuffled deck. KAOS is excluded from menus,
 restoration and cycling, while its Swift implementation and assets remain.
 
-Music Compo uses the same timing with the twelve generative effects plus 3D Bar
+Music Compo overlays visualisations directly onto the live C64 video stream,
+turning static SID player screens into music-reactive shows. It uses the same timing with the twelve generative effects plus 3D Bar
 Field, SID Showcase, Colorful Waveform and Spectrum Analyzer. Its engine-needs
 union keeps the required FFT/history data available across cuts. It observes the
 existing video stream without opening another stream or replacing the main
@@ -100,4 +102,4 @@ upright artwork and captions without a top title.
 The final full run, including the Showcase correction, executed 239 tests,
 with eight fixture-dependent skips and no failures. Live mono-to-multi-SID hardware playback and sustained
 stream performance remain unverified. Render tests do not establish that stream
-hiccups are eliminated. No release packaging or version bump is included.
+hiccups are eliminated. Release 0.130b packages these changes for Apple Silicon and Intel Macs.
