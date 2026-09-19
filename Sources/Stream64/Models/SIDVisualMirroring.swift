@@ -1,88 +1,120 @@
 import Foundation
 
-/// Detects sustained chip inactivity from raw voice state, never from mirrored
-/// presentation data or the count of repeated register writes.
-struct SIDVisualMirrorDetector {
-    static let inactivityDelay: TimeInterval = 5
-    private var startedAt: TimeInterval?
-    private var lastActive: [TimeInterval?] = [nil, nil]
+/// Tune requirements are distinct from hardware capacity. No activity heuristic:
+/// a quiet chip in a multi-SID tune remains part of that tune.
+enum SIDVisualizationAdaptation: String, CaseIterable, Identifiable {
+    case automatic = "Auto (SID file)"
+    case singleSID = "Force single SID"
+    case hardware = "Show all configured SIDs"
+    var id: String { rawValue }
+}
 
-    mutating func update(channels: [SIDVoiceChannel], filters: [SIDFilterRegisters],
-                         at now: TimeInterval) -> Int? {
-        guard channels.contains(where: { $0.chipIndex == 1 }), filters.count >= 2 else {
-            self = Self()
-            return nil
-        }
-        if startedAt == nil { startedAt = now }
-        var active = [false, false]
-        for channel in channels where (0..<2).contains(channel.chipIndex) {
-            let chip = channel.chipIndex
-            let filter = filters[chip]
-            let registers = channel.registers
-            let disconnected = channel.voiceIndex == 2 && filter.voice3Disconnected
-            let waveform = registers.control & 0xf0 != 0
-            let sounding = !registers.test && !disconnected && filter.volume > 0
-                && waveform && channel.frequencyHz > 1
-                && (registers.gate || channel.synth.envelope > 0.015)
-            if sounding || channel.digiActivity > 0.05 { active[chip] = true }
-        }
-        for chip in 0..<2 where active[chip] { lastActive[chip] = now }
-        // Resume real data immediately when both chips participate. Never
-        // mirror a stale source into silence when neither chip is active.
-        guard active[0] != active[1] else { return nil }
-        let source = active[0] ? 0 : 1
-        let destination = 1 - source
-        let quietSince = lastActive[destination] ?? startedAt ?? now
-        return now - quietSince >= Self.inactivityDelay ? source : nil
+/// Session-local metadata. Generation checks prevent late uploads from restoring
+/// stale metadata after a reset or a newer playback request.
+struct SIDPlaybackMetadata: Equatable {
+    private(set) var addresses: [UInt16]?
+    private(set) var generation = UUID()
+
+    @discardableResult
+    mutating func beginPlayback() -> UUID {
+        generation = UUID()
+        addresses = nil
+        return generation
+    }
+
+    mutating func didStart(addresses: [UInt16]?, generation: UUID) {
+        guard generation == self.generation else { return }
+        self.addresses = addresses
     }
 }
 
-/// Visual-only copies. Engine synthesis, raw register data and audio output
-/// always retain real state. The destination keeps its SwiftUI/channel identity.
+/// Maps arbitrary chip counts. Three voices per chip is a SID hardware property;
+/// neither the source count nor the destination count is fixed to dual SID.
+struct SIDVisualTopology {
+    let activeChips: [Int]
+    let configuredChipCount: Int
+
+    init(configuredAddresses: [UInt16], tuneAddresses: [UInt16]?,
+         adaptation: SIDVisualizationAdaptation) {
+        configuredChipCount = configuredAddresses.count
+        switch adaptation {
+        case .hardware:
+            activeChips = Array(configuredAddresses.indices)
+        case .singleSID:
+            activeChips = configuredAddresses.isEmpty ? [] : [0]
+        case .automatic:
+            if let tuneAddresses, !tuneAddresses.isEmpty {
+                let matches = configuredAddresses.indices.filter { tuneAddresses.contains(configuredAddresses[$0]) }
+                activeChips = matches.isEmpty ? Array(configuredAddresses.indices) : matches
+            } else {
+                activeChips = Array(configuredAddresses.indices)
+            }
+        }
+    }
+
+    func sourceChip(for destination: Int) -> Int {
+        guard !activeChips.isEmpty else { return destination }
+        return activeChips.contains(destination) ? destination : activeChips[destination % activeChips.count]
+    }
+}
+
+/// Display copies only; engine registers, audio and debug traces stay real.
 struct SIDVisualPresentation {
     var channels: [SIDVoiceChannel]
     var filters: [SIDFilterRegisters]
     var rhythm: KAOSRhythmState
     var registerActivity: SIDRegisterActivity
+    var displayedChipIndices: [Int]
+    var chipCount: Int { displayedChipIndices.count }
 
-    static func supportsMirroring(_ mode: SIDVisualizationMode) -> Bool {
-        if mode.isGenerative { return true }
+    static func isInstrument(_ mode: SIDVisualizationMode) -> Bool {
         switch mode {
-        case .kaos, .sidShowcase, .oscilloscope, .envelope, .mixerConsole,
-             .pianoRoll, .pianoKeyboard, .voiceLineup, .vuMeterBank, .colorfulWaveform,
-             .filterCurve, .adsrKnobs, .registerActivity, .pulseWidth:
+        case .oscilloscope, .envelope, .mixerConsole, .pianoRoll, .pianoKeyboard,
+             .voiceLineup, .vuMeterBank, .registerActivity, .adsrKnobs, .pulseWidth,
+             .controlBits, .dashboard, .filterCurve:
             return true
-        default:
-            return false
+        default: return false
         }
     }
 
     init(channels: [SIDVoiceChannel], filters: [SIDFilterRegisters], rhythm: KAOSRhythmState,
-         source: Int?, enabled: Bool, mode: SIDVisualizationMode,
-         registerActivity: SIDRegisterActivity = SIDRegisterActivity(chipCount: 1)) {
+         topology: SIDVisualTopology, mode: SIDVisualizationMode,
+         registerActivity: SIDRegisterActivity) {
         self.channels = channels
         self.filters = filters
         self.rhythm = rhythm
         self.registerActivity = registerActivity
-        guard enabled, Self.supportsMirroring(mode), let source, (0..<2).contains(source),
-              filters.count >= 2 else { return }
-        let destination = 1 - source
-        self.registerActivity = registerActivity.visualCopy(source: source, destination: destination)
-        for index in self.channels.indices where self.channels[index].chipIndex == destination {
-            let target = self.channels[index]
-            if let original = channels.first(where: { $0.chipIndex == source && $0.voiceIndex == target.voiceIndex }) {
-                self.channels[index] = original.visualCopy(identity: target)
-            }
+        displayedChipIndices = Array(0..<topology.configuredChipCount)
+        if Self.isInstrument(mode) {
+            displayedChipIndices = topology.activeChips
+            self.channels = channels.filter { topology.activeChips.contains($0.chipIndex) }
+            self.filters = topology.activeChips.compactMap { filters.indices.contains($0) ? filters[$0] : nil }
+            self.registerActivity = registerActivity.selecting(chips: topology.activeChips)
+            return
         }
-        self.filters[destination] = filters[source]
-        for voice in 0..<3 {
-            let from = source * 3 + voice, to = destination * 3 + voice
-            if self.rhythm.voiceLevels.indices.contains(to), self.rhythm.voiceLevels.indices.contains(from) {
-                self.rhythm.voiceLevels[to] = rhythm.voiceLevels[from]
+        for destination in 0..<topology.configuredChipCount {
+            let source = topology.sourceChip(for: destination)
+            guard source != destination else { continue }
+            for index in self.channels.indices where self.channels[index].chipIndex == destination {
+                let target = self.channels[index]
+                if let original = channels.first(where: { $0.chipIndex == source && $0.voiceIndex == target.voiceIndex }) {
+                    self.channels[index] = original.visualCopy(identity: target)
+                }
             }
-            let bit = UInt8(1 << to)
-            self.rhythm.activeVoiceMask &= ~bit
-            if rhythm.activeVoiceMask & UInt8(1 << from) != 0 { self.rhythm.activeVoiceMask |= bit }
+            if filters.indices.contains(source), self.filters.indices.contains(destination) {
+                self.filters[destination] = filters[source]
+            }
+            for voice in 0..<3 {
+                let from = source * 3 + voice, to = destination * 3 + voice
+                if self.rhythm.voiceLevels.count <= to {
+                    self.rhythm.voiceLevels += Array(repeating: 0, count: to + 1 - self.rhythm.voiceLevels.count)
+                }
+                self.rhythm.voiceLevels[to] = rhythm.voiceLevels.indices.contains(from) ? rhythm.voiceLevels[from] : 0
+                guard from < UInt16.bitWidth, to < UInt16.bitWidth else { continue }
+                let bit = UInt16(1 << to)
+                self.rhythm.activeVoiceMask &= ~bit
+                if rhythm.activeVoiceMask & UInt16(1 << from) != 0 { self.rhythm.activeVoiceMask |= bit }
+            }
         }
     }
 }

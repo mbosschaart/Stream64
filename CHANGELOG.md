@@ -1,12 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.130b — 2026-09-20
+
+### Highlights
+
+- **Club Mode replaces KAOS mode**, bringing new visualisations and GPU-optimised rendering to a fast-cutting SID dance party. It cycles through 32 individual scenes with random cuts and rapid back-and-forth bursts.
+- **Music Compo Mode overlays visualisations directly onto the live C64 video stream**, turning even a plain, static SID player screen into a music-reactive show. Sixteen scenes blend with the player graphics; adjustable video opacity lets you choose the mix, and your video filters and CRT bezel apply to the combined picture.
 
 ### Improved
 
-- Filter Curve, ADSR Knobs, Register Activity and Pulse Width now follow the unused-SID mirroring setting. Register Activity mirrors byte values and original write/change timestamps without modifying the raw trace.
+- SID Showcase artwork renders upright on the GPU; the top title is removed while rotating per-object voice captions remain.
 
-- KAOS is excluded from visualization menus, Open All in Grid, saved-layout restoration, and Club Mode. Its implementation and assets remain available for future reactivation.
+- Music Compo renders all 16 scenes directly in Metal, removing per-frame image snapshots and uploads. Spectrum, Bar Field, Colorful Waveform, Showcase, Waterfall and Spectrogram also use Metal in standalone/Club views; instrument panels use SwiftUI GPU composition. The opacity toolbar identifies the current scene.
+
+- Reset the native SID player before configuring and launching PSID64 tunes, preventing its temporary single-SID routing from carrying into the first multi-SID launch. Converted playback now reports routing failures.
+
+- SID visualisations now use uploaded tune metadata instead of silence detection. Instrument views, including Filter Curve, show participating chips only; abstract views mirror unused configured channels. Settings offers Auto, Force single SID and Show all configured SIDs. Voice Lineup has proportional fullscreen labels and note bands. Presentation and Metal inputs support nine voices for future three-SID integration.
+
+- Club Mode replaces KAOS in the active visualisation lineup. The legacy KAOS implementation and assets are retained, but it is excluded from menus, restoration and cycling.
 
 - Piano Keyboard now gives each SID voice a horizontal row and preserves natural key proportions at every window size. Keys fit within the available space instead of stretching vertically in fullscreen; black keys and press offsets scale with the white keys.
 
@@ -27,13 +38,13 @@
 
 ### Added
 
-- **Mirror unused SID in visualisations** in Settings → General (off by default). In dual-SID setups, performance visuals can mirror the active chip after five seconds of inactivity on the other chip, with immediate return to actual data when it becomes active. Audio and diagnostic views remain untouched; detection and assignment are per device.
+- **Music Compo Mode** blends sixteen visualisations (including 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer) with live C64 video using Club Mode timing. A saved 0–100% video-opacity slider controls the background; its toolbar hides after two seconds of mouse inactivity. Effects render at the video’s exact resolution and pass through the same filters and screen boundary.
 
-- **SID Slideshow**: all five KAOS hardware graphics share a reactive neon stage, with rotating per-voice assignments, sliced distortions, pulse scaling, coloured glow, persistence echoes and flowing connections. Supports three/six voices, fullscreen/portrait layouts and Club Mode; reuses shared SID analysis and the existing bundled assets.
+- **SID Showcase**: six hardware graphics share a reactive neon stage with rotating voice assignments, distortion, pulsing and coloured echoes. Supports landscape/portrait layouts and Club Mode.
 
-- The supplied **64C Ultimate logo** now appears in KAOS’s scene rotation and supplies Signal Collage’s background image, retaining reactive slicing and colour separation. The WebP asset ships in both SwiftPM and packaged builds.
+- The supplied **64C Ultimate logo** supplies Signal Collage’s background image, retaining reactive slicing and colour separation. The WebP asset ships in both SwiftPM and packaged builds.
 
-- Eight more modular SID scenes: **Pixel Riptide**, **Pulse Ribbons**, **Echo Tunnel**, **Neon Orbit**, **Shard Storm**, **Grain Nebula**, **Dot Matrix**, and **Signal Collage**. Each has its own Swift file in `Views`, uses shared SID/audio analysis, and joins Club Mode. Echo Tunnel uses bounded GPU frame feedback; Signal Collage uses the bundled 64C Ultimate logo. The menu now contains 32 individual modes plus Club Mode.
+- Eight more modular SID scenes: **Pixel Riptide**, **Pulse Ribbons**, **Echo Tunnel**, **Neon Orbit**, **Shard Storm**, **Grain Nebula**, **Dot Matrix**, and **Signal Collage**. Each has its own Swift file in `Views`, uses shared SID/audio analysis, and joins Club Mode. Echo Tunnel uses bounded GPU frame feedback; Signal Collage uses the bundled 64C Ultimate logo. The menu now contains 32 individual modes plus Club Mode and Music Compo Mode.
 
 - **Club Mode**: random 0.5–3 second VJ-style cuts through all individual SID visualizations in one window, with complete shuffled rounds, no immediate repeats, and stable shared audio/debug subscriptions.
 - Generative visualizations now display as **SID Bloom**, **Pulse Vortex**, **Vector Flow**, and **Neon Tide**; existing saved layout identifiers remain compatible.

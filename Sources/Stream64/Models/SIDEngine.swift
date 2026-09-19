@@ -24,10 +24,11 @@ struct SIDEngineNeeds: Hashable {
     var needsPostMixScope: Bool
 
     init(mode: SIDVisualizationMode) {
-        if mode == .clubMode {
+        if mode.isCyclingMode {
             // Keep one stable subscription and warm histories through cuts.
             // No stop/start REST traffic or empty spectrum history per scene.
-            self = SIDVisualizationMode.individualModes.reduce(.none) {
+            let modes = mode == .musicCompo ? SIDVisualizationMode.compoModes : SIDVisualizationMode.individualModes
+            self = modes.reduce(.none) {
                 $0.union(SIDEngineNeeds(mode: $1))
             }
             return
@@ -192,8 +193,6 @@ final class SIDEngine: ObservableObject {
     }
 
     let session: DeviceSession
-    private var visualMirrorDetector = SIDVisualMirrorDetector()
-    private(set) var visualMirrorSourceChip: Int?
 
     @Published private(set) var channels: [SIDVoiceChannel] = []
     @Published private(set) var chipCount = 1
@@ -228,7 +227,7 @@ final class SIDEngine: ObservableObject {
     private var latestKAOSSpectrum = SIDSpectrumFeatures.silence
     private var lowpassStates: [Float] = []
     private var workingPostMixLowpassSamplesByChip: [[Float]] = []
-    private var chipBaseAddresses: [UInt16] = [0xD400]
+    private(set) var chipBaseAddresses: [UInt16] = [0xD400]
     /// Snapshot of `chipBaseAddresses` for the debug-receiver queue. The
     /// entries observer must not read `@MainActor` state from that queue.
     private var observerChipBases: [UInt16] = [0xD400]
@@ -334,8 +333,6 @@ final class SIDEngine: ObservableObject {
     }
 
     private func notifySubscribers() {
-        visualMirrorSourceChip = visualMirrorDetector.update(channels: workingChannels,
-            filters: workingFilterStates, at: ProcessInfo.processInfo.systemUptime)
         for subscriber in subscribers.values {
             subscriber.onFrame()
         }
@@ -522,8 +519,6 @@ final class SIDEngine: ObservableObject {
     /// was last derived from register writes before the reset on screen
     /// indefinitely.
     private func handleMachineReset() {
-        visualMirrorDetector = SIDVisualMirrorDetector()
-        visualMirrorSourceChip = nil
         for i in workingChannels.indices {
             workingChannels[i].resetToSilence()
         }
@@ -644,8 +639,6 @@ final class SIDEngine: ObservableObject {
         channels = workingChannels
         workingFilterStates = Array(repeating: SIDFilterRegisters(), count: chipBaseAddresses.count)
         filterStates = workingFilterStates
-        visualMirrorDetector = SIDVisualMirrorDetector()
-        visualMirrorSourceChip = nil
         workingRegisterActivity = SIDRegisterActivity(chipCount: chipBaseAddresses.count)
         registerActivity = workingRegisterActivity
     }

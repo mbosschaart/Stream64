@@ -227,9 +227,12 @@ struct GeneralSettingsTab: View {
                 Toggle(
                     "Visualisations auto-follow selected C64",
                     isOn: $settings.visualizationsAutoFollowSelected)
-                Toggle("Mirror unused SID in visualisations",
-                       isOn: $settings.mirrorUnusedSIDVisualizations)
-                    .help("After five seconds of inactivity, an unused SID’s performance visuals follow the active SID. Audio, Control Bits and SID Dashboard remain unchanged.")
+                Picker("SID visualisation layout", selection: $settings.sidVisualizationAdaptation) {
+                    ForEach(SIDVisualizationAdaptation.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .help("Auto uses the uploaded SID file: instruments show participating chips, abstract visuals mirror unused channels. Unknown playback shows all configured SIDs; use Force single SID when needed. Audio is unchanged.")
                 Toggle(
                     "Keep U64 debug stream running while connected",
                     isOn: $settings.keepDebugStreamWarm)

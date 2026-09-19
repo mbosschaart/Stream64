@@ -11,8 +11,9 @@ enum SIDShardStormVisualization {
     }
     float shardDistance(float3 p,constant Uniforms& u) {
         float result=10.0;
-        for(int i=0;i<6;i++) {
-            float a=float(i)*tau/6.0;
+        int count=max(6,int(u.style.z));
+        for(int i=0;i<count;i++) {
+            float a=float(i)*tau/float(count);
             float4 v=u.voices[i%int(u.style.z)];
             float spread=.27+u.energy.z*u.rhythm.y*.48+u.energy.x*.12;
             float3 center=float3(cos(a),sin(a),sin(a*2.0)*.5)*spread;

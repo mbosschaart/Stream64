@@ -4,6 +4,7 @@ import SwiftUI
 /// The engine's existing visible-window updates drive decay, with no extra timer.
 struct SIDRegisterActivityView: View {
     let activity: SIDRegisterActivity
+    var chipIndices: [Int]? = nil
 
     var body: some View {
         GeometryReader { geometry in
@@ -39,7 +40,7 @@ struct SIDRegisterActivityView: View {
     private func chipGrid(_ chip: Int) -> some View {
         let now = Date()
         return VStack(alignment: .leading, spacing: 8) {
-            Text("SID \(chip + 1)")
+            Text("SID \((chipIndices?[chip] ?? chip) + 1)")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(.white)
             Grid(horizontalSpacing: 5, verticalSpacing: 5) {

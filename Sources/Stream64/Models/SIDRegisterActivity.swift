@@ -48,6 +48,15 @@ struct SIDRegisterActivity {
                        count: max(chipCount, 1))
     }
 
+    func selecting(chips: [Int]) -> Self {
+        var copy = self
+        let valid = chips.filter { lastWrite.indices.contains($0) }
+        copy.lastWrite = valid.map { lastWrite[$0] }
+        copy.lastChange = valid.map { lastChange[$0] }
+        copy.values = valid.map { values[$0] }
+        return copy
+    }
+
     /// Preserve timestamps so mirrored write/change flashes decay in sync.
     /// Only the returned display copy is changed; raw trace data stays intact.
     func visualCopy(source: Int, destination: Int) -> Self {

@@ -1154,13 +1154,59 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     }
     """
 
+    /// Optional GPU composition before any video filtering. Used only by the
+    /// independent Music Compo renderer, never the main viewer's indexed path.
+    var composeFrame: ((MTLCommandBuffer, MTLTexture, MTLTexture) -> MTLTexture?)?
+    private let usesComposedFrames: Bool
+    private var composedTexture: MTLTexture?
+    private var composedHistory: MTLTexture?
+    private var filterSourceTexture: MTLTexture { composedTexture ?? indexTextures[currentTextureIndex] }
+    private var filterHistoryTexture: MTLTexture { composedHistory ?? historyTexture }
+
+    /// Identical filter math with RGB source decoding instead of palette lookup.
+    /// Both live sampling and temporal history must use the blended image.
+    static var composedShaderSource: String {
+        shaderSource
+            .replacingOccurrences(of: "texture2d<uint> indexTex", with: "texture2d<float> indexTex")
+            .replacingOccurrences(of: "texture2d_array<uint> historyTex", with: "texture2d_array<float> historyTex")
+            .replacingOccurrences(of: "uint index = indexTex.read(coord).r;", with: "float4 sourceColor = indexTex.read(coord);")
+            .replacingOccurrences(of: "uint index = historyTex.read(coord, slice).r;", with: "float4 sourceColor = historyTex.read(coord, slice);")
+            .replacingOccurrences(of: "paletteTex.read(uint2(index, 0))", with: "sourceColor")
+    }
+
+    private func encodeComposition(command: MTLCommandBuffer) -> Bool {
+        guard let texture = composeFrame?(command, indexTextures[currentTextureIndex], paletteTexture) else { return false }
+        composedTexture = texture
+        if composedHistory?.width != texture.width || composedHistory?.height != texture.height {
+            let descriptor = MTLTextureDescriptor()
+            descriptor.textureType = .type2DArray
+            descriptor.pixelFormat = texture.pixelFormat
+            descriptor.width = texture.width
+            descriptor.height = texture.height
+            descriptor.arrayLength = Self.historyFrameCount
+            descriptor.storageMode = .private
+            descriptor.usage = [.shaderRead]
+            composedHistory = device.makeTexture(descriptor: descriptor)
+            historyValidCount = 1
+        }
+        guard let history = composedHistory, let blit = command.makeBlitCommandEncoder() else { return false }
+        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+            to: history, destinationSlice: historyHead, destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        return true
+    }
+
     private let sharpPipeline: MTLRenderPipelineState
     private let smoothPipeline: MTLRenderPipelineState
     private let crtPipeline: MTLRenderPipelineState
     private let crtTubePipeline: MTLRenderPipelineState
     private let presentPipeline: MTLRenderPipelineState
 
-    init?(mtkView: MTKView) {
+    init?(mtkView: MTKView, composedFrames: Bool = false) {
+        self.usesComposedFrames = composedFrames
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else { return nil }
         self.device = device
@@ -1180,13 +1226,13 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         // consecutive PAL frames (see submitFrame / motionBlend).
         mtkView.enableSetNeedsDisplay = true
         mtkView.isPaused = true
-        mtkView.preferredFramesPerSecond = 60
+        mtkView.preferredFramesPerSecond = composedFrames ? 30 : 60
         cachedDrawableSize = mtkView.drawableSize
 
         // Compile shaders.
         let library: MTLLibrary
         do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+            library = try device.makeLibrary(source: composedFrames ? Self.composedShaderSource : Self.shaderSource, options: nil)
         } catch {
             NSLog("[render] shader compile FAILED: %@", String(describing: error))
             return nil
@@ -1379,7 +1425,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             isLivePresentMode = true
             renderView.enableSetNeedsDisplay = false
             renderView.isPaused = false
-            renderView.preferredFramesPerSecond = 60
+            renderView.preferredFramesPerSecond = usesComposedFrames ? 30 : 60
             if let metalLayer = renderView.layer as? CAMetalLayer {
                 // Stay vsync-locked: motion blend needs steady display times.
                 metalLayer.displaySyncEnabled = true
@@ -1557,10 +1603,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        encoder.setFragmentTexture(indexTextures[currentTextureIndex], index: 0)
+        encoder.setFragmentTexture(filterSourceTexture, index: 0)
         encoder.setFragmentTexture(paletteTexture, index: 1)
         encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
-        encoder.setFragmentTexture(historyTexture, index: 3)
+        encoder.setFragmentTexture(filterHistoryTexture, index: 3)
         encoder.setFragmentSamplerState(
             filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -1809,7 +1855,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentTexture(indexTexture, index: 0)
         encoder.setFragmentTexture(paletteTexture, index: 1)
         encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
-        encoder.setFragmentTexture(historyTexture, index: 3)
+        encoder.setFragmentTexture(filterHistoryTexture, index: 3)
         encoder.setFragmentSamplerState(filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
@@ -1883,10 +1929,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             &uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(
             &uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        encoder.setFragmentTexture(indexTextures[currentTextureIndex], index: 0)
+        encoder.setFragmentTexture(filterSourceTexture, index: 0)
         encoder.setFragmentTexture(paletteTexture, index: 1)
         encoder.setFragmentTexture(dirtyGlassTexture, index: 2)
-        encoder.setFragmentTexture(historyTexture, index: 3)
+        encoder.setFragmentTexture(filterHistoryTexture, index: 3)
         encoder.setFragmentSamplerState(
             filterMode == .sharp ? nearestSampler : linearSampler, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -2127,6 +2173,11 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             }
         }
 
+        if usesComposedFrames && !encodeComposition(command: commandBuffer) {
+            commandBuffer.commit()
+            return
+        }
+
         // Allocate encoder-pool storage only for an actual source frame.
         // Display-link refreshes still present normally but must not consume a
         // pixel buffer or duplicate a frame in the movie.
@@ -2178,7 +2229,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                 commandBuffer: commandBuffer,
                 pipeline: pipelineForCurrentFilter(),
                 uniforms: makeUniforms(drawableSize: view.drawableSize),
-                indexTexture: indexTextures[currentTextureIndex],
+                indexTexture: filterSourceTexture,
                 drawableSize: view.drawableSize,
                 completion: shotCompletion)
         }

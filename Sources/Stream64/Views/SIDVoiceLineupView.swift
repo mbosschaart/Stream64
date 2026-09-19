@@ -27,6 +27,9 @@ struct SIDVoiceLineupView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let scale = SIDPanelSizing.scale(in: geometry.size,
+                reference: CGSize(width: 900, height: max(300, channels.count * 100)))
+            let gutter = 96 * scale
             let historyLength = channels.first?.orderedNoteHistory.count ?? 1
             let allOnsets = channels.map { Self.onsets(for: $0) }
             let laneHeight = geometry.size.height / CGFloat(max(channels.count, 1))
@@ -34,7 +37,7 @@ struct SIDVoiceLineupView: View {
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     ForEach(Array(channels.enumerated()), id: \.offset) { index, channel in
-                        SIDVoiceLineupLane(channel: channel, onsets: allOnsets[index])
+                        SIDVoiceLineupLane(channel: channel, onsets: allOnsets[index], scale: scale, gutter: gutter)
                             .frame(height: laneHeight)
                     }
                 }
@@ -42,6 +45,7 @@ struct SIDVoiceLineupView: View {
                     Self.drawAlignmentGuides(
                         allOnsets: allOnsets, historyLength: historyLength, size: size, context: context)
                 }
+                .padding(.leading, gutter)
                 .allowsHitTesting(false)
             }
         }
@@ -104,23 +108,24 @@ private struct SIDVoiceLineupLane: View {
     let channel: SIDVoiceChannel
     let onsets: [SIDLineupOnset]
 
-    private static let labelWidth: CGFloat = 58
+    let scale: CGFloat
+    let gutter: CGFloat
 
     var body: some View {
         HStack(spacing: 0) {
             Text("SID \(channel.chipIndex + 1) · Ch \(channel.voiceIndex + 1)")
-                .font(.system(.caption2, design: .monospaced))
+                .font(.system(size: 11 * scale, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.75))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: Self.labelWidth, alignment: .leading)
-                .padding(.leading, 6)
+                .padding(.leading, 6 * scale)
+                .frame(width: gutter, alignment: .leading)
             Canvas { context, size in
                 drawLane(context: context, size: size)
             }
             .background(Color(white: 0.05))
             .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Color.white.opacity(0.12)))
-            .padding(.vertical, 1)
+            .padding(.vertical, max(1, scale))
         }
     }
 
@@ -147,12 +152,13 @@ private struct SIDVoiceLineupLane: View {
             var tick = Path()
             tick.move(to: CGPoint(x: x, y: 0))
             tick.addLine(to: CGPoint(x: x, y: size.height))
-            context.stroke(tick, with: .color(.yellow.opacity(0.4)), lineWidth: 1)
+            context.stroke(tick, with: .color(.yellow.opacity(0.4)), lineWidth: max(1, scale))
             context.draw(
                 Text(onset.noteName)
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.system(size: 11 * scale, design: .monospaced))
                     .foregroundStyle(.yellow),
-                at: CGPoint(x: min(max(x + 2, 12), size.width - 4), y: 8))
+                at: CGPoint(x: min(max(x + 2 * scale, 14 * scale), size.width - 4 * scale),
+                            y: max(10 * scale, size.height / 2 - 20 * scale)))
         }
     }
 
@@ -161,7 +167,9 @@ private struct SIDVoiceLineupLane: View {
     ) {
         let x0 = CGFloat(start) * stepX
         let x1 = CGFloat(end) * stepX
-        let rect = CGRect(x: x0, y: size.height * 0.34, width: max(1, x1 - x0), height: size.height * 0.42)
+        let bandHeight = min(size.height * 0.42, 20 * scale)
+        let rect = CGRect(x: x0, y: (size.height - bandHeight) / 2,
+                          width: max(1, x1 - x0), height: bandHeight)
         context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(.green.opacity(0.8)))
     }
 }

@@ -2,107 +2,105 @@ import XCTest
 @testable import Stream64
 
 final class SIDVisualMirroringTests: XCTestCase {
-    private func channels(activeChip: Int? = 0) -> [SIDVoiceChannel] {
-        (0..<6).map { index in
+    private let addresses: [UInt16] = [0xD400, 0xD420, 0xD440]
+    private let instruments: [SIDVisualizationMode] = [
+        .oscilloscope, .envelope, .mixerConsole, .pianoRoll, .pianoKeyboard,
+        .voiceLineup, .vuMeterBank, .registerActivity, .adsrKnobs, .pulseWidth,
+        .controlBits, .dashboard, .filterCurve
+    ]
+
+    private func presentation(chips: Int, tuneChips: Int?, mode: SIDVisualizationMode,
+                              adaptation: SIDVisualizationAdaptation = .automatic) -> SIDVisualPresentation {
+        let channels = (0..<(chips * 3)).map { index in
             var channel = SIDVoiceChannel(id: index, chipIndex: index / 3, voiceIndex: index % 3,
                                           bufferSize: 8, noteHistoryLength: 6)
             channel.registers.frequency = UInt16(4000 + index * 1000)
-            channel.registers.control = index / 3 == activeChip ? 0x41 : 0x40
+            channel.registers.control = 0 // Silence must never change tune topology.
+            channel.push(sample: Float(index) / 10, envelope: 0.8)
             return channel
         }
+        let filters = (0..<chips).map { SIDFilterRegisters(modeVolume: UInt8(15 - $0)) }
+        var rhythm = KAOSRhythmState()
+        rhythm.voiceLevels = (0..<(chips * 3)).map { Float($0) / 10 }
+        rhythm.activeVoiceMask = 7
+        var activity = SIDRegisterActivity(chipCount: chips)
+        for chip in 0..<chips {
+            activity.record(chipIndex: chip, offset: 0, value: UInt8(42 + chip), at: Date(timeIntervalSince1970: Double(chip)))
+        }
+        return SIDVisualPresentation(channels: channels, filters: filters, rhythm: rhythm,
+            topology: SIDVisualTopology(configuredAddresses: Array(addresses.prefix(chips)),
+                tuneAddresses: tuneChips.map { Array(addresses.prefix($0)) }, adaptation: adaptation),
+            mode: mode, registerActivity: activity)
     }
 
-    func testDetectionWaitsIgnoresBriefPausesAndResumesActualSecondSIDImmediately() {
-        var detector = SIDVisualMirrorDetector()
-        let filters = Array(repeating: SIDFilterRegisters(modeVolume: 15), count: 2)
-        var voices = channels()
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 0))
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 4.99))
-        XCTAssertEqual(detector.update(channels: voices, filters: filters, at: 5), 0)
-        voices[3].registers.control = 0x41
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 5.01))
-        voices[3].registers.control = 0x40
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 8))
-        XCTAssertEqual(detector.update(channels: voices, filters: filters, at: 10.02), 0)
-        voices = channels(activeChip: nil)
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 11), "Never fill silence with stale data")
-    }
-
-    func testReverseDirectionMutedVoicesAndDigiActivity() {
-        var detector = SIDVisualMirrorDetector()
-        let filters = Array(repeating: SIDFilterRegisters(modeVolume: 15), count: 2)
-        var voices = channels(activeChip: 1)
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 0))
-        // Frequency/control refreshes without a gate or envelope do not imply use.
-        voices[0].registers.frequency = 17000
-        XCTAssertEqual(detector.update(channels: voices, filters: filters, at: 5), 1)
-        voices[0].digiActivity = 1
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 5.01))
-        voices[0].digiActivity = 0
-        voices[0].registers.control = 0x49 // TEST mutes even a gated waveform.
-        XCTAssertEqual(detector.update(channels: voices, filters: filters, at: 10.02), 1)
-        XCTAssertNil(detector.update(channels: Array(voices.prefix(3)), filters: [filters[0]], at: 11))
-        XCTAssertNil(detector.update(channels: voices, filters: filters, at: 12), "Reconfiguration starts a new grace period")
-    }
-
-    func testInstrumentViewsMirrorRegistersFiltersAndActivityInBothDirections() {
-        let voices = channels()
-        let filters = [SIDFilterRegisters(modeVolume: 15), SIDFilterRegisters(modeVolume: 3)]
-        var activity = SIDRegisterActivity(chipCount: 2)
-        let now = Date()
-        activity.record(chipIndex: 0, offset: 0, value: 42, at: now)
-        activity.record(chipIndex: 1, offset: 0, value: 99, at: now.addingTimeInterval(-1))
-        for source in 0..<2 {
-            let destination = 1 - source
-            for mode in [SIDVisualizationMode.filterCurve, .adsrKnobs, .registerActivity, .pulseWidth] {
-                for enabled in [true, false] {
-                    let view = SIDVisualPresentation(channels: voices, filters: filters,
-                        rhythm: KAOSRhythmState(), source: source, enabled: enabled, mode: mode,
-                        registerActivity: activity)
-                    let expected = enabled ? source : destination
-                    XCTAssertEqual(view.channels[destination * 3].registers.frequency, voices[expected * 3].registers.frequency)
-                    XCTAssertEqual(view.filters[destination].volume, filters[expected].volume)
-                    XCTAssertEqual(view.registerActivity.values[destination], activity.values[expected])
-                    XCTAssertEqual(view.registerActivity.lastWrite[destination], activity.lastWrite[expected])
-                    XCTAssertEqual(view.registerActivity.lastChange[destination], activity.lastChange[expected])
-                }
+    func testSingleSIDInstrumentsHideUnusedChipsIncludingFiltersAndRegisters() {
+        for chips in [2, 3] {
+            for mode in instruments {
+                let view = presentation(chips: chips, tuneChips: 1, mode: mode)
+                XCTAssertEqual(view.chipCount, 1, mode.rawValue)
+                XCTAssertEqual(view.channels.map(\.id), [0, 1, 2])
+                XCTAssertEqual(view.filters.count, 1)
+                XCTAssertEqual(view.registerActivity.values.count, 1)
+                XCTAssertEqual(view.registerActivity.values[0][0], 42)
+                XCTAssertEqual(view.displayedChipIndices, [0])
             }
         }
-        XCTAssertEqual(activity.values[0][0], 42)
-        XCTAssertEqual(activity.values[1][0], 99)
     }
 
-    func testMirroredCopiesRetainDestinationIdentityAndNeverAlterDiagnosticsOrAudioState() {
-        var voices = channels()
-        voices[0].push(sample: 0.75, envelope: 0.8)
-        voices[0].pushNoteHistory()
-        let filters = [SIDFilterRegisters(modeVolume: 15), SIDFilterRegisters(modeVolume: 0)]
-        var rhythm = KAOSRhythmState()
-        rhythm.voiceLevels = [0.8, 0.5, 0.3, 0, 0, 0]
-        rhythm.activeVoiceMask = 7
-        let mirrored = SIDVisualPresentation(channels: voices, filters: filters, rhythm: rhythm,
-            source: 0, enabled: true, mode: .sidShowcase)
-        for index in 3..<6 {
-            XCTAssertEqual(mirrored.channels[index].id, index)
-            XCTAssertEqual(mirrored.channels[index].chipIndex, 1)
-            XCTAssertEqual(mirrored.channels[index].voiceIndex, index - 3)
-            XCTAssertEqual(mirrored.channels[index].registers.frequency, voices[index - 3].registers.frequency)
-            XCTAssertEqual(mirrored.channels[index].orderedSamples, voices[index - 3].orderedSamples)
+    func testAbstractViewsMirrorAllUnusedVoicesRetainingIdentity() {
+        for mode in SIDVisualizationMode.individualModes where !instruments.contains(mode) {
+            let view = presentation(chips: 3, tuneChips: 1, mode: mode)
+            XCTAssertEqual(view.chipCount, 3)
+            XCTAssertEqual(view.channels.count, 9)
+            for index in 3..<9 {
+                XCTAssertEqual(view.channels[index].id, index)
+                XCTAssertEqual(view.channels[index].chipIndex, index / 3)
+                XCTAssertEqual(view.channels[index].registers.frequency, view.channels[index % 3].registers.frequency)
+                XCTAssertEqual(view.channels[index].orderedSamples, view.channels[index % 3].orderedSamples)
+                XCTAssertEqual(view.rhythm.voiceLevels[index], view.rhythm.voiceLevels[index % 3])
+            }
+            XCTAssertEqual(view.rhythm.activeVoiceMask, 511)
+            XCTAssertEqual(view.filters.map(\.volume), [15, 15, 15])
+            XCTAssertEqual(view.registerActivity.values[1][0], 43, "Raw activity is not fabricated")
         }
-        XCTAssertEqual(mirrored.filters[1].volume, 15)
-        XCTAssertEqual(mirrored.rhythm.activeVoiceMask, 63)
-        XCTAssertEqual(mirrored.rhythm.voiceLevels[3], 0.8)
-        XCTAssertEqual(voices[3].registers.control, 0x40)
-        XCTAssertEqual(filters[1].volume, 0)
-        for mode in [SIDVisualizationMode.controlBits, .dashboard] {
-            let diagnostic = SIDVisualPresentation(channels: voices, filters: filters, rhythm: rhythm,
-                source: 0, enabled: true, mode: mode)
-            XCTAssertEqual(diagnostic.channels[3].registers.frequency, voices[3].registers.frequency)
-            XCTAssertEqual(diagnostic.filters[1].volume, 0)
-            XCTAssertEqual(diagnostic.rhythm.activeVoiceMask, 7)
+    }
+
+    func testMultiSIDAndUnknownNeverCollapseDuringSilence() {
+        for mode in instruments {
+            XCTAssertEqual(presentation(chips: 3, tuneChips: 2, mode: mode).channels.count, 6)
+            XCTAssertEqual(presentation(chips: 3, tuneChips: 3, mode: mode).channels.count, 9)
+            XCTAssertEqual(presentation(chips: 2, tuneChips: nil, mode: mode).channels.count, 6)
+            XCTAssertEqual(presentation(chips: 2, tuneChips: 1, mode: mode, adaptation: .hardware).channels.count, 6)
+            XCTAssertEqual(presentation(chips: 2, tuneChips: nil, mode: mode, adaptation: .singleSID).channels.count, 3)
         }
-        let disabled = SIDVisualPresentation(channels: voices, filters: filters, rhythm: rhythm,
-            source: 0, enabled: false, mode: .sidShowcase)
-        XCTAssertEqual(disabled.channels[3].registers.frequency, voices[3].registers.frequency)
+        let two = presentation(chips: 3, tuneChips: 2, mode: .sidShowcase)
+        XCTAssertNotEqual(two.channels[3].registers.frequency, two.channels[0].registers.frequency)
+        XCTAssertEqual(two.channels[6].registers.frequency, two.channels[0].registers.frequency)
+        let unknown = presentation(chips: 2, tuneChips: nil, mode: .sidShowcase)
+        XCTAssertNotEqual(unknown.channels[3].registers.frequency, unknown.channels[0].registers.frequency)
+    }
+
+    func testPlaybackMetadataInvalidationAndLateCompletion() {
+        var playback = SIDPlaybackMetadata()
+        XCTAssertNil(playback.addresses)
+        let first = playback.beginPlayback()
+        playback.didStart(addresses: [0xD400], generation: first)
+        XCTAssertEqual(playback.addresses, [0xD400])
+        let second = playback.beginPlayback()
+        XCTAssertNil(playback.addresses)
+        playback.didStart(addresses: addresses, generation: first)
+        XCTAssertNil(playback.addresses, "A stale upload completion must not override a reset or a newer tune")
+        playback.didStart(addresses: addresses, generation: second)
+        XCTAssertEqual(playback.addresses?.count, 3)
+        playback.beginPlayback()
+        XCTAssertNil(playback.addresses)
+    }
+
+    func testTopologyUsesAddressesAndSafelyHandlesMissingHardware() {
+        let topology = SIDVisualTopology(configuredAddresses: addresses, tuneAddresses: [0xD400, 0xD440], adaptation: .automatic)
+        XCTAssertEqual(topology.activeChips, [0, 2])
+        XCTAssertEqual(topology.sourceChip(for: 1), 2)
+        let missing = SIDVisualTopology(configuredAddresses: [0xD400], tuneAddresses: addresses, adaptation: .automatic)
+        XCTAssertEqual(missing.activeChips, [0])
     }
 }

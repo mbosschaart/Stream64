@@ -7,6 +7,7 @@ import SwiftUI
 struct SIDDashboardView: View {
     let channels: [SIDVoiceChannel]
     let filterStates: [SIDFilterRegisters]
+    var chipIndices: [Int]? = nil
 
     var body: some View {
         let chipCount = max(filterStates.count, 1)
@@ -15,8 +16,8 @@ struct SIDDashboardView: View {
             VStack(spacing: 0) {
                 ForEach(0..<chipCount, id: \.self) { chip in
                     SIDChipDashboardPanel(
-                        chipIndex: chip,
-                        voices: channels.filter { $0.chipIndex == chip },
+                        chipIndex: chipIndices?[chip] ?? chip,
+                        voices: channels.filter { $0.chipIndex == (chipIndices?[chip] ?? chip) },
                         filter: filterStates.indices.contains(chip) ? filterStates[chip] : SIDFilterRegisters())
                         .frame(height: panelHeight)
                 }

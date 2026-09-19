@@ -47,7 +47,7 @@ struct KAOSRhythmState: Equatable {
     var barPhase = 0
     var phraseIndex = 0
     var sceneIndex = 0
-    var activeVoiceMask: UInt8 = 0
+    var activeVoiceMask: UInt16 = 0
     var digiActivity: Float = 0
     var voiceLevels: [Float] = Array(repeating: 0, count: 6)
 
@@ -122,18 +122,13 @@ struct KAOSRhythmState: Equatable {
             1, max(0, timestamp - (lastClockBeatTime ?? timestamp)) / smoothedBeatInterval))
 
         activeVoiceMask = 0
-        voiceLevels = Array(
-            channels.prefix(6).map {
-                let active = $0.registers.gate || $0.registers.noiseEnabled
-                return active ? max($0.levelRMS, $0.peakLevel * 0.45) : 0
-            })
-        for channel in channels.prefix(6) {
+        let voiceCount = max(6, min(UInt16.bitWidth, (channels.map(\.id).max() ?? -1) + 1))
+        voiceLevels = Array(repeating: 0, count: voiceCount)
+        for channel in channels where voiceLevels.indices.contains(channel.id) {
             if channel.registers.gate || channel.registers.noiseEnabled {
-                activeVoiceMask |= UInt8(1 << channel.id)
+                voiceLevels[channel.id] = max(channel.levelRMS, channel.peakLevel * 0.45)
+                activeVoiceMask |= UInt16(1 << channel.id)
             }
-        }
-        if voiceLevels.count < 6 {
-            voiceLevels += Array(repeating: 0, count: 6 - voiceLevels.count)
         }
     }
 

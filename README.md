@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.129b-purple)
+![Version](https://img.shields.io/badge/version-0.130b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -37,7 +37,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Independent full-screen Spaces** — viewer, Assembly64, File Manager, SID, Drive Bay, Config, Memory Console, Debug Trace and Help can each own a Mission Control Space instead of stacking into the viewer's fullscreen desktop
 - **Drive Bay, Ultimate Config, Memory Console** — mount/unmount and power IEC drives, switch 1541/1571/1581 mode, create blank D64/D71/D81 images; browse/edit flash config categories; DMA peek/poke hex dump via `readmem`/`writemem` (toolbar + stream context menu)
 - **Debug Trace & Ultimate Menu** (Ultimate 64/Elite only) — a live decoded view of the 6510/VIC/1541 bus-trace stream with raw/CSV export; its Memory Map offers fading I/O activity, persistent byte-value depth, and a rotatable Metal 3D terrain of all 65,536 addresses with adaptive detail, hover inspection, region overlays and activity pulses. The separate Telnet/VT100 Ultimate Menu exposes the on-device menu system (and, if navigated there, the Machine Code Monitor) without interrupting the C64; both windows are hidden automatically on hardware that doesn't implement the U64 debug register
-- **SID Oscilloscope** (Ultimate 64/Elite only) — a 33-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 33 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, sndpeek-style 3D Waterfall/3D Bar Field — with optional phosphor glow and per-SID post-mix lowpass/kick scopes
+- **SID Oscilloscope** (Ultimate 64/Elite only) — a 34-mode SID visualizer picked from a "SID Visualizations" right-click menu, with any number of modes open at once, each in its own window (or all 34 at once, auto-tiled into a grid, via "Open All in Grid"), optional Settings → General auto-follow so open SID / Memory Map windows switch with the selected C64 (sound always follows), and the whole arrangement savable/restorable per device: per-voice Oscilloscope/ADSR Envelope/Mixer Console/ADSR Knobs/Pulse Width/Control Bits/Piano Keyboard (reconstructed from register writes on the debug bus-trace), Piano Roll, Voice Lineup, VU Meter Bank, Register Activity Grid, an approximate Filter Curve, a per-chip SID Dashboard, a Colorful Waveform showcase, real-audio-driven Spectrum Analyzer, Lissajous Scope, piano-key-labeled Spectrogram, sndpeek-style 3D Waterfall/3D Bar Field — with optional phosphor glow and per-SID post-mix lowpass/kick scopes
 - **Filtered screenshots** — toolbar camera, context menu, File command or ⇧⌘S saves exactly what Metal renders, including CRT curvature, signal artifacts, phosphor color/afterglow, reflection and dirty glass
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
@@ -224,7 +224,7 @@ sometimes need different handling on that transport.
 
 ### SID Oscilloscope
 
-A 33-mode SID visualizer — 3 channels normally, 6 when a second SID is \
+A 34-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
 dual-8580 U64-II). Reached from the stream's right-click menu under "SID \
@@ -249,7 +249,7 @@ Separately, Stream64 continuously remembers the whole open workspace \
 (viewer size, sidebar visibility, tools, SID windows, etc.) as windows \
 open, move, resize, or close, and restores it on the next launch.
 
-**Club Mode** runs a shuffled tour of all 32 individual visualizations in one window,
+**Club Mode replaces KAOS mode**, bringing new visualisations and GPU-optimised rendering. It runs a shuffled tour of all 32 individual visualizations in one window,
 with a fresh random 0.5–3 second duration for every scene and hard VJ-style cuts.
 After a random 4–8 normal scenes, it inserts five rapid 0.2-second swaps
 between two effects (A → B → A → B → A → B), then resumes normal rotation.
@@ -258,6 +258,20 @@ not consume extra deck entries, and adjacent scenes never repeat.
 Its shared SID analysis and histories stay warm between cuts, playback continues
 without interruption, and the countdown pauses when the window is hidden.
 Club Mode supports fullscreen and restores as Club Mode, starting a fresh shuffle.
+
+**Music Compo Mode overlays visualisations directly onto the live C64 video stream**, turning even a plain, static SID player screen into a music-reactive show. It opens a separate window blending sixteen scenes (the twelve abstract Metal
+effects plus 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer)
+with the same device's live C64 video. It uses Club Mode's 0.5–3 second
+cuts and occasional five-swap 0.2-second bursts. **C64 video opacity** below the
+picture adjusts the background from 0–100% (default 50%, saved between sessions).
+The toolbar hides after two seconds of mouse inactivity and returns on mouse movement.
+Effects remain visible through a screen blend. Both layers render at the exact
+incoming PAL/NTSC pixel dimensions before the device's selected video filters,
+picture controls, scaling and CRT screen boundary are applied. They therefore
+stay together inside the screen/bezel, including in fullscreen. Music Compo
+shares the current video stream and SID analysis; it does not start another
+stream. Club Mode excludes Music Compo from its deck to avoid nested cycling.
+
 
 **SID Showcase** keeps the computer, floppy drive, tape, disk, joystick and
 a matching abstract Commodore 1702 monitor on screen together. Voice assignments rotate every four seconds; each object
@@ -284,11 +298,21 @@ Twelve new Metal modes combine SID voice state with live audio energy:
 
 All twelve support the existing independent-window/layout controls. They share SID analysis, cap render resolution, skip hidden windows, and reduce drawing under main-viewer pressure. Per-voice envelopes are reconstructed estimates, not isolated audio measurements.
 
-**Settings → General → Mirror unused SID in visualisations** optionally mirrors
-the active chip into an unused chip’s performance visuals after five seconds
-of inactivity. This includes Filter Curve, ADSR Knobs, Register Activity and
-Pulse Width. Real activity restores that chip immediately. Audio, Control Bits
-and SID Dashboard remain unchanged; the setting defaults to off.
+**Settings → General → SID visualisation layout** defaults to **Auto (SID file)**.
+Stream64 reads the uploaded SID header to identify the tune's required chips.
+Single-SID tunes show only three voices in the instrument views (including
+Filter Curve); abstract effects mirror those voices into unused configured
+channels. Multi-SID tunes retain their independent signals, even during silence.
+Unknown playback shows all configured chips. **Force single SID** handles tunes
+started outside the app; **Show all configured SIDs** disables adaptation.
+The setting affects visuals only. Playback metadata is per device, recorded
+only after successful upload/playback, and cleared on replacement playback,
+reset or disconnect. Files played directly from Ultimate storage are currently
+unknown because this path does not retrieve their header.
+
+The presentation mapping and Metal inputs support three chips/nine voices for
+future hardware integration; this does not add third-SID hardware configuration.
+Voice Lineup scales its labels, gutters and note bands proportionally in fullscreen.
 
 All visualization text grows with the window, including fullscreen and Club Mode. Instrument labels, legends and fixed-width gutters scale together; compact windows retain their existing sizing.
 
@@ -338,28 +362,11 @@ already — no prompt, no button. It can run alongside the Debug Trace \
 window watching the very same trace, and opening several SID Oscilloscope \
 windows at once only starts it the first time, not per window.
 
-### KAOS (inactive)
+### KAOS replaced by Club Mode
 
-KAOS is excluded from visualization menus, Open All in Grid, saved-layout restoration, and Club Mode. Its Swift implementation and assets are retained for possible reactivation.
-
-**KAOS** is the hybrid acid-house/demoscene performance mode. It combines \
-SID gate/frequency/control events, `$D418` digi activity, and real post-mix \
-audio/FFT energy to infer beats, BPM, bars, phrases, active voices, and bass \
-pulses. Its scene director uses those patterns to cut between original \
-procedural effects: neon grids and tunnels, kaleidoscopes, scope/VU walls, \
-dancers, raster storms, hyperspace, checkerboards, turntables, cassette and \
-floppy motifs, plus wireframe C64/1541/monitor/joystick/smiley cut-ins.
-
-Large digital `ACID`, `HOUSE`, `DANCE`, `BASS`, `JACK`, `RAVE`, `BEAT`, \
-`GROOVE`, and `KAOS` cards are intentionally sparse—appearing on phrase \
-starts or high-confidence sparse bass/digi breaks with a quick flash/fade. \
-The included C64-era line-art assets are white-to-transparent composites \
-layered with the live palette, scopes, VU meters, and spectrum rather than \
-static images.
-
-KAOS shares the per-device SID register trace and audio tap with other SID \
-windows, so multiple KAOS windows remain synchronized and do not create \
-additional debug streams.
+Club Mode replaces KAOS with new visualisations and GPU-optimised rendering.
+The legacy KAOS Swift implementation and artwork remain in the source for
+possible future reuse, but KAOS is no longer an active visualisation.
 
 ## Building & Running
 
@@ -377,10 +384,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.129b BUILD_NUMBER=129 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.130b BUILD_NUMBER=130 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.129b BUILD_NUMBER=129 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.130b BUILD_NUMBER=130 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -682,3 +689,7 @@ already-granted rights are not revoked by this change. Third-party components \
 remain governed by their own licenses.
 
 Release history: [CHANGELOG.md](CHANGELOG.md).
+
+SID rendering uses custom Metal for generative scenes, spectrum displays, Colorful Waveform and SID Showcase, and SwiftUI GPU composition for instrument panels. Music Compo renders all 16 scenes directly on the GPU before video filtering, without per-frame image snapshots. Audio analysis and SwiftUI layout remain CPU work.
+
+See [SID visualisation implementation notes](Docs/SID-Visualisations.md) for adaptive layouts, cycling modes, GPU rendering and validation limits.

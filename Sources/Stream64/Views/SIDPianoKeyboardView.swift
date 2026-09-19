@@ -7,7 +7,7 @@ struct SIDPianoKeyboardView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let columns = channels.count > 3 && geometry.size.width > geometry.size.height ? 2 : 1
+            let columns = geometry.size.width > geometry.size.height ? max(1, (channels.count + 2) / 3) : 1
             let rows = max(1, (channels.count + columns - 1) / columns)
             let spacing: CGFloat = 8
             let width = max(1, (geometry.size.width - spacing * CGFloat(columns + 1)) / CGFloat(columns))
