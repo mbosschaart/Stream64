@@ -199,8 +199,8 @@ struct UltimateAPIClient {
         /// Which address entry owns `socket2Address`; used by the explicit
         /// compatibility Fix action without guessing physical hardware.
         let secondSIDSource: SecondSIDSource?
-        /// When true, playback routing may remap physical socket addresses
-        /// only — UltiSID address/filter settings must stay untouched.
+        /// Prefer physical sockets. Three-SID tunes may additionally use a
+        /// spare UltiSID after the enabled physical sockets are assigned.
         let physicalSocketsEnabled: Bool
         /// Every addressable SID source currently available to the Ultimate.
         /// This lets playback route a 3-SID tune without discarding UltiSIDs
@@ -208,11 +208,11 @@ struct UltimateAPIClient {
         let slots: [Slot]
 
         /// Chip base addresses for debug-trace visualizations. Follows the
-        /// same physical-vs-UltiSID rule as playback routing, and includes
-        /// every currently mapped address in that mode.
+        /// physical sockets first, followed by distinct mapped UltiSIDs so
+        /// a supplemental third chip also participates in visualization.
         var visualizationChipBases: [UInt16] {
             let preferred = physicalSocketsEnabled
-                ? slots.filter(\.isPhysical)
+                ? slots.filter(\.isPhysical) + slots.filter { !$0.isPhysical }
                 : slots.filter { !$0.isPhysical }
             var bases: [UInt16] = []
             var seen = Set<UInt16>()
@@ -262,7 +262,7 @@ struct UltimateAPIClient {
     }
 
     /// Best-effort discovery of the configured SID base address(es), used
-    /// to decide whether the SID Oscilloscope shows 3 or 6 channels and
+    /// to decide how many channels the SID Oscilloscope shows and
     /// where each chip's registers live. Confirmed against a real U64-II
     /// (2026-08-01): `SID Addressing` holds `"SID Socket 1/2 Address"` as
     /// `"$D400"`-style strings, `SID Sockets Configuration` holds
@@ -295,8 +295,8 @@ struct UltimateAPIClient {
 
         var slots: [SIDConfiguration.Slot] = []
         // Enabled physical sockets stay routable even when currently
-        // Unmapped or undetected — playback remaps their addresses and
-        // must not fall through to UltiSID mutation.
+        // Unmapped or undetected. Mono/dual playback remaps only these;
+        // three-SID playback may supplement them with an UltiSID.
         if physicalSocket1Enabled {
             slots.append(.init(
                 source: .socket1,
@@ -315,18 +315,20 @@ struct UltimateAPIClient {
             addressing["UltiSID 1 Address"] as? String) ?? 0xD400
         let ultiSID2 = Self.parseHexAddress(
             addressing["UltiSID 2 Address"] as? String)
-        slots.append(.init(
-            source: .ultiSID1,
-            address: ultiSID1,
-            model: Self.ultiSIDModel(
-                ultiSID["UltiSID 1 Filter Curve"] as? String)))
-        // Keep UltiSID 2 visible for all-UltiSID routing even when Unmapped
-        // so playback can assign the tune's second-SID address.
-        slots.append(.init(
-            source: .ultiSID2,
-            address: ultiSID2,
-            model: Self.ultiSIDModel(
-                ultiSID["UltiSID 2 Filter Curve"] as? String)))
+        // Only expose UltiSID slots actually reported by the firmware. Preserve
+        // Unmapped so the routing planner can prefer a free slot.
+        if addressing["UltiSID 1 Address"] is String {
+            slots.append(.init(
+                source: .ultiSID1,
+                address: Self.parseHexAddress(addressing["UltiSID 1 Address"] as? String),
+                model: Self.ultiSIDModel(ultiSID["UltiSID 1 Filter Curve"] as? String)))
+        }
+        if addressing["UltiSID 2 Address"] is String {
+            slots.append(.init(
+                source: .ultiSID2,
+                address: ultiSID2,
+                model: Self.ultiSIDModel(ultiSID["UltiSID 2 Filter Curve"] as? String)))
+        }
 
         // On U64 hardware, active physical sockets are still the preferred
         // oscilloscope source. Publish their mapped addresses even when
@@ -371,27 +373,32 @@ struct UltimateAPIClient {
     /// native playback. Address changes are deliberately persisted: the user
     /// asked the Ultimate to retain the routing that made the tune playable.
     ///
-    /// Physical sockets Enabled → remap socket addresses only; never touch
-    /// UltiSID address or filter-curve settings. Sockets Disabled → remap
-    /// UltiSID addresses (including `Unmapped`) and adapt filter curves.
+    /// Mono/dual tunes retain the physical-socket preference. Three-SID tunes
+    /// may use spare UltiSIDs once physical sockets are assigned. Mapping an
+    /// Unmapped UltiSID to the requested address enables it in firmware.
     func ensureSIDRouting(for header: SIDHeader) async throws -> SIDRoutingResult {
         guard !header.isPlaySIDSpecific else {
             throw SIDRoutingError.playSIDSpecific
         }
         let configuration = await fetchSIDConfiguration()
-        let requirements = zip(
+        let requirements = Array(zip(
             header.requiredSIDAddresses,
-            [header.primarySIDModel, header.secondSIDModel, header.thirdSIDModel])
+            [header.primarySIDModel, header.secondSIDModel, header.thirdSIDModel]))
         var available = configuration.slots
         var addressChanges: [SIDConfiguration.Slot.Source] = []
         var modelChanges: [SIDConfiguration.Slot.Source] = []
         var warnings: [String] = []
         let usePhysical = configuration.physicalSocketsEnabled
 
+        // Plan the complete assignment before changing hardware; insufficient
+        // capacity must not leave a partially remapped device.
+        var plan: [(slot: SIDConfiguration.Slot, address: UInt16, model: String?)] = []
         for (index, requirement) in requirements.enumerated() {
             let (address, requiredModel) = requirement
+            let physical = available.indices.filter { available[$0].isPhysical }
+            let allowSupplement = requirements.count == 3 && physical.isEmpty
             let candidates = available.indices.filter {
-                usePhysical
+                usePhysical && !allowSupplement
                     ? available[$0].isPhysical
                     : !available[$0].isPhysical
             }
@@ -409,8 +416,11 @@ struct UltimateAPIClient {
                 return leftScore < rightScore
             }!
             let selected = available.remove(at: selectedIndex)
+            plan.append((selected, address, requiredModel))
+        }
+        for (selected, address, requiredModel) in plan {
             if let requiredModel, selected.model != requiredModel {
-                if usePhysical {
+                if selected.isPhysical {
                     warnings.append(
                         "\(selected.source.label) is \(selected.model ?? "unknown"); tune requests \(requiredModel).")
                 } else if let item = selected.modelConfigItem {

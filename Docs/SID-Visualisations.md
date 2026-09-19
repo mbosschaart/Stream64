@@ -41,8 +41,9 @@ FFT displays continue to show actual post-mix audio. No visual mirroring changes
 raw registers, synthesis or playback routing.
 
 Topology supports chip arrays and Metal uniforms carry nine voices, preparing
-for three-SID presentation. This does not add end-to-end three-SID discovery or
-hardware routing. Voice Lineup owns proportional fullscreen scaling; other
+for three-SID presentation. Three-SID playback can supplement enabled physical
+sockets with an available UltiSID, and discovery includes its distinct mapped
+address. Voice Lineup owns proportional fullscreen scaling; other
 instrument panels use the shared sizing rules without double scaling.
 
 ## Cycling modes
@@ -82,6 +83,23 @@ fullscreen typography and indicators scale with the view. Piano Keyboard retains
 natural white/black-key proportions. Vector Flow uses brighter colours and Pulse
 Vortex responds more strongly to bass and attacks.
 
+## Three-SID routing
+
+For a three-SID file, the routing planner assigns enabled physical sockets first,
+then uses an available UltiSID for missing capacity. It prefers an UltiSID already
+at the required address, then an Unmapped slot, then another unused UltiSID.
+The address comes from the file (for example `$D440`), not a hardcoded default.
+Mapping an Unmapped UltiSID enables it; the requested SID model selects a supported
+filter curve. Address/filter changes follow the existing save-to-flash behavior.
+Mono/dual physical-socket routing still leaves UltiSID settings untouched.
+
+The entire slot assignment is planned before configuration writes. If firmware
+exposes only two available sources and no spare, playback reports insufficient
+capacity instead of partially changing routing. This does not implement UltiSID
+Range Split or enable disabled physical sockets. Remote-path files still lack
+locally inspectable header metadata. Supplemental mapped UltiSIDs are included
+in visualization discovery, deduplicated against physical addresses.
+
 ## Playback handoff
 
 Before launching converted PSID64 playback, conversion completes first. The app
@@ -99,7 +117,7 @@ scene output at PAL/NTSC sizes, blending and video filters. Showcase tests rende
 actual Metal output at landscape, portrait and fullscreen sizes; previews verify
 upright artwork and captions without a top title.
 
-The final full run, including the Showcase correction, executed 239 tests,
+The final full run, including the Showcase correction and third-SID fallback, executed 243 tests,
 with eight fixture-dependent skips and no failures. Live mono-to-multi-SID hardware playback and sustained
 stream performance remain unverified. Render tests do not establish that stream
 hiccups are eliminated. Release 0.130b packages these changes for Apple Silicon and Intel Macs.

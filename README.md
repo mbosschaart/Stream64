@@ -384,10 +384,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.130b BUILD_NUMBER=130 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.130b BUILD_NUMBER=131 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.130b BUILD_NUMBER=130 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.130b BUILD_NUMBER=131 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -693,3 +693,5 @@ Release history: [CHANGELOG.md](CHANGELOG.md).
 SID rendering uses custom Metal for generative scenes, spectrum displays, Colorful Waveform and SID Showcase, and SwiftUI GPU composition for instrument panels. Music Compo renders all 16 scenes directly on the GPU before video filtering, without per-frame image snapshots. Audio analysis and SwiftUI layout remain CPU work.
 
 See [SID visualisation implementation notes](Docs/SID-Visualisations.md) for adaptive layouts, cycling modes, GPU rendering and validation limits.
+
+Three-SID tunes automatically use a spare UltiSID when the enabled physical SIDs do not cover all three chips. Stream64 assigns the address requested by the file (such as `$D440`) and includes the additional chip in visualisations. An available third source is required; two UltiSIDs alone cannot provide three independent chips with this routing mode.

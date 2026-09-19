@@ -2,12 +2,16 @@
 
 ## 0.130b — 2026-09-20
 
+Updated packages: build 131 includes the automatic third-SID UltiSID fallback.
+
 ### Highlights
 
 - **Club Mode replaces KAOS mode**, bringing new visualisations and GPU-optimised rendering to a fast-cutting SID dance party. It cycles through 32 individual scenes with random cuts and rapid back-and-forth bursts.
 - **Music Compo Mode overlays visualisations directly onto the live C64 video stream**, turning even a plain, static SID player screen into a music-reactive show. Sixteen scenes blend with the player graphics; adjustable video opacity lets you choose the mix, and your video filters and CRT bezel apply to the combined picture.
 
 ### Improved
+
+- Three-SID playback automatically assigns a spare UltiSID to the missing chip address declared by the tune (for example `$D440`), matching its requested model when specified. Mono/dual tunes retain their physical-socket preference. Visualisations include the additional mapped chip.
 
 - SID Showcase artwork renders upright on the GPU; the top title is removed while rotating per-object voice captions remain.
 

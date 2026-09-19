@@ -514,6 +514,61 @@ final class HVSCTests: XCTestCase {
         })
     }
 
+    func testThreeSIDEnablesFreeUltiSIDAndExposesThirdVisualizationChip() async throws {
+        let transport = SIDConfigurationTransport(ultiAddresses: ["UltiSID 2 Address": "Unmapped"])
+        let client = UltimateAPIClient(device: UltimateDevice(name: "Test", host: "192.168.1.64"), transport: transport)
+        var data = makeSIDHeader(version: 4, flags: 0x01A0) // 8580, 8580, 6581
+        data[0x7A] = 0x42; data[0x7B] = 0x44
+        let result = try await client.ensureSIDRouting(for: SIDHeader(data: data))
+        XCTAssertEqual(result.configuredSlots, [.ultiSID2])
+        let requests = await transport.recordedRequests()
+        let puts = requests.filter { $0.httpMethod == "PUT" }
+        XCTAssertFalse(puts.contains { $0.url!.path.contains("SID Socket") })
+        let address = try XCTUnwrap(puts.first { $0.url!.path.contains("UltiSID 2 Address") })
+        XCTAssertEqual(URLComponents(url: address.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "value" }?.value, "$D440")
+        XCTAssertTrue(puts.contains { $0.url!.path.contains("UltiSID 2 Filter Curve") })
+        XCTAssertTrue(requests.contains { $0.url!.path == "/v1/configs/SID Addressing:save_to_flash" })
+        let config = await client.fetchSIDConfiguration()
+        XCTAssertEqual(config.visualizationChipBases, [0xD400, 0xD420, 0xD440])
+    }
+
+    func testThreeSIDReusesExistingUltiSIDAtRequestedAddress() async throws {
+        let transport = SIDConfigurationTransport(ultiAddresses: ["UltiSID 1 Address": "$D500"])
+        let client = UltimateAPIClient(device: UltimateDevice(name: "Test", host: "192.168.1.64"), transport: transport)
+        var data = makeSIDHeader(version: 4, flags: 0x02A0)
+        data[0x7A] = 0x42; data[0x7B] = 0x50
+        let result = try await client.ensureSIDRouting(for: SIDHeader(data: data))
+        XCTAssertTrue(result.configuredSlots.isEmpty)
+        let requests = await transport.recordedRequests()
+        XCTAssertFalse(requests.contains { $0.httpMethod == "PUT" })
+    }
+
+    func testThreeSIDCanRemapDuplicateUltiSIDWithoutMovingPhysicalSockets() async throws {
+        let transport = SIDConfigurationTransport()
+        let client = UltimateAPIClient(device: UltimateDevice(name: "Test", host: "192.168.1.64"), transport: transport)
+        var data = makeSIDHeader(version: 4, flags: 0x02A0)
+        data[0x7A] = 0x42; data[0x7B] = 0x60
+        let result = try await client.ensureSIDRouting(for: SIDHeader(data: data))
+        XCTAssertEqual(result.configuredSlots, [.ultiSID1])
+        let config = await client.fetchSIDConfiguration()
+        XCTAssertEqual(config.visualizationChipBases, [0xD400, 0xD420, 0xD600])
+    }
+
+    func testThreeSIDInsufficientCapacityFailsBeforeAnyConfigurationWrites() async throws {
+        let transport = SIDConfigurationTransport(founder: true)
+        let client = UltimateAPIClient(device: UltimateDevice(name: "Test", host: "192.168.1.64"), transport: transport)
+        var data = makeSIDHeader(version: 4, flags: 0x0150)
+        data[0x7A] = 0x50; data[0x7B] = 0x60
+        do {
+            _ = try await client.ensureSIDRouting(for: SIDHeader(data: data))
+            XCTFail("Two UltiSIDs cannot satisfy three independent addresses")
+        } catch UltimateAPIClient.SIDRoutingError.noCompatibleSlot(let address, _) {
+            XCTAssertEqual(address, 0xD600)
+        }
+        let requests = await transport.recordedRequests()
+        XCTAssertFalse(requests.contains { $0.httpMethod == "PUT" })
+    }
+
     func testPhysicalSocketsEnabledNeverMutatesUltiSID() async throws {
         let transport = SIDConfigurationTransport(unmappedSecondSID: true)
         let client = UltimateAPIClient(
@@ -625,17 +680,20 @@ private actor SIDConfigurationTransport: HTTPTransport {
     private let failReset: Bool
     private let unmappedSecondSID: Bool
     private let undetectedPhysical: Bool
+    private var ultiAddresses: [String: String]
 
     init(
         founder: Bool = false,
         failReset: Bool = false,
         unmappedSecondSID: Bool = false,
-        undetectedPhysical: Bool = false
+        undetectedPhysical: Bool = false,
+        ultiAddresses: [String: String] = [:]
     ) {
         self.founder = founder
         self.failReset = failReset
         self.unmappedSecondSID = unmappedSecondSID
         self.undetectedPhysical = undetectedPhysical
+        self.ultiAddresses = ultiAddresses
     }
 
     func recordedRequests() -> [URLRequest] { requests }
@@ -644,6 +702,11 @@ private actor SIDConfigurationTransport: HTTPTransport {
         requests.append(request)
         let path = request.url?.path ?? ""
         let body: Data
+        if request.httpMethod == "PUT", path.contains("SID Addressing/"),
+           let item = request.url?.lastPathComponent,
+           let value = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "value" })?.value {
+            ultiAddresses[item] = value
+        }
         if path.contains("SID Addressing"), request.httpMethod == "GET" {
             // Undetected physical dual-SID setups still keep Socket 2 mapped
             // (e.g. $D420) while UltiSID 2 stays Unmapped — that used to hide
@@ -661,8 +724,8 @@ private actor SIDConfigurationTransport: HTTPTransport {
             {"SID Addressing":{
               "SID Socket 1 Address":"$D400",
               "SID Socket 2 Address":"\(socket2)",
-              "UltiSID 1 Address":"$D400",
-              "UltiSID 2 Address":"\(ultiSID2)"
+              "UltiSID 1 Address":"\(ultiAddresses["UltiSID 1 Address"] ?? "$D400")",
+              "UltiSID 2 Address":"\(ultiAddresses["UltiSID 2 Address"] ?? ultiSID2)"
             },"errors":[]}
             """.utf8)
         } else if path.contains("SID Sockets Configuration") {
