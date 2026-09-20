@@ -1323,9 +1323,19 @@ struct ViewerSessionToolbar: ToolbarContent {
         display.filterMode == .crt || display.filterMode == .crtTube
     }
 
-    @ToolbarContentBuilder
     var body: some ToolbarContent {
-        ToolbarItemGroup {
+        connectionControls
+        inputAndDisplayControls
+        libraryControls
+        toolControls
+    }
+
+    @ToolbarContentBuilder
+    private var connectionControls: some ToolbarContent {
+        // Keep one stable native toolbar item per control. A mixed group can
+        // assign the following button's title to a Menu's overflow entry on
+        // macOS 27, and conditional controls must not shift item identities.
+        ToolbarItem(id: "viewer.connection") {
             if session.isConnected {
                 Button {
                     Task { await session.disconnect() }
@@ -1341,9 +1351,9 @@ struct ViewerSessionToolbar: ToolbarContent {
                 }
                 .help("Connect \(session.device.name)")
             }
+        }
 
-            Divider()
-
+        ToolbarItem(id: "viewer.streaming") {
             if session.isStreaming {
                 Button {
                     Task { await session.stopStreams() }
@@ -1361,7 +1371,9 @@ struct ViewerSessionToolbar: ToolbarContent {
                 .help("Ask \(session.device.name) to stream to this Mac")
                 .disabled(!session.isConnected)
             }
+        }
 
+        ToolbarItem(id: "viewer.reset") {
             Button {
                 Task { await session.reset() }
             } label: {
@@ -1369,7 +1381,9 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Reset \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.reboot") {
             Button {
                 Task { await session.reboot() }
             } label: {
@@ -1377,7 +1391,9 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Reboot \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.pause") {
             Button {
                 Task { await session.togglePause() }
             } label: {
@@ -1388,7 +1404,9 @@ struct ViewerSessionToolbar: ToolbarContent {
                   ? "Resume \(session.device.name)"
                   : "Pause \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.ultimateMenu") {
             Button {
                 session.openTelnetMonitor()
             } label: {
@@ -1396,67 +1414,113 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Open the Ultimate Menu for \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.powerOff") {
             Button(action: onRequestPowerOff) {
                 Label("Power Off", systemImage: "power")
             }
             .help("Power off \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
-            Divider()
+    }
 
+    @ToolbarContentBuilder
+    private var inputAndDisplayControls: some ToolbarContent {
+        ToolbarItem(id: "viewer.captureKeyboard") {
             Toggle(isOn: $settings.captureKeyboardWhenFocused) {
                 Label("Capture Keyboard", systemImage: "keyboard")
             }
             .help(settings.captureKeyboardWhenFocused
                   ? "Keyboard input is sent to the C64 (click to turn off)"
                   : "Keyboard input stays on the Mac (click to send it to the C64)")
+        }
 
+        ToolbarItem(id: "viewer.onScreenKeyboard") {
             if let showOnScreenKeyboard {
                 Toggle(isOn: showOnScreenKeyboard) {
                     Label("On-Screen Keyboard", systemImage: "keyboard.badge.ellipsis")
                 }
                 .help("Show the on-screen C64 keyboard")
             }
+        }
 
-            JoystickToolbarControls(input: session.input.settings)
+        JoystickToolbarControls(input: session.input.settings)
 
-            Divider()
-
-            Picker("Scaling", selection: displayBinding(\.scalingMode)) {
-                ForEach(ScalingMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+        // Explicit Text labels retain the selected value on macOS 27.
+        // The inline Picker inside each menu still provides checked choices.
+        ToolbarItem(id: "viewer.scaling") {
+            Menu {
+                Picker("Scaling", selection: displayBinding(\.scalingMode)) {
+                    ForEach(ScalingMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Text(display.scalingMode.rawValue)
             }
+            .labelStyle(.titleOnly)
+            .accessibilityLabel("Scaling")
             .help("Video scaling for \(session.device.name)")
+        }
 
-            Picker("Filter", selection: displayBinding(\.filterMode)) {
-                ForEach(FilterMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+        ToolbarItem(id: "viewer.filter") {
+            Menu {
+                Picker("Filter", selection: displayBinding(\.filterMode)) {
+                    ForEach(FilterMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Text(display.filterMode.rawValue)
             }
+            .labelStyle(.titleOnly)
+            .accessibilityLabel("Filter")
             .help("Video filter for \(session.device.name)")
+        }
 
-            Picker("Input", selection: displayBinding(\.tubeInput)) {
-                ForEach(TubeInput.allCases) { input in
-                    Text(input.rawValue).tag(input)
+        ToolbarItem(id: "viewer.input") {
+            Menu {
+                Picker("Input", selection: displayBinding(\.tubeInput)) {
+                    ForEach(TubeInput.allCases) { input in
+                        Text(input.rawValue).tag(input)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Text(display.tubeInput.rawValue)
             }
+            .labelStyle(.titleOnly)
+            .accessibilityLabel("Input")
             .help(isCRTFilter
                   ? "CRT input signal for \(session.device.name)"
                   : "CRT input signal — only applies to the CRT filters")
             .disabled(!isCRTFilter)
+        }
 
-            Picker("Screen", selection: displayBinding(\.crtScreenColor)) {
-                ForEach(CRTScreenColor.allCases) { color in
-                    Text(color.rawValue).tag(color)
+        ToolbarItem(id: "viewer.screen") {
+            Menu {
+                Picker("Screen", selection: displayBinding(\.crtScreenColor)) {
+                    ForEach(CRTScreenColor.allCases) { color in
+                        Text(color.rawValue).tag(color)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Text(display.crtScreenColor.rawValue)
             }
+            .labelStyle(.titleOnly)
+            .accessibilityLabel("Screen")
             .help(isCRTFilter
                   ? "CRT screen phosphor for \(session.device.name)"
                   : "Screen color — only applies to the CRT filters")
             .disabled(!isCRTFilter)
+        }
 
+        ToolbarItem(id: "viewer.dirtyGlass") {
             Toggle(isOn: displayBinding(\.crtDirtyGlass)) {
                 Label("Dirty Glass", systemImage: "aqi.medium")
             }
@@ -1464,7 +1528,13 @@ struct ViewerSessionToolbar: ToolbarContent {
                   ? "Dirty glass on \(session.device.name)"
                   : "Dirty glass — only applies to the CRT filters")
             .disabled(!isCRTFilter)
+        }
 
+    }
+
+    @ToolbarContentBuilder
+    private var libraryControls: some ToolbarContent {
+        ToolbarItem(id: "viewer.pictureControls") {
             if isCRTFilter {
                 Button {
                     PictureControlsPanelController.show(display: display)
@@ -1476,7 +1546,9 @@ struct ViewerSessionToolbar: ToolbarContent {
                 }
                 .help("Picture controls for \(session.device.name)")
             }
+        }
 
+        ToolbarItem(id: "viewer.screenshot") {
             Button {
                 session.saveScreenshot()
             } label: {
@@ -1484,7 +1556,9 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Screenshot \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.recording") {
             Button {
                 session.toggleRecording()
             } label: {
@@ -1495,35 +1569,45 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Record source video and audio from \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.assembly64") {
             Button {
                 Stream64ToolWindows.showAssembly64()
             } label: {
                 Label("Assembly64", systemImage: "books.vertical")
             }
             .help("Search the Assembly64 online library and load programs")
+        }
 
+        ToolbarItem(id: "viewer.hvsc") {
             Button {
                 Stream64ToolWindows.showHVSC()
             } label: {
                 Label("HVSC Browser", systemImage: "music.note.list")
             }
             .help("Browse your local High Voltage SID Collection and play SIDs")
+        }
 
+        ToolbarItem(id: "viewer.sidStation") {
             Button {
                 Stream64ToolWindows.showSIDRadio()
             } label: {
                 Label("SID Station", systemImage: "dot.radiowaves.left.and.right")
             }
             .help("Play a continuous SID recommendation station")
+        }
 
+        ToolbarItem(id: "viewer.fileManager") {
             Button {
                 Stream64ToolWindows.showFileManager()
             } label: {
                 Label("File Manager", systemImage: "rectangle.split.2x1")
             }
             .help("Browse and transfer files between this Mac and the Ultimate")
+        }
 
+        ToolbarItem(id: "viewer.driveBay") {
             Button {
                 DriveBayWindowController.show(session: session)
             } label: {
@@ -1531,7 +1615,13 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Drive Bay for \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+    }
+
+    @ToolbarContentBuilder
+    private var toolControls: some ToolbarContent {
+        ToolbarItem(id: "viewer.ultimateConfig") {
             Button {
                 UltimateConfigWindowController.show(session: session)
             } label: {
@@ -1539,7 +1629,9 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Flash config for \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.memoryConsole") {
             Button {
                 MemoryConsoleWindowController.show(session: session)
             } label: {
@@ -1547,7 +1639,9 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Memory Console for \(session.device.name)")
             .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.debugTrace") {
             if session.supportsDebugFeatures {
                 Button {
                     DebugTraceWindowController.show(session: session)
@@ -1558,38 +1652,15 @@ struct ViewerSessionToolbar: ToolbarContent {
                 .disabled(!session.isConnected)
 
             }
+        }
 
-            Menu {
-                ForEach(SIDVisualizationMode.activeModes) { mode in
-                    Button {
-                        SIDOscilloscopeWindowController.showNewWindow(
-                            session: session, mode: mode)
-                    } label: {
-                        Label(mode.displayName, systemImage: mode.systemImage)
-                    }
-                }
-                Divider()
-                Button("Open All in Grid", systemImage: "square.grid.3x3") {
-                    session.openAllSIDVisualizations()
-                }
-                Button("Close All Visualizations", systemImage: "xmark.circle") {
-                    session.closeAllSIDVisualizations()
-                }
-                .disabled(!session.hasOpenSIDWindows)
-                Divider()
-                Button("Save Window Layout", systemImage: "square.and.arrow.down") {
-                    session.saveWindowLayout()
-                }
-                Button("Restore Window Layout", systemImage: "square.and.arrow.up") {
-                    session.restoreWindowLayout()
-                }
-                .disabled(!session.hasSavedWindowLayout)
-            } label: {
-                Label("SID Visualizations", systemImage: "waveform")
-            }
-            .help("SID visualizations for \(session.device.name)")
-            .disabled(!session.isConnected)
+        ToolbarItem(id: "viewer.visualizations") {
+            SIDVisualizationsMenu(session: session)
+                .help("SID visualizations for \(session.device.name)")
+                .disabled(!session.isConnected)
+        }
 
+        ToolbarItem(id: "viewer.fullScreen") {
             Button {
                 NSApp.keyWindow?.toggleFullScreen(nil)
             } label: {
@@ -1597,31 +1668,42 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
             .help("Enter full screen (Escape or ⌃⌘F to exit)")
         }
+
     }
 }
 
 /// Joystick toolbar controls observe `InputSettings` on their own so
 /// capability/toggle updates don't rebuild the live `VideoView` host.
-private struct JoystickToolbarControls: View {
+private struct JoystickToolbarControls: ToolbarContent {
     @ObservedObject var input: InputSettings
 
-    var body: some View {
-        Toggle(isOn: $input.joystickEnabled) {
-            Label(
-                input.joystickEnabled
-                    ? "Joystick Input" : "Keyboard Input",
-                systemImage: "gamecontroller")
+    var body: some ToolbarContent {
+        ToolbarItem(id: "viewer.joystickEnabled") {
+            Toggle(isOn: $input.joystickEnabled) {
+                Label(
+                    input.joystickEnabled
+                        ? "Joystick Input" : "Keyboard Input",
+                    systemImage: "gamecontroller")
+            }
+            .disabled(input.capability != .supported)
+            .help(
+                "F10 toggles virtual joystick input; fire key is configurable "
+                    + "in Settings → Input")
         }
-        .disabled(input.capability != .supported)
-        .help(
-            "F10 toggles virtual joystick input; fire key is configurable "
-                + "in Settings → Input")
-
-        Picker("Port", selection: $input.joystickPort) {
-            Text("Joy 1").tag(1)
-            Text("Joy 2").tag(2)
+        ToolbarItem(id: "viewer.joystickPort") {
+            Menu {
+                Picker("Port", selection: $input.joystickPort) {
+                    Text("Joy 1").tag(1)
+                    Text("Joy 2").tag(2)
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Text("Joy \(input.joystickPort)")
+            }
+            .labelStyle(.titleOnly)
+            .accessibilityLabel("Port")
+            .help("Virtual joystick port (F11 switches)")
         }
-        .help("Virtual joystick port (F11 switches)")
     }
 }
 

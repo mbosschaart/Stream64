@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.132b}"
-BUILD_NUMBER="${BUILD_NUMBER:-134}"
+VERSION="${VERSION:-0.133b}"
+BUILD_NUMBER="${BUILD_NUMBER:-135}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
     arm64|x86_64) ;;

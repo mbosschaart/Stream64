@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.133b — 2026-09-21
+
+- Fixed the main viewer toolbar on macOS 27 (Golden Gate): explicit selected-value labels for scaling, filter, CRT input/screen and joystick port controls, and independently identified toolbar items so the SID Visualizations submenu does not inherit the Full Screen title. The same toolbar serves the selected device in All Screens mode.
+
 ## 0.132b — 2026-09-20
 
 - Fixed HVSC installation rejecting the bundled 7z extractor in signed releases. Packaging now verifies the original helper, signs it, records its resulting SHA-256 in Info.plist, then seals the app. Both Developer ID and ad-hoc builds retain the integrity check; packaged apps cannot fall back to a development copy of the helper.
