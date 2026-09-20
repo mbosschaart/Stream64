@@ -224,6 +224,10 @@ sometimes need different handling on that transport.
 
 ### SID Oscilloscope
 
+[![Stream64 visualisation overview: 32 visualisations plus Club Mode and Music Compo Mode](Screenshots/Stream64-visualisations.png)](Screenshots/Stream64-visualisations.png)
+
+All 32 visualisations plus Club Mode and Music Compo Mode, captured with active demonstration signals. Music Compo uses a demo video input. Click the collage to view it at full size.
+
 A 34-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
