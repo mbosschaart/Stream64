@@ -156,9 +156,11 @@ notarize_and_staple_dmg() {
         || true
 }
 
+# Use the SwiftPM backend that copies our precompiled Metal resources.
+# Xcode 27 defaults to swiftbuild, which attempts to compile .metal resources.
 echo "Building $APP_NAME $VERSION ($BUILD_NUMBER) for macOS $ARCH ($SIGNING)..."
-swift build --package-path "$ROOT_DIR" -c release --triple "$TRIPLE"
-BIN_DIR="$(swift build --package-path "$ROOT_DIR" -c release \
+swift build --build-system native --package-path "$ROOT_DIR" -c release --triple "$TRIPLE"
+BIN_DIR="$(swift build --build-system native --package-path "$ROOT_DIR" -c release \
     --triple "$TRIPLE" --show-bin-path)"
 
 mkdir -p "$OUTPUT_DIR"
