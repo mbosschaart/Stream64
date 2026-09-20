@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.130b-purple)
+![Version](https://img.shields.io/badge/version-0.131b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -264,7 +264,7 @@ effects plus 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer
 with the same device's live C64 video. It uses Club Mode's 0.5–3 second
 cuts and occasional five-swap 0.2-second bursts. **C64 video opacity** below the
 picture adjusts the background from 0–100% (default 50%, saved between sessions).
-The toolbar hides after two seconds of mouse inactivity and returns on mouse movement.
+The toolbar and mouse cursor hide after two seconds of mouse inactivity and return on mouse movement. Leaving the view, switching focus or closing the window also restores the cursor.
 Effects remain visible through a screen blend. Both layers render at the exact
 incoming PAL/NTSC pixel dimensions before the device's selected video filters,
 picture controls, scaling and CRT screen boundary are applied. They therefore
@@ -298,20 +298,27 @@ Twelve new Metal modes combine SID voice state with live audio energy:
 
 All twelve support the existing independent-window/layout controls. They share SID analysis, cap render resolution, skip hidden windows, and reduce drawing under main-viewer pressure. Per-voice envelopes are reconstructed estimates, not isolated audio measurements.
 
-**Settings → General → SID visualisation layout** defaults to **Auto (SID file)**.
-Stream64 reads the uploaded SID header to identify the tune's required chips.
-Single-SID tunes show only three voices in the instrument views (including
-Filter Curve); abstract effects mirror those voices into unused configured
-channels. Multi-SID tunes retain their independent signals, even during silence.
-Unknown playback shows all configured chips. **Force single SID** handles tunes
-started outside the app; **Show all configured SIDs** disables adaptation.
-The setting affects visuals only. Playback metadata is per device, recorded
-only after successful upload/playback, and cleared on replacement playback,
-reset or disconnect. Files played directly from Ultimate storage are currently
-unknown because this path does not retrieve their header.
+**Settings → General → SID visualisation layout** defaults to **Auto (SID file or live activity)**.
+Uploaded SID headers take priority: known multi-SID tunes keep their layout even
+through quiet passages. For games, demos and other playback without a header,
+Stream64 observes the live debug stream. Activity only at `$D400` settles into a
+single-SID layout after about four seconds of healthy observation; meaningful
+activity at another configured address expands the layout automatically.
+An inactive chip is retained for 30 observed seconds, and sustained notes remain
+represented. Missing/dropped trace packets pause the observation clock.
 
-The presentation mapping and Metal inputs support three chips/nine voices for
-future hardware integration; this does not add third-SID hardware configuration.
+Instrument views show active chips; abstract effects mirror them into unused
+configured channels, including Club Mode and Music Compo. No evidence leaves
+all configured chips visible. The right-click menu reports the layout source.
+**Force single SID** and **Show all configured SIDs** remain manual overrides.
+This changes visual presentation only, not audio or hardware routing. New playback,
+reset, reconnect or routing changes restart live detection. Externally changing
+playback cannot invalidate a previously uploaded SID header automatically; use an
+override if that metadata is stale. Detection tracks configured base addresses;
+unrecognized address aliases/range splits are not inferred.
+
+The presentation mapping and Metal inputs support three chips/nine voices.
+Three-SID playback can supplement physical SIDs with a spare UltiSID.
 Voice Lineup scales its labels, gutters and note bands proportionally in fullscreen.
 
 All visualization text grows with the window, including fullscreen and Club Mode. Instrument labels, legends and fixed-width gutters scale together; compact windows retain their existing sizing.
@@ -384,10 +391,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.130b BUILD_NUMBER=131 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.131b BUILD_NUMBER=132 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.130b BUILD_NUMBER=131 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.131b BUILD_NUMBER=132 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

@@ -220,6 +220,11 @@ final class SIDEngine: ObservableObject {
     private var workingChannels: [SIDVoiceChannel] = []
     private var workingFilterStates: [SIDFilterRegisters] = []
     private var workingRegisterActivity = SIDRegisterActivity(chipCount: 1)
+    private var liveDetector = SIDLiveActivityDetector(chipCount: 1)
+    private(set) var liveActiveChips: [Int]?
+    private var livePlaybackGeneration: UUID?
+    private var liveLastPacketCount = 0
+    private var liveLastMissedCount = 0
     private var workingKAOSRhythm = KAOSRhythmState()
     /// Latest raw FFT evidence, kept private because KAOS publishes its
     /// compact rhythm state at the normal bounded engine cadence instead of
@@ -495,6 +500,7 @@ final class SIDEngine: ObservableObject {
     /// enable flags and observers so a later reconnect can re-acquire;
     /// keep subscribers (open SID windows) alive.
     func suspendForSessionTeardown() {
+        resetLiveDetection()
         registerWritesEnabled = false
         debugTraceLease = nil
         clearRegisterWriteObservers()
@@ -518,7 +524,20 @@ final class SIDEngine: ObservableObject {
     /// of reconstructed state back to silence instead of leaving whatever
     /// was last derived from register writes before the reset on screen
     /// indefinitely.
+    private func resetLiveDetection() {
+        liveDetector = SIDLiveActivityDetector(chipCount: chipBaseAddresses.count)
+        liveActiveChips = nil
+        livePlaybackGeneration = session.sidPlayback.generation
+        liveLastPacketCount = session.debugStreamReceiver.packetsReceived
+        liveLastMissedCount = session.debugStreamReceiver.missedPackets
+    }
+
     private func handleMachineReset() {
+        resetLiveDetection()
+        pendingLock.lock()
+        pendingVoiceWrites.removeAll(keepingCapacity: true)
+        pendingFilterWrites.removeAll(keepingCapacity: true)
+        pendingLock.unlock()
         for i in workingChannels.indices {
             workingChannels[i].resetToSilence()
         }
@@ -629,6 +648,7 @@ final class SIDEngine: ObservableObject {
         observerChipBases = chipBaseAddresses
         chipBasesLock.unlock()
         chipCount = chipBaseAddresses.count
+        resetLiveDetection()
         workingChannels = (0..<chipBaseAddresses.count).flatMap { chip in
             (0..<3).map { voice in
                 SIDVoiceChannel(
@@ -664,6 +684,7 @@ final class SIDEngine: ObservableObject {
             return
         }
 
+        if livePlaybackGeneration != session.sidPlayback.generation { resetLiveDetection() }
         pendingLock.lock()
         let voiceWrites = pendingVoiceWrites
         let filterWrites = pendingFilterWrites
@@ -690,11 +711,13 @@ final class SIDEngine: ObservableObject {
                       previous.frequency != 0 {
                 kaosEvents.append(.frequencyChange)
             }
+            liveDetector.record(chip: write.chipIndex, offset: write.offset, value: write.value)
             workingChannels[index].registers.write(offset: registerOffset, value: write.value)
             workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset, value: write.value, at: now)
         }
         for write in filterWrites {
             guard workingFilterStates.indices.contains(write.chipIndex) else { continue }
+            liveDetector.record(chip: write.chipIndex, offset: write.offset + 21, value: write.value)
             let previousVolume = workingFilterStates[write.chipIndex].volume
             workingFilterStates[write.chipIndex].write(offset: write.offset, value: write.value)
             if write.offset == 3,
@@ -710,6 +733,17 @@ final class SIDEngine: ObservableObject {
             // the entries observer above) — add it back to land in the
             // same absolute 0..<25 numbering `SIDRegisterActivity` uses.
             workingRegisterActivity.record(chipIndex: write.chipIndex, offset: write.offset + 21, value: write.value, at: now)
+        }
+
+        if aggregateNeeds.needsRegisterWrites {
+            let packets = session.debugStreamReceiver.packetsReceived
+            let missed = session.debugStreamReceiver.missedPackets
+            liveDetector.advance(at: ProcessInfo.processInfo.systemUptime,
+                traceReceived: packets > liveLastPacketCount,
+                traceHealthy: missed == liveLastMissedCount)
+            liveLastPacketCount = packets
+            liveLastMissedCount = missed
+            liveActiveChips = liveDetector.activeChips
         }
 
         // Register-only visualizations do not need a full synthesis pass on

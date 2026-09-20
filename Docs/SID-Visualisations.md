@@ -26,12 +26,37 @@ reduced to 15 under video pressure. These limits also protect the main stream.
 addresses only after successful playback. Generation tokens reject stale
 completion. New playback, reset, reboot, power off, disk boot and disconnect
 clear metadata; mounting a disk alone does not. Remote-path SID playback has no
-local header and remains unknown. External playback changes cannot reliably be
-detected while connected.
+local header and uses the live fallback. External playback changes cannot reliably
+invalidate existing file metadata while connected; manual overrides remain available.
 
-Settings offers Auto (SID file), Force single SID and Show all configured SIDs.
-Auto matches tune addresses to configured chips. Unknown/unmatched metadata
-preserves configured channels rather than guessing from temporary silence.
+Settings offers Auto (SID file or live activity), Force single SID and Show all
+configured SIDs. The persisted Auto raw value remains `Auto (SID file)` for
+compatibility. Auto matches known tune addresses to configured chips; unmatched
+file metadata preserves configured channels. With no header, it uses
+SIDLiveActivityDetector in the shared SIDEngine.
+
+The detector records raw register writes before presentation mirroring. A gated,
+non-TEST waveform with nonzero frequency and nonzero known master volume is
+sustained evidence. Changed registers while such a voice is active also preserve
+short notes ending between ticks. Four volume steps per tick count as digi
+evidence. Three evidence ticks within short gaps confirm a chip; repeated zero
+initialization and a one-off volume setting do not. Four healthy observation
+seconds after first confirmation allow the initial layout to shrink. Subsequent
+chips expand it promptly; an inactive chip expires after 30 observed seconds.
+Global silence retains the last layout rather than producing an empty view.
+
+The clock advances only with consecutive healthy trace observations and bounded
+scheduling gaps; missing packets, packet-sequence gaps and timer stalls cannot
+age out a chip. File metadata and manual overrides take precedence. Reset,
+playback-generation changes, reconnect and routing refresh reset detection.
+Instrument selection and abstract mirroring share the same topology in ordinary,
+Club and Music Compo views. Context menus expose the decision source without
+subscribing the open menu to high-frequency state updates.
+
+Detection follows configured base addresses; it does not infer unrecognized
+address mirrors or UltiSID range-split aliases, nor prove audible output for each
+chip. Sustained-state reconstruction is deliberately conservative. No additional
+REST polling, hardware mutations, audio analysis or CPU image rendering is added.
 
 Oscilloscope, ADSR Envelope, Mixer Console, Piano Roll, Piano Keyboard, Voice
 Lineup, VU Meter Bank, Register Activity, ADSR Knobs, Pulse Width, Control Bits,
@@ -64,8 +89,9 @@ viewer's callback.
 Effects render at the incoming PAL/NTSC video resolution. The GPU blends them
 with C64 video before the selected video filter, scaling and CRT screen boundary,
 so the result fits inside the bezel. The saved C64 video-opacity setting ranges
-from 0–100%. The overlaid toolbar hides after two seconds of mouse inactivity,
-returns on movement and stays visible during slider editing. Main-viewer capture
+from 0–100%. The overlaid toolbar and mouse cursor hide after two seconds of mouse inactivity,
+return on movement and stay visible during slider editing. Cursor hiding is balanced
+and released when the pointer leaves, focus changes or the view closes. Main-viewer capture
 and recording are independent of this composition window.
 
 ## Artwork and presentation
@@ -117,7 +143,7 @@ scene output at PAL/NTSC sizes, blending and video filters. Showcase tests rende
 actual Metal output at landscape, portrait and fullscreen sizes; previews verify
 upright artwork and captions without a top title.
 
-The final full run, including the Showcase correction and third-SID fallback, executed 243 tests,
+The final full run, including live SID detection, executed 253 tests,
 with eight fixture-dependent skips and no failures. Live mono-to-multi-SID hardware playback and sustained
 stream performance remain unverified. Render tests do not establish that stream
-hiccups are eliminated. Release 0.130b packages these changes for Apple Silicon and Intel Macs.
+hiccups are eliminated. Release 0.131b packages these changes for Apple Silicon and Intel Macs.

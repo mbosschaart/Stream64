@@ -715,12 +715,14 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     slices and colour-splits the connected device’s logo. These modes also \
     join Club Mode automatically and share the same SID/audio analysis.
 
-    **SID visualisation layout** (Settings → General) defaults to **Auto (SID file)**. \
-    Uploaded SID headers determine which chips the tune needs: instrument views \
-    show only participating chips, while abstract visuals mirror unused channels. \
-    Silent passages never change this decision. Unknown playback shows all configured \
-    SIDs; use **Force single SID** for a known single-SID tune started elsewhere. \
-    **Show all configured SIDs** disables adaptation. Audio remains unchanged.
+    **SID visualisation layout** (Settings → General) defaults to **Auto (SID file or live activity)**. \
+    Uploaded SID headers take priority, so known multi-SID tunes retain their layout during silence. \
+    Games and demos without a header use live debug activity: about four seconds of activity only \
+    at the first SID selects a single-SID view, and another active SID expands it automatically. \
+    Inactive chips remain for 30 observed seconds; sustained notes stay visible and missing trace \
+    packets pause detection. Instruments show active chips; abstract effects mirror unused channels. \
+    The right-click menu shows the decision source. Without evidence all configured chips remain. \
+    **Force single SID** and **Show all configured SIDs** override adaptation. Audio remains unchanged.
 
     **SID Showcase** keeps six graphics visible together: computer, \
     floppy drive, tape, disk, joystick and a Commodore 1702 monitor. Each follows one SID voice for \
@@ -733,7 +735,9 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     The rotation includes 3D Bar Field, SID Showcase, Colorful Waveform and Spectrum Analyzer. \
     Adjust **C64 video opacity** below the picture (0–100%). Both layers use the video’s \
     exact pixel resolution before the selected video filters, scaling and CRT \
-    screen boundary are applied, keeping the visualisations inside the bezel.
+    screen boundary are applied, keeping the visualisations inside the bezel. \
+    The opacity bar and mouse cursor hide together after two seconds of inactivity; \
+    move the mouse to bring them back. Leaving the view or switching focus restores the cursor.
 
     **Club Mode replaces KAOS mode** with new visualisations and GPU-optimised rendering. It is a VJ-style shuffled tour of all individual visualizations \
     in one window, with a fresh random 0.5–3 second interval for every scene. \

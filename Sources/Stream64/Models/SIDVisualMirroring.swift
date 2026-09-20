@@ -1,12 +1,13 @@
 import Foundation
 
-/// Tune requirements are distinct from hardware capacity. No activity heuristic:
-/// a quiet chip in a multi-SID tune remains part of that tune.
+/// File metadata takes precedence over the live fallback: a quiet chip in a
+/// known multi-SID tune remains part of its declared topology.
 enum SIDVisualizationAdaptation: String, CaseIterable, Identifiable {
     case automatic = "Auto (SID file)"
     case singleSID = "Force single SID"
     case hardware = "Show all configured SIDs"
     var id: String { rawValue }
+    var displayName: String { self == .automatic ? "Auto (SID file or live activity)" : rawValue }
 }
 
 /// Session-local metadata. Generation checks prevent late uploads from restoring
@@ -35,7 +36,7 @@ struct SIDVisualTopology {
     let configuredChipCount: Int
 
     init(configuredAddresses: [UInt16], tuneAddresses: [UInt16]?,
-         adaptation: SIDVisualizationAdaptation) {
+         adaptation: SIDVisualizationAdaptation, liveActiveChips: [Int]? = nil) {
         configuredChipCount = configuredAddresses.count
         switch adaptation {
         case .hardware:
@@ -46,6 +47,9 @@ struct SIDVisualTopology {
             if let tuneAddresses, !tuneAddresses.isEmpty {
                 let matches = configuredAddresses.indices.filter { tuneAddresses.contains(configuredAddresses[$0]) }
                 activeChips = matches.isEmpty ? Array(configuredAddresses.indices) : matches
+            } else if let liveActiveChips {
+                let valid = configuredAddresses.indices.filter { liveActiveChips.contains($0) }
+                activeChips = valid.isEmpty ? Array(configuredAddresses.indices) : valid
             } else {
                 activeChips = Array(configuredAddresses.indices)
             }

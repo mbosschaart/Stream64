@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.131b — 2026-09-20
+
+### Improved
+
+- Music Compo hides the mouse cursor with the opacity bar after two seconds of inactivity. Movement restores it; leaving the view, switching focus or closing the view also releases cursor hiding.
+
+- Auto SID layouts now fall back to live register activity for games, demos and playback without SID headers. First-SID-only activity selects a single-SID layout after four observed seconds; additional active chips expand it automatically. Sustained notes, a 30-second inactivity grace period and trace-loss protection prevent layout flicker. File metadata and manual overrides retain priority. Club Mode and Music Compo share the adaptation.
+
 ## 0.130b — 2026-09-20
 
 Updated packages: build 131 includes the automatic third-SID UltiSID fallback.

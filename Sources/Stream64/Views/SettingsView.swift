@@ -229,10 +229,10 @@ struct GeneralSettingsTab: View {
                     isOn: $settings.visualizationsAutoFollowSelected)
                 Picker("SID visualisation layout", selection: $settings.sidVisualizationAdaptation) {
                     ForEach(SIDVisualizationAdaptation.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+                        Text(mode.displayName).tag(mode)
                     }
                 }
-                .help("Auto uses the uploaded SID file: instruments show participating chips, abstract visuals mirror unused channels. Unknown playback shows all configured SIDs; use Force single SID when needed. Audio is unchanged.")
+                .help("Auto uses the uploaded SID file or live debug activity: instruments show participating chips, abstract visuals mirror unused channels. Games and demos adapt after a short observation period and expand when another SID becomes active. Without trace evidence, all configured SIDs remain visible. Audio is unchanged.")
                 Toggle(
                     "Keep U64 debug stream running while connected",
                     isOn: $settings.keepDebugStreamWarm)

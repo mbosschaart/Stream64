@@ -380,6 +380,7 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     @Published private(set) var chipCount = 1
     @Published private(set) var configuredSIDAddresses: [UInt16] = [0xD400]
     @Published private(set) var tuneSIDAddresses: [UInt16]?
+    @Published private(set) var liveActiveChips: [Int]?
     @Published private(set) var filterStates: [SIDFilterRegisters] = []
     @Published private(set) var registerActivity = SIDRegisterActivity(chipCount: 1)
     @Published private(set) var spectrumBars: [Float] = []
@@ -388,6 +389,20 @@ final class SIDOscilloscopeViewModel: ObservableObject {
     @Published private(set) var kaosRhythm = KAOSRhythmState()
     @Published private(set) var postMixLowpassSamplesByChip: [[Float]] = []
     @Published private(set) var postMixBassLevels: [Float] = []
+
+    var sidLayoutStatus: String {
+        let adaptation = SIDVisualizationAdaptation(rawValue:
+            UserDefaults.standard.string(forKey: "sidVisualizationAdaptation") ?? "") ?? .automatic
+        let topology = SIDVisualTopology(configuredAddresses: configuredSIDAddresses,
+            tuneAddresses: tuneSIDAddresses, adaptation: adaptation, liveActiveChips: liveActiveChips)
+        let count = topology.activeChips.count
+        let label = "\(count) SID\(count == 1 ? "" : "s")"
+        if adaptation != .automatic { return "\(label) — manual layout" }
+        if let tuneSIDAddresses, !tuneSIDAddresses.isEmpty {
+            return "\(label) — SID file metadata"
+        }
+        return liveActiveChips == nil ? "Detecting SID activity…" : "\(label) — live detected"
+    }
 
     private var engineToken: SIDEngine.SubscriberToken?
     private var subscribedNeeds: SIDEngineNeeds?
@@ -446,6 +461,7 @@ final class SIDOscilloscopeViewModel: ObservableObject {
         chipCount = engine.chipCount
         configuredSIDAddresses = engine.chipBaseAddresses
         tuneSIDAddresses = session.sidPlayback.addresses
+        liveActiveChips = engine.liveActiveChips
         if needs.needsSampleSynthesis || needs.needsRegisterWrites {
             channels = engine.channels
         }
@@ -523,7 +539,7 @@ struct SIDVisualizationContent: View {
         SIDVisualPresentation(channels: model.channels, filters: model.filterStates,
             rhythm: model.kaosRhythm, topology: SIDVisualTopology(
                 configuredAddresses: model.configuredSIDAddresses, tuneAddresses: model.tuneSIDAddresses,
-                adaptation: adaptation), mode: mode, registerActivity: model.registerActivity)
+                adaptation: adaptation, liveActiveChips: model.liveActiveChips), mode: mode, registerActivity: model.registerActivity)
     }
 
     var body: some View {
@@ -664,6 +680,7 @@ struct SIDVisualizationMenuContent: View {
             }
         }
         Divider()
+        Text(model.sidLayoutStatus).disabled(true)
         Toggle("Phosphor Glow", isOn: Binding(
             get: { model.phosphorGlowEnabled },
             set: { model.phosphorGlowEnabled = $0 }))

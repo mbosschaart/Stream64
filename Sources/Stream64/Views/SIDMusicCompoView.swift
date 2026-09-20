@@ -10,18 +10,38 @@ struct SIDMusicCompoView: View {
     @AppStorage("sidVisualizationAdaptation") private var adaptation: SIDVisualizationAdaptation = .automatic
 
     @State private var toolbarVisible = true
+    @State private var mouseInside = false
+    @State private var cursorHidden = false
     @State private var isAdjustingOpacity = false
     @State private var toolbarHideTask: Task<Void, Never>?
 
-    private func noteMouseActivity() {
+    private func restoreCursor() {
+        guard cursorHidden else { return }
+        NSCursor.unhide()
+        cursorHidden = false
+    }
+
+    private func stopHidingControls() {
         toolbarHideTask?.cancel()
+        toolbarHideTask = nil
+        restoreCursor()
         toolbarVisible = true
+    }
+
+    private func noteMouseActivity() {
+        stopHidingControls()
         guard !isAdjustingOpacity else { return }
         toolbarHideTask = Task { @MainActor in
             do { try await Task.sleep(for: .seconds(2)) }
             catch { return }
             guard !Task.isCancelled else { return }
             toolbarVisible = false
+            // NSCursor hiding is app-wide and counted. Own exactly one hide,
+            // only while the pointer is inside this active presentation.
+            if mouseInside && NSApp.isActive && !cursorHidden {
+                NSCursor.hide()
+                cursorHidden = true
+            }
         }
     }
 
@@ -29,7 +49,7 @@ struct SIDMusicCompoView: View {
         let presentation = SIDVisualPresentation(channels: model.channels, filters: model.filterStates,
             rhythm: model.kaosRhythm, topology: SIDVisualTopology(
                 configuredAddresses: model.configuredSIDAddresses, tuneAddresses: model.tuneSIDAddresses,
-                adaptation: adaptation), mode: controller.currentMode, registerActivity: model.registerActivity)
+                adaptation: adaptation, liveActiveChips: model.liveActiveChips), mode: controller.currentMode, registerActivity: model.registerActivity)
         ZStack(alignment: .bottom) {
             SIDMusicCompoSurface(session: model.session, display: model.session.display,
                 input: .snapshot(mode: controller.currentMode, channels: presentation.channels,
@@ -40,6 +60,7 @@ struct SIDMusicCompoView: View {
             HStack {
                 Text(controller.currentMode.displayName)
                     .lineLimit(1)
+                    .help(model.sidLayoutStatus)
                 Text("C64 video opacity")
                 Slider(value: $videoOpacity, in: 0...1, onEditingChanged: { editing in
                     isAdjustingOpacity = editing
@@ -58,13 +79,26 @@ struct SIDMusicCompoView: View {
         }
         .contentShape(Rectangle())
         .onContinuousHover { phase in
-            if case .active = phase { noteMouseActivity() }
+            switch phase {
+            case .active:
+                mouseInside = true
+                noteMouseActivity()
+            case .ended:
+                mouseInside = false
+                noteMouseActivity()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+            stopHidingControls()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            stopHidingControls()
         }
         .onChange(of: videoOpacity) { _, _ in noteMouseActivity() }
         .onAppear { noteMouseActivity() }
         .onDisappear {
-            toolbarHideTask?.cancel()
-            toolbarHideTask = nil
+            mouseInside = false
+            stopHidingControls()
         }
     }
 }
