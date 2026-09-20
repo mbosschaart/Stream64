@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.132b — 2026-09-20
+
+- Fixed HVSC installation rejecting the bundled 7z extractor in signed releases. Packaging now verifies the original helper, signs it, records its resulting SHA-256 in Info.plist, then seals the app. Both Developer ID and ad-hoc builds retain the integrity check; packaged apps cannot fall back to a development copy of the helper.
+
+- Startup connection failures now retry automatically when automatic reconnection is enabled, with a delay starting at two seconds and capped at 30 seconds. The same recovery retries the full connection when REST is available before streaming. Waiting viewers show the retry status and a cancel action; manual Connect supersedes a pending retry.
+- Reboot & Reconnect now tolerates a reboot that drops its HTTP reply and retries the full connection until ready or cancelled, instead of stopping after a fixed polling window or one unsuccessful connection attempt. Reconnecting also restores session health, staleness and diagnostic monitoring.
+
 ## 0.131b — 2026-09-20
 
 Updated packages: build 133 adds the C64 visualisation palette, Grain Nebula glow/trails and multi-viewer menu fix. The public version is unchanged; download 0.131b again to install these additions.

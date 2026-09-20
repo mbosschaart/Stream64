@@ -23,8 +23,7 @@ final class DeviceSession: ObservableObject {
     enum ConnectionState: Equatable {
         case disconnected
         case connecting
-        /// Device did not answer the reachability probe. Auto-connect is
-        /// suspended until the user explicitly retries.
+        /// Device did not answer; automatic retries may be waiting in backoff.
         case unreachable
         case connected(info: String)
         case error(String)
@@ -110,6 +109,7 @@ final class DeviceSession: ObservableObject {
     let display: DisplaySettings
     let input: C64InputController
     private let settings: AppSettings
+    private let transport: any HTTPTransport
     private var client: UltimateAPIClient
     private let psid64 = PSID64Service()
     /// Shared REST client for tool windows (Drive Bay, Config, Memory Console).
@@ -139,12 +139,14 @@ final class DeviceSession: ObservableObject {
     /// renderer naturally falls out of diagnostics after its view is removed.
     private var rendererDiagnosticsProvider: (() -> MetalRendererDiagnostics?)?
 
-    init(device: UltimateDevice, settings: AppSettings) {
+    init(device: UltimateDevice, settings: AppSettings,
+         transport: any HTTPTransport = URLSessionHTTPTransport()) {
         self.display = DisplaySettings.shared(for: device.id)
         self.input = C64InputController(device: device)
         self.device = device
         self.settings = settings
-        self.client = UltimateAPIClient(device: device, timeout: settings.connectTimeoutSeconds)
+        self.transport = transport
+        self.client = UltimateAPIClient(device: device, timeout: settings.connectTimeoutSeconds, transport: transport)
 
         videoReceiver.addFrameObserver { [weak recordingController] frame in
             recordingController?.enqueue(frame: frame)
@@ -319,15 +321,18 @@ final class DeviceSession: ObservableObject {
 
     private var healthMonitor: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var reconnectTaskID: UUID?
+    private var connectionRetryAllowed = false
+    @Published private(set) var isReconnecting = false
 
     private func startHealthMonitor() {
         healthMonitor = Task { [weak self] in
             var consecutiveFailures = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 guard self.isConnected else { consecutiveFailures = 0; continue }
-                let probe = UltimateAPIClient(device: self.device, timeout: 3)
+                let probe = UltimateAPIClient(device: self.device, timeout: 3, transport: self.transport)
                 if (try? await probe.fetchInfo()) != nil {
                     consecutiveFailures = 0
                 } else {
@@ -375,19 +380,39 @@ final class DeviceSession: ObservableObject {
     /// succeeds, the setting is turned off, or a manual disconnect/retry
     /// supersedes it. `connect()`'s own reentrancy guard makes this safe to
     /// race against user-initiated connects.
-    private func startReconnectLoop() {
+    private func cancelReconnectLoop() {
         reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectTaskID = nil
+        isReconnecting = false
+    }
+
+    private func startReconnectLoop(requiresPreference: Bool = true) {
+        cancelReconnectLoop()
+        let id = UUID()
+        reconnectTaskID = id
+        isReconnecting = true
         reconnectTask = Task { [weak self] in
             var delaySeconds = 2.0
+            defer {
+                if let self, self.reconnectTaskID == id {
+                    self.reconnectTask = nil
+                    self.reconnectTaskID = nil
+                    self.isReconnecting = false
+                }
+            }
             while !Task.isCancelled {
-                guard let self else { return }
-                if self.isConnected { return }
-                // This call is the reconnect task itself; it must not cancel
-                // the task that owns the retry/backoff loop.
+                // Back off before retrying. A session/setting change during
+                // sleep must not start another request or resurrect a receiver.
+                do { try await Task.sleep(for: .seconds(delaySeconds)) }
+                catch { return }
+                guard let self, self.reconnectTaskID == id,
+                      (!requiresPreference || self.settings.reconnectAutomatically), !self.isConnected,
+                      !Task.isCancelled else { return }
+                if self.connecting { continue }
                 await self.connect(cancelReconnectTask: false)
-                if self.isConnected { return }
-                guard self.settings.reconnectAutomatically else { return }
-                try? await Task.sleep(for: .seconds(delaySeconds))
+                guard !Task.isCancelled, !self.isConnected,
+                      self.connectionRetryAllowed else { return }
                 delaySeconds = min(delaySeconds * 1.5, 30)
             }
         }
@@ -397,9 +422,10 @@ final class DeviceSession: ObservableObject {
     /// Two quick attempts (the "2 pings") with a short timeout each.
     /// Returns the device info on success so connect doesn't re-fetch it.
     func probeReachability() async -> UltimateAPIClient.DeviceInfo? {
-        let probeClient = UltimateAPIClient(device: device, timeout: 2)
+        let probeClient = UltimateAPIClient(device: device, timeout: 2, transport: transport)
         for attempt in 0..<2 {
-            if let info = try? await probeClient.fetchInfo() { return info }
+            guard !Task.isCancelled else { return nil }
+            if let info = try? await probeClient.fetchInfo(), !Task.isCancelled { return info }
             if attempt == 0 {
                 try? await Task.sleep(for: .milliseconds(400))
             }
@@ -474,12 +500,12 @@ final class DeviceSession: ObservableObject {
     }
 
     func connect(cancelReconnectTask: Bool = true) async {
+        guard !connecting, !Task.isCancelled else { return }
         // Manual connect/retry supersedes an automatic loop. Automatic loop
         // attempts pass false so they do not self-cancel before their first
         // throwing suspension point.
         if cancelReconnectTask {
-            reconnectTask?.cancel()
-            reconnectTask = nil
+            cancelReconnectLoop()
         }
         guard !device.host.isEmpty else {
             state = .error("Device has no address configured.")
@@ -493,7 +519,19 @@ final class DeviceSession: ObservableObject {
         connecting = true
         connectionGeneration &+= 1
         let generation = connectionGeneration
-        defer { connecting = false }
+        connectionRetryAllowed = false
+        defer {
+            connecting = false
+            if cancelReconnectTask, connectionRetryAllowed,
+               isCurrentConnection(generation), !Task.isCancelled,
+               settings.reconnectAutomatically {
+                startReconnectLoop()
+            }
+        }
+        // Explicit reconnect after a disconnect must restore health monitoring.
+        if healthMonitor == nil { startHealthMonitor() }
+        if stalenessMonitor == nil { startStreamStalenessMonitor() }
+        if diagnosticsMonitor == nil { startDiagnosticsMonitor() }
 
         state = .connecting
         cancelPowerOffVisualEffect?()
@@ -501,17 +539,16 @@ final class DeviceSession: ObservableObject {
         fps = 0
         isStreaming = false
 
-        // Reachability first ("2 pings"): a device that doesn't answer gets
-        // the explicit .unreachable state and no further automatic retries —
-        // reconnection is up to the user from there. The probe's info reply
-        // doubles as the identity fetch.
+        // A newly booting device may miss both initial probes. Keep the
+        // unreachable state informative and schedule retries when enabled.
         guard let info = await probeReachability() else {
-            if isCurrentConnection(generation) {
+            if isCurrentConnection(generation), !Task.isCancelled {
+                connectionRetryAllowed = true
                 state = .unreachable
             }
             return
         }
-        guard isCurrentConnection(generation) else { return }
+        guard isCurrentConnection(generation), !Task.isCancelled else { return }
         reportedProduct = info.product ?? info.displayProduct
         let description = info.connectionDescription
         do {
@@ -601,6 +638,7 @@ final class DeviceSession: ObservableObject {
             }
             videoReceiver.stop()
             audioReceiver.stop()
+            connectionRetryAllowed = !(error is PortConfigurationError) && !Task.isCancelled
             // Firmware 3.14's streaming stack can wedge and refuse every
             // destination (even plain IPs) with this error until the
             // device reboots; its web server stays up so it looks healthy.
@@ -916,8 +954,7 @@ final class DeviceSession: ObservableObject {
         }
         streamingOp?.cancel()
         streamingOp = nil
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectLoop()
         healthMonitor?.cancel()
         healthMonitor = nil
         diagnosticsMonitor?.cancel()
@@ -1292,43 +1329,36 @@ final class DeviceSession: ObservableObject {
         machineResetToken = UUID()
     }
     func reboot() async {
-        await flushPendingKeys()
-        await run { try await self.client.reboot() }
-        sidPlayback.beginPlayback()
-        machineResetToken = UUID()
-        // Rebooting stops the device-side streams; restart them once the
-        // Ultimate is back up (poll until it responds, then re-arm).
-        guard isConnected else { return }
-        for _ in 0..<15 {
-            try? await Task.sleep(for: .seconds(1))
-            if (try? await client.fetchInfo()) != nil {
-                await run { try await self.startStreaming() }
-                return
-            }
-        }
-        state = .error("Device did not come back after reboot.")
+        await rebootAndReconnect()
     }
-    /// Recovery path for a wedged device: reboot it (works even when the
-    /// session never connected — it only needs the REST API), wait for it
-    /// to come back, then run the normal connect flow.
+
+    /// Reboot can drop the HTTP reply, and REST may return before streaming
+    /// services are ready. Use the complete connect path with backoff rather
+    /// than treating the first successful info poll as a completed reboot.
     func rebootAndReconnect() async {
+        let requestedGeneration = connectionGeneration
+        await flushPendingKeys()
+        guard isCurrentConnection(requestedGeneration), !Task.isCancelled else { return }
+        prepareForEviction()
+        let generation = connectionGeneration
         state = .connecting
         do {
             try await client.reboot()
         } catch {
-            state = .error("Reboot failed: \(error.localizedDescription)")
-            return
-        }
-        sidPlayback.beginPlayback()
-        machineResetToken = UUID()
-        for _ in 0..<20 {
-            try? await Task.sleep(for: .seconds(1))
-            if (try? await client.fetchInfo()) != nil {
-                await connect()
+            guard isCurrentConnection(generation), !Task.isCancelled else { return }
+            let code = (error as? URLError)?.code
+            guard code == .networkConnectionLost || code == .timedOut || code == .cannotConnectToHost else {
+                state = .error("Reboot failed: \(error.localizedDescription)")
                 return
             }
+            // A restarting device may close the socket before acknowledging.
         }
-        state = .error("Device did not come back after reboot.")
+        guard isCurrentConnection(generation), !Task.isCancelled else { return }
+        machineResetToken = UUID()
+        state = .unreachable
+        // This explicit command requests reconnection even when automatic
+        // recovery is disabled. Disconnect/manual Connect still supersede it.
+        startReconnectLoop(requiresPreference: false)
     }
 
     func powerOff() async {

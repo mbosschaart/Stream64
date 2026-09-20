@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.131b}"
-BUILD_NUMBER="${BUILD_NUMBER:-133}"
+VERSION="${VERSION:-0.132b}"
+BUILD_NUMBER="${BUILD_NUMBER:-134}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
     arm64|x86_64) ;;
@@ -61,6 +61,14 @@ require_notarize_credentials() {
     fi
 }
 
+# Nested code signing changes Mach-O bytes. Record the signed helper's digest
+# before sealing Info.plist in the outer application signature.
+record_extractor_digest() {
+    local digest
+    digest="$(shasum -a 256 "$APP_BUNDLE/Contents/Resources/hvsc-7zz" | awk '{print $1}')"
+    /usr/libexec/PlistBuddy -c "Set :HVSC7zSHA256 $digest" "$APP_BUNDLE/Contents/Info.plist"
+}
+
 sign_app_developer_id() {
     echo "Signing with $CODESIGN_IDENTITY..."
     chmod -R u+w "$APP_BUNDLE"
@@ -83,6 +91,7 @@ sign_app_developer_id() {
             --sign "$CODESIGN_IDENTITY" \
             "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
     fi
+    record_extractor_digest
     codesign \
         --force \
         --options runtime \
@@ -98,7 +107,10 @@ sign_app_adhoc() {
     chmod -R u+w "$APP_BUNDLE"
     xattr -cr "$APP_BUNDLE"
     xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
-    codesign --force --deep --sign - "$APP_BUNDLE"
+    codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/Stream64"
+    codesign --force --sign - "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
+    record_extractor_digest
+    codesign --force --sign - "$APP_BUNDLE"
     codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 }
 
@@ -174,6 +186,14 @@ cp "$BIN_DIR/Stream64_Stream64.bundle/Stream64logo.png" \
 cp "$BIN_DIR/Stream64_Stream64.bundle/hvsc-7zz" \
     "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
 chmod 755 "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
+# Check the vendored input against its pinned upstream digest before signing.
+SOURCE_EXTRACTOR_HASH="$(shasum -a 256 "$APP_BUNDLE/Contents/Resources/hvsc-7zz" | awk '{print $1}')"
+EXPECTED_EXTRACTOR_HASH="$(/usr/libexec/PlistBuddy -c 'Print :HVSC7zSHA256' "$APP_BUNDLE/Contents/Info.plist")"
+if [[ "$SOURCE_EXTRACTOR_HASH" != "$EXPECTED_EXTRACTOR_HASH" ]]; then
+    echo "Bundled 7z input failed its pinned integrity check." >&2
+    exit 3
+fi
+
 mkdir -p "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses"
 cp "$BIN_DIR/Stream64_Stream64.bundle/7-Zip-License.txt" \
     "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses/7-Zip-License.txt"
@@ -229,6 +249,14 @@ case "$SIGNING" in
         exit 2
         ;;
 esac
+
+# Validate the final bytes after signing/notarization, before publishing artifacts.
+FINAL_EXTRACTOR_HASH="$(shasum -a 256 "$APP_BUNDLE/Contents/Resources/hvsc-7zz" | awk '{print $1}')"
+SEALED_EXTRACTOR_HASH="$(/usr/libexec/PlistBuddy -c 'Print :HVSC7zSHA256' "$APP_BUNDLE/Contents/Info.plist")"
+if [[ "$FINAL_EXTRACTOR_HASH" != "$SEALED_EXTRACTOR_HASH" ]]; then
+    echo "Signed 7z extractor does not match its sealed integrity metadata." >&2
+    exit 3
+fi
 
 echo "Creating ZIP..."
 ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"

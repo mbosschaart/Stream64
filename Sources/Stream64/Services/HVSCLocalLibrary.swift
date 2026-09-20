@@ -112,9 +112,11 @@ struct HVSCArchiveEntry: Equatable, Sendable {
 }
 
 struct BundledSigned7zExtractor: HVSCArchiveExtracting {
+    var resourceBundle: Bundle = .main
+
     /// SHA-256 of the official universal 7-Zip 26.02 macOS console binary
-    /// vendored in Resources. Keep this in code as well as Info.plist so
-    /// SwiftPM development builds receive the same integrity check.
+    /// vendored in Resources. Development uses this upstream digest; release
+    /// packaging records the re-signed helper digest in the sealed Info.plist.
     private static let expectedSHA256 =
         "9c56cf3379a0d8544e9244958b96fdc7c17f9ce70f5a160eb2b41f5f3df96d8c"
 
@@ -171,13 +173,14 @@ struct BundledSigned7zExtractor: HVSCArchiveExtracting {
     }
 
     private func verifiedExecutable() throws -> URL {
-        guard let executable = Bundle.main.url(
+        let packaged = resourceBundle.object(forInfoDictionaryKey: "CFBundlePackageType") as? String == "APPL"
+        guard let executable = resourceBundle.url(
             forResource: "hvsc-7zz", withExtension: nil)
-            ?? Bundle.module.url(
-                forResource: "hvsc-7zz", withExtension: nil) else {
+            ?? (packaged ? nil : Bundle.module.url(
+                forResource: "hvsc-7zz", withExtension: nil)) else {
             throw HVSCExtractorError.unavailable
         }
-        let expectedHash = (Bundle.main.object(
+        let expectedHash = (resourceBundle.object(
             forInfoDictionaryKey: "HVSC7zSHA256") as? String)
             ?? Self.expectedSHA256
         let actualHash = SHA256.hash(data: try Data(contentsOf: executable))

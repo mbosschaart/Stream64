@@ -811,6 +811,7 @@ private struct ViewerTileContent: View {
         case .unreachable:
             VStack(spacing: 6) {
                 Image(systemName: "wifi.slash")
+                ConnectionRetryStatus(session: session)
                 Text("Unreachable")
                     .font(.caption.weight(.semibold))
                 Button("Retry") { Task { await session.connect() } }
@@ -820,6 +821,7 @@ private struct ViewerTileContent: View {
         case .error(let message):
             VStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle")
+                ConnectionRetryStatus(session: session)
                 Text(message)
                     .font(.caption)
                     .multilineTextAlignment(.center)
@@ -1157,6 +1159,7 @@ private struct ViewerPaneSessionContent: View {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.largeTitle)
+                ConnectionRetryStatus(session: session)
                 Text(message)
                     .multilineTextAlignment(.center)
                 HStack {
@@ -1175,6 +1178,7 @@ private struct ViewerPaneSessionContent: View {
             VStack(spacing: 12) {
                 Image(systemName: "wifi.slash")
                     .font(.largeTitle)
+                ConnectionRetryStatus(session: session)
                 Text("\(session.device.name) is unreachable")
                 Text("The device did not respond at \(session.device.displayAddress). Check that it is powered on and on the network.")
                     .font(.callout)
@@ -1645,5 +1649,18 @@ private struct JoystickInputSideEffects: View {
             .onChange(of: input.joystickFireKey) {
                 session.input.releaseAll()
             }
+    }
+}
+
+/// Shown while a failed startup or lost connection is waiting to retry.
+private struct ConnectionRetryStatus: View {
+    @ObservedObject var session: DeviceSession
+    var body: some View {
+        if session.isReconnecting {
+            Text("Retrying automatically…").font(.caption).foregroundStyle(.secondary)
+            Button("Cancel Reconnection") {
+                Task { await session.disconnect(stopRemoteStreams: false) }
+            }
+        }
     }
 }
