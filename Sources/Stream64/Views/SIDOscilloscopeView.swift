@@ -529,6 +529,7 @@ private struct SIDOscilloscopeContent: View {
 struct SIDVisualizationContent: View {
     @ObservedObject var model: SIDOscilloscopeViewModel
     let mode: SIDVisualizationMode
+    @AppStorage("sidVisualizationC64Palette") private var c64Palette = false
     @AppStorage("oscilloscopePostMixLowpassOverlay")
     private var showPostMixLowpassOverlay = false
 
@@ -550,7 +551,9 @@ struct SIDVisualizationContent: View {
             } else {
                 // Instrument UI keeps native SwiftUI text/accessibility while
                 // its paths, fills and effects are composited in a GPU layer.
-                scene(presentation: presentation).drawingGroup(opaque: true, colorMode: .linear)
+                scene(presentation: presentation)
+                    .drawingGroup(opaque: true, colorMode: c64Palette ? .nonLinear : .linear)
+                    .colorEffect(SIDVisualizationPalette.colorEffect, isEnabled: c64Palette)
             }
         }
     }

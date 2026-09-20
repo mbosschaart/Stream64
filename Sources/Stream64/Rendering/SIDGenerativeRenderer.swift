@@ -80,6 +80,8 @@ final class SIDGenerativeRenderer: NSObject, MTKViewDelegate {
     private let startedAt = ProcessInfo.processInfo.systemUptime
     private var lastDraw: TimeInterval = 0
     private var blackholeMotion = SIDPulseVortexVisualization.Motion()
+    var c64Palette = false
+    private var palettePass: SIDVisualizationPalettePass?
     var uniforms = SIDGenerativeUniforms()
     var videoGPUBehind: () -> Bool = { false }
 
@@ -161,6 +163,13 @@ final class SIDGenerativeRenderer: NSObject, MTKViewDelegate {
         guard let pass = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer() else { return }
+        var renderTarget = drawable.texture
+        if c64Palette {
+            if palettePass == nil { palettePass = try? SIDVisualizationPalettePass(device: queue.device) }
+            guard let source = palettePass?.sourceTexture(width: Int(size.width), height: Int(size.height)) else { return }
+            renderTarget = source
+            pass.colorAttachments[0].texture = source
+        }
         pass.colorAttachments[0].storeAction = .store
         let feedback = uniforms.viewport.w == 6
         if feedback {
@@ -200,12 +209,15 @@ final class SIDGenerativeRenderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
         if feedback, let history = echoHistory {
             guard let blit = command.makeBlitCommandEncoder() else { return }
-            blit.copy(from: drawable.texture, sourceSlice: 0, sourceLevel: 0,
+            blit.copy(from: renderTarget, sourceSlice: 0, sourceLevel: 0,
                 sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
                 sourceSize: MTLSize(width: history.width, height: history.height, depth: 1),
                 to: history, destinationSlice: 0, destinationLevel: 0,
                 destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
             blit.endEncoding()
+        }
+        if c64Palette {
+            guard palettePass?.encode(command: command, source: renderTarget, target: drawable.texture) == true else { return }
         }
         command.present(drawable)
         let semaphore = slots

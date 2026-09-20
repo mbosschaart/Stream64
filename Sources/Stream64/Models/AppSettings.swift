@@ -192,6 +192,8 @@ final class AppSettings: ObservableObject {
     /// Metadata-based layouts; unknown playback retains all configured chips.
     @AppStorage("sidVisualizationAdaptation")
     var sidVisualizationAdaptation: SIDVisualizationAdaptation = .automatic
+    @AppStorage("sidVisualizationC64Palette")
+    var sidVisualizationC64Palette = false
     /// Keep the U64 debug stream alive for supported connected devices so
     /// Debug Trace / register SID windows never need to start it on demand.
     @AppStorage("keepDebugStreamWarm")

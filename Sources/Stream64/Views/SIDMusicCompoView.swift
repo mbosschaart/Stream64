@@ -105,6 +105,7 @@ struct SIDMusicCompoView: View {
 
 private struct SIDMusicCompoSurface: NSViewRepresentable {
     let session: DeviceSession
+    @AppStorage("sidVisualizationC64Palette") private var c64Palette = false
     @ObservedObject var display: DisplaySettings
     @ObservedObject private var palettes = PaletteLibrary.shared
     let input: SIDGenerativeUniforms
@@ -143,6 +144,7 @@ private struct SIDMusicCompoSurface: NSViewRepresentable {
 
     func updateNSView(_ view: MTKView, context: Context) {
         guard let renderer = context.coordinator.renderer, let composer = context.coordinator.composer else { return }
+        composer.c64Palette = c64Palette
         composer.input = input
         composer.performanceScene = SIDPerformanceGPU.Scene(mode: mode)
         composer.channels = channels
@@ -191,6 +193,7 @@ private struct SIDMusicCompoSurface: NSViewRepresentable {
 /// filtering. Per-frame uploads contain numeric SID/audio data only.
 final class SIDMusicCompoComposer {
     var input = SIDGenerativeUniforms()
+    var c64Palette = false
     var performanceScene: SIDPerformanceGPU.Scene?
     var channels: [SIDVoiceChannel] = []
     var spectrumHistory: [[Float]] = []
@@ -284,11 +287,13 @@ final class SIDMusicCompoComposer {
         }
         guard let blend = command.makeRenderCommandEncoder(descriptor: Self.pass(output)) else { return nil }
         var opacity = videoOpacity
+        var useC64Palette: UInt32 = c64Palette ? 1 : 0
         blend.setRenderPipelineState(blendPipeline)
         blend.setFragmentTexture(video, index: 0)
         blend.setFragmentTexture(palette, index: 1)
         blend.setFragmentTexture(foreground, index: 2)
         blend.setFragmentBytes(&opacity, length: MemoryLayout<Float>.stride, index: 0)
+        blend.setFragmentBytes(&useC64Palette, length: MemoryLayout<UInt32>.stride, index: 1)
         blend.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         blend.endEncoding()
         return output
@@ -302,7 +307,7 @@ final class SIDMusicCompoComposer {
         return pass
     }
 
-    static let blendSource = #"""
+    static let blendSource = SIDVisualizationPalette.source + #"""
     #include <metal_stdlib>
     using namespace metal;
     vertex float4 compoVertex(uint id [[vertex_id]]) {
@@ -311,10 +316,11 @@ final class SIDMusicCompoComposer {
     }
     fragment float4 compoBlend(float4 p [[position]], texture2d<uint> video [[texture(0)]],
         texture2d<float> palette [[texture(1)]], texture2d<float> effect [[texture(2)]],
-        constant float& opacity [[buffer(0)]]) {
+        constant float& opacity [[buffer(0)]], constant uint& c64Palette [[buffer(1)]]) {
         uint2 xy = uint2(p.xy);
         float3 background = palette.read(uint2(video.read(xy).r, 0)).rgb * clamp(opacity, 0.0, 1.0);
         float3 foreground = clamp(effect.read(xy).rgb, 0.0, 1.0);
+        if (c64Palette != 0) foreground = sidC64Palette(foreground);
         return float4(1.0 - (1.0 - foreground) * (1.0 - background), 1);
     }
     """#

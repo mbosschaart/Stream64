@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-0.131b}"
-BUILD_NUMBER="${BUILD_NUMBER:-132}"
+BUILD_NUMBER="${BUILD_NUMBER:-133}"
 ARCH="${ARCH:-arm64}"
 case "$ARCH" in
     arm64|x86_64) ;;
@@ -177,6 +177,9 @@ chmod 755 "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
 mkdir -p "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses"
 cp "$BIN_DIR/Stream64_Stream64.bundle/7-Zip-License.txt" \
     "$APP_BUNDLE/Contents/Resources/ThirdPartyLicenses/7-Zip-License.txt"
+for asset in SIDVisualizationPalette.metal SIDVisualizationPalette.metallib; do
+    cp "$BIN_DIR/Stream64_Stream64.bundle/$asset" "$APP_BUNDLE/Contents/Resources/$asset"
+done
 KAOS_ASSETS=(
     c64cu-logo.webp
     u64_logo_badgeman.jpg

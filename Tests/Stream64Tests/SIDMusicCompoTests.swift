@@ -153,6 +153,35 @@ final class SIDMusicCompoTests: XCTestCase {
                 XCTAssertLessThanOrEqual(blends[1][index + component], blends[2][index + component])
             }
         }
+        // Palette conversion belongs to the foreground, before video blending.
+        composer.c64Palette = true
+        composer.videoOpacity = 0
+        let paletteCommand = try XCTUnwrap(queue.makeCommandBuffer())
+        let paletteResult = try XCTUnwrap(composer.encode(command: paletteCommand, video: video, palette: palette, at: 100))
+        let palettePixels = try pixels(paletteResult, command: paletteCommand)
+        let allowed = C64Palette.peptoPALColors
+        XCTAssertNotEqual(palettePixels, blends[0])
+        for index in stride(from: 0, to: palettePixels.count, by: 4) {
+            XCTAssertTrue(allowed.contains {
+                $0.blue == palettePixels[index] && $0.green == palettePixels[index+1] && $0.red == palettePixels[index+2]
+            })
+        }
+        composer.videoOpacity = 1
+        let mixedCommand = try XCTUnwrap(queue.makeCommandBuffer())
+        let mixedResult = try XCTUnwrap(composer.encode(command: mixedCommand, video: video, palette: palette, at: 100))
+        let mixedPixels = try pixels(mixedResult, command: mixedCommand)
+        var largestBlendError = 0
+        for index in stride(from: 0, to: mixedPixels.count, by: 4) {
+            let paletteIndex = Int(indices[index/4])*4
+            let bg = [colors[paletteIndex+2],colors[paletteIndex+1],colors[paletteIndex]].map { Float($0)/255 }
+            for component in 0..<3 {
+                let fg = Float(palettePixels[index+component])/255
+                let expected = Int(((1-(1-fg)*(1-bg[component]))*255).rounded())
+                largestBlendError = max(largestBlendError, abs(Int(mixedPixels[index+component])-expected))
+            }
+        }
+        XCTAssertLessThanOrEqual(largestBlendError, 1)
+        composer.c64Palette = false
         // Run the actual production RGB shader variants on the blended source.
         let library = try device.makeLibrary(source: MetalFrameRenderer.composedShaderSource, options: nil)
         let sourceCommand = try XCTUnwrap(queue.makeCommandBuffer())

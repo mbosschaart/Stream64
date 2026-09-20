@@ -12,6 +12,8 @@ struct SIDGenerativeView: NSViewRepresentable {
     var logoKind: SIDLogoAsset.Kind = .c64Ultimate
     var videoGPUBehind: () -> Bool
 
+    @AppStorage("sidVisualizationC64Palette") private var c64Palette = false
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> MTKView {
@@ -32,6 +34,7 @@ struct SIDGenerativeView: NSViewRepresentable {
 
     func updateNSView(_ view: MTKView, context: Context) {
         guard let renderer = context.coordinator.renderer else { return }
+        renderer.c64Palette = c64Palette
         renderer.uniforms = .snapshot(mode: mode, channels: channels,
                                      filters: filters, rhythm: rhythm, glow: glow)
         renderer.selectLogo(logoKind)

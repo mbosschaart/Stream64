@@ -715,6 +715,11 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     slices and colour-splits the connected device’s logo. These modes also \
     join Club Mode automatically and share the same SID/audio analysis.
 
+    **C64 palette for all visualisations** (Settings → General) maps all scenes to the \
+    16-colour Pepto PAL palette, including instrument panels, artwork and Club Mode. \
+    It is off by default and saved globally. Music Compo maps the visualisation before \
+    blending with video; the video's palette, opacity and filters still apply normally.
+
     **SID visualisation layout** (Settings → General) defaults to **Auto (SID file or live activity)**. \
     Uploaded SID headers take priority, so known multi-SID tunes retain their layout during silence. \
     Games and demos without a header use live debug activity: about four seconds of activity only \

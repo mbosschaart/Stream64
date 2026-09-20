@@ -20,7 +20,6 @@ struct StreamContextMenu: View {
     let display: DisplaySettings
     let input: InputSettings
     @EnvironmentObject var settings: AppSettings
-    @State private var isConnectedSnapshot = false
     /// Host view's power-off path (shows the confirmation dialog when the
     /// preference asks for it).
     let requestPowerOff: () -> Void
@@ -57,6 +56,11 @@ struct StreamContextMenu: View {
     }
 
     var body: some View {
+        // Native menus need their enabled state while SwiftUI constructs the
+        // items. An onAppear mutation can arrive too late (or not run for
+        // menu content), leaving connected grid tiles with disabled actions.
+        // Read the clicked session directly, without subscribing to FPS ticks.
+        let isConnectedSnapshot = session.isConnected
         Group {
         // Connection
         if isConnectedSnapshot {
@@ -256,11 +260,6 @@ struct StreamContextMenu: View {
                 Task { await session.input.probeCapability() }
             }
         }
-        }
-        .onAppear {
-            // Context-menu hosts deliberately do not observe DeviceSession;
-            // capture the live connection state once as the menu opens.
-            isConnectedSnapshot = session.isConnected
         }
     }
 

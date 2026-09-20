@@ -9,6 +9,8 @@ struct SIDPerformanceGPUView: NSViewRepresentable {
     var history: [[Float]] = []
     var underPressure = false
 
+    @AppStorage("sidVisualizationC64Palette") private var c64Palette = false
+
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> MTKView {
         let view = MTKView()
@@ -17,6 +19,7 @@ struct SIDPerformanceGPUView: NSViewRepresentable {
     }
     func updateNSView(_ view: MTKView, context: Context) {
         guard let renderer = context.coordinator.renderer else { return }
+        renderer.c64Palette = c64Palette
         renderer.scene = scene; renderer.input = input
         renderer.channels = channels; renderer.history = history
         renderer.underPressure = underPressure
@@ -35,6 +38,8 @@ struct SIDPerformanceGPUView: NSViewRepresentable {
         var input = SIDGenerativeUniforms()
         var channels: [SIDVoiceChannel] = []
         var history: [[Float]] = []
+        var c64Palette = false
+        private var palettePass: SIDVisualizationPalettePass?
         var underPressure = false
         var lastDraw: TimeInterval = 0
         init?(view: MTKView) {
@@ -58,8 +63,17 @@ struct SIDPerformanceGPUView: NSViewRepresentable {
             let size = SIDGenerativeRenderer.renderSize(for: view.bounds.size, underPressure: underPressure)
             if view.drawableSize != size { view.drawableSize = size }
             guard let drawable = view.currentDrawable, let command = queue.makeCommandBuffer() else { return }
-            guard gpu.encode(command: command, target: drawable.texture, scene: scene, input: input,
+            var target = drawable.texture
+            if c64Palette {
+                if palettePass == nil { palettePass = try? SIDVisualizationPalettePass(device: queue.device) }
+                guard let source = palettePass?.sourceTexture(width: Int(size.width), height: Int(size.height)) else { return }
+                target = source
+            }
+            guard gpu.encode(command: command, target: target, scene: scene, input: input,
                 channels: channels, history: history, time: Float(now-started)) else { return }
+            if c64Palette {
+                guard palettePass?.encode(command: command, source: target, target: drawable.texture) == true else { return }
+            }
             command.present(drawable)
             let semaphore = slots
             command.addCompletedHandler { _ in semaphore.signal() }

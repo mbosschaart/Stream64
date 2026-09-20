@@ -22,6 +22,7 @@ struct SIDSpectrogramView: View {
     /// Oldest-first columns of bar spectra (each the same shape
     /// `SIDSpectrumAnalyzer` produces).
     let history: [[Float]]
+    @AppStorage("sidVisualizationC64Palette") private var c64Palette = false
     /// Reduce presentation rate while the live CRT path is under pressure.
     var videoGPUBehind: Bool = false
 
@@ -29,7 +30,8 @@ struct SIDSpectrogramView: View {
         HStack(spacing: 0) {
             SIDPianoKeyGutter()
                 .frame(width: 34)
-                .drawingGroup(opaque: true, colorMode: .linear)
+                .drawingGroup(opaque: true, colorMode: c64Palette ? .nonLinear : .linear)
+                .colorEffect(SIDVisualizationPalette.colorEffect, isEnabled: c64Palette)
             SIDPerformanceGPUView(scene: .spectrogram, history: history, underPressure: videoGPUBehind)
         }
         .background(Color.black)

@@ -228,6 +228,8 @@ sometimes need different handling on that transport.
 
 All 32 visualisations plus Club Mode and Music Compo Mode, captured with active demonstration signals. Music Compo uses a demo video input. Click the collage to view it at full size.
 
+**C64 palette** — enable **Settings → General → C64 palette for all visualisations** to use the 16-colour Pepto PAL palette across every visualisation, including Club Mode and the Music Compo overlay. The setting is saved globally and updates open visualisations. Music Compo applies it before blending, preserving the video stream's own palette and filters. Off by default. (Included in the updated 0.131b packages, build 133.)
+
 A 34-mode SID visualizer — 3 channels normally, 6 when a second SID is \
 configured (base address and channel count auto-detected from `SID \
 Addressing`/`SID Sockets Configuration`, confirmed live against a real \
@@ -395,10 +397,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.131b BUILD_NUMBER=132 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.131b BUILD_NUMBER=133 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.131b BUILD_NUMBER=132 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.131b BUILD_NUMBER=133 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

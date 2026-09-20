@@ -2,7 +2,17 @@
 
 ## 0.131b — 2026-09-20
 
-### Improved
+Updated packages: build 133 adds the C64 visualisation palette, Grain Nebula glow/trails and multi-viewer menu fix. The public version is unchanged; download 0.131b again to install these additions.
+
+### Updated in build 133
+
+- Added a saved global **C64 palette for all visualisations** setting under Settings → General. All visualisations, Club Mode and the Music Compo overlay can use the 16-colour Pepto PAL palette with GPU colour mapping. Music Compo preserves the video palette, opacity and downstream filters; Echo Tunnel retains its full-colour feedback internally so trails keep fading. Off by default.
+
+- Viewer context menus read the clicked device's connection state when constructing menu items, avoiding incorrectly disabled actions in multi-viewer mode.
+
+- Grain Nebula gains brighter coloured halos, hot particle centres and tapered comet trails. Stronger SID voices and beats extend the trails and brighten the glow in standalone, Club Mode and Music Compo views, using the existing single Metal pass.
+
+### Included in the original release
 
 - Music Compo hides the mouse cursor with the opacity bar after two seconds of inactivity. Movement restores it; leaving the view, switching focus or closing the view also releases cursor hiding.
 

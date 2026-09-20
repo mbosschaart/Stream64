@@ -227,6 +227,8 @@ struct GeneralSettingsTab: View {
                 Toggle(
                     "Visualisations auto-follow selected C64",
                     isOn: $settings.visualizationsAutoFollowSelected)
+                Toggle("C64 palette for all visualisations", isOn: $settings.sidVisualizationC64Palette)
+                    .help("Use the 16-colour Pepto PAL palette in every SID visualisation, including Club Mode and the Music Compo overlay. The video stream keeps its own palette.")
                 Picker("SID visualisation layout", selection: $settings.sidVisualizationAdaptation) {
                     ForEach(SIDVisualizationAdaptation.allCases) { mode in
                         Text(mode.displayName).tag(mode)
