@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.136b — 2026-09-21
+
+- Restored the pre-0.133 grouped viewer toolbar on macOS Sequoia and Sonoma to address missing toolbar controls. Tahoe and Golden Gate retain the 0.133 toolbar and its corrected selection text and SID Visualizations menu title.
+
+- Public version numbering now matches the internal build: 0.136b is build 136. The Sequoia toolbar fix was confirmed working by the user.
+
 ## 0.133b — 2026-09-21
 
 - Fixed the main viewer toolbar on macOS 27 (Golden Gate): explicit selected-value labels for scaling, filter, CRT input/screen and joystick port controls, and independently identified toolbar items so the SID Visualizations submenu does not inherit the Full Screen title. The same toolbar serves the selected device in All Screens mode.

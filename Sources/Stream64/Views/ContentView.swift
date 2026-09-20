@@ -1323,11 +1323,19 @@ struct ViewerSessionToolbar: ToolbarContent {
         display.filterMode == .crt || display.filterMode == .crtTube
     }
 
+    @ToolbarContentBuilder
     var body: some ToolbarContent {
-        connectionControls
-        inputAndDisplayControls
-        libraryControls
-        toolControls
+        if #available(macOS 26.0, *) {
+            connectionControls
+            inputAndDisplayControls
+            libraryControls
+            toolControls
+        } else {
+            LegacyViewerSessionToolbar(
+                session: session,
+                showOnScreenKeyboard: showOnScreenKeyboard,
+                onRequestPowerOff: onRequestPowerOff)
+        }
     }
 
     @ToolbarContentBuilder
