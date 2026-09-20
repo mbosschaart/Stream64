@@ -79,7 +79,7 @@ sign_app_developer_id() {
     codesign \
         --force \
         --options runtime \
-        --timestamp \
+        --timestamp=http://timestamp.apple.com/ts01 \
         --entitlements "$ENTITLEMENTS" \
         --sign "$CODESIGN_IDENTITY" \
         "$APP_BUNDLE/Contents/MacOS/Stream64"
@@ -87,7 +87,7 @@ sign_app_developer_id() {
         codesign \
             --force \
             --options runtime \
-            --timestamp \
+            --timestamp=http://timestamp.apple.com/ts01 \
             --sign "$CODESIGN_IDENTITY" \
             "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
     fi
@@ -95,7 +95,7 @@ sign_app_developer_id() {
     codesign \
         --force \
         --options runtime \
-        --timestamp \
+        --timestamp=http://timestamp.apple.com/ts01 \
         --entitlements "$ENTITLEMENTS" \
         --sign "$CODESIGN_IDENTITY" \
         "$APP_BUNDLE"
@@ -278,7 +278,7 @@ if [[ "$SIGNING" == "developer-id" ]]; then
     echo "Signing DMG with $CODESIGN_IDENTITY..."
     codesign \
         --force \
-        --timestamp \
+        --timestamp=http://timestamp.apple.com/ts01 \
         --sign "$CODESIGN_IDENTITY" \
         "$DMG_PATH"
     codesign --verify --verbose=2 "$DMG_PATH"
