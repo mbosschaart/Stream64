@@ -28,6 +28,8 @@
 
 - Reduced allocations in the video receive path: the frame-observer array is only copied when observers are registered.
 
+- On Intel Macs, the PSID64 install prompt no longer attempts to auto-download the v1.3 macOS release (which is ARM64-only and cannot run on Intel). Intel users are directed to choose their own compatible executable instead.
+
 ## 0.136b — 2026-09-21
 
 - Restored the pre-0.133 grouped viewer toolbar on macOS Sequoia and Sonoma to address missing toolbar controls. Tahoe and Golden Gate retain the 0.133 toolbar and its corrected selection text and SID Visualizations menu title.
