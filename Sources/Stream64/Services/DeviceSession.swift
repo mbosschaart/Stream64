@@ -84,6 +84,10 @@ final class DeviceSession: ObservableObject {
     /// Runs debug capability/prewarm after video/audio are available. SID
     /// playback awaits this task, but normal reconnect UI does not.
     private var debugPrewarmTask: Task<Void, Never>?
+    /// Runs input.prepare() in the background after connect. Stored so it can
+    /// be cancelled on disconnect; without a handle it accumulates across
+    /// reconnects if prepare() takes longer than the connection lifetime.
+    private var inputPrepareTask: Task<Void, Never>?
     /// Whether this device's firmware implements the U64 debug register —
     /// Ultimate-II+ and C64 Ultimate hardware do not. Populated by a
     /// silent, best-effort probe once connected; gates the Debug Trace /
@@ -488,6 +492,11 @@ final class DeviceSession: ObservableObject {
     /// restartStreams cannot interleave host-resolve races on the Ultimate.
     private var streamingOp: Task<Void, Error>?
     private var streamingOpID: UInt64 = 0
+    /// Resolved video/audio parameters of the current in-flight streaming op.
+    /// Concurrent callers read these before yielding to the op so they can
+    /// decide whether to start a follow-up op for any streams the op missed.
+    private var streamingOpVideo = false
+    private var streamingOpAudio = false
 
     private func isCurrentConnection(_ generation: UInt64) -> Bool {
         connectionGeneration == generation
@@ -622,7 +631,7 @@ final class DeviceSession: ObservableObject {
             // These are not required to show the live picture. Run them
             // asynchronously so restarting the app reconnects promptly;
             // SID playback itself awaits the debug task below.
-            Task { [weak self] in await self?.input.prepare() }
+            inputPrepareTask = Task { [weak self] in await self?.input.prepare() }
             beginDebugPrewarm()
             if !audioOK {
                 recoverAudioQuietly()
@@ -801,13 +810,25 @@ final class DeviceSession: ObservableObject {
             throw CancellationError()
         }
         if let streamingOp {
+            // Snapshot in-flight params before yielding so we can decide
+            // after the op finishes whether our streams were covered.
+            let opVideo = streamingOpVideo
+            let opAudio = streamingOpAudio
             try await streamingOp.value
             guard isCurrentConnection(generation),
                   isConnected || connecting else {
                 throw CancellationError()
             }
-            return
+            // Only skip a follow-up op if the in-flight op already started
+            // every stream the caller requested. When the caller requested
+            // video but the op didn't, or audio but the op didn't, fall
+            // through to launch a new op with the correct parameters.
+            let myAudio = audio ?? settings.audioEnabled
+            if (!video || opVideo) && (!myAudio || opAudio) { return }
         }
+        let resolvedAudio = audio ?? settings.audioEnabled
+        streamingOpVideo = video
+        streamingOpAudio = resolvedAudio
         streamingOpID &+= 1
         let opID = streamingOpID
         let op = Task { @MainActor [weak self] in
@@ -975,6 +996,8 @@ final class DeviceSession: ObservableObject {
         debugStreamReceiver.stop()
         debugTraceConsumers.removeAll()
         warmDebugTraceLease = nil
+        inputPrepareTask?.cancel()
+        inputPrepareTask = nil
         debugPrewarmTask?.cancel()
         debugPrewarmTask = nil
         debugTraceState = .inactive
@@ -997,7 +1020,7 @@ final class DeviceSession: ObservableObject {
     /// surfaces as a connection error — hardware/firmware without this
     /// register simply fails this and keeps the debug features hidden.
     private func probeDebugCapability() async {
-        let probeClient = UltimateAPIClient(device: device, timeout: 3)
+        let probeClient = UltimateAPIClient(device: device, timeout: 3, transport: transport)
         let supported = (try? await probeClient.readDebugRegister()) != nil
         guard isConnected || connecting else { return }
         supportsDebugFeatures = supported

@@ -511,13 +511,18 @@ final class AudioReceiver: @unchecked Sendable {
     // MARK: - Render side (reader, audio thread)
 
     private func render(left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frames: Int) {
-        os_unfair_lock_lock(lock)
-        defer { os_unfair_lock_unlock(lock) }
-
+        // Snapshot configuration before acquiring the ring-buffer lock.
+        // Acquiring an NSLock (configurationLock) while holding os_unfair_lock
+        // is a priority-inversion hazard on the real-time audio thread — an
+        // NSLock can block, and the audio thread cannot safely wait for a
+        // lower-priority thread to release a lock.
         configurationLock.lock()
         let configuredBufferSeconds = storedBufferSeconds
         let configuredRFAudioEnabled = storedRFAudioEnabled
         configurationLock.unlock()
+
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
         let targetFrames = max(1, Int(configuredBufferSeconds * Self.sampleRate))
         // Allow bursts up to target + slack before trimming.
         let slackFrames = max(targetFrames, Int(0.1 * Self.sampleRate))

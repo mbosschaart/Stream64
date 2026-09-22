@@ -224,6 +224,12 @@ enum WorkspaceRestorer {
                     abs(frame.width - snapshot.frame.width) < 1.5
                     && abs(frame.height - snapshot.frame.height) < 1.5
                 if alreadyMatched { return }
+                // macOS sets the .fullScreen styleMask bit at the START of the
+                // fullscreen animation (500–900ms before it completes). Once that
+                // bit is set, any further toggleFullScreen call will exit
+                // fullscreen, undoing the previous one. Skip retries that would
+                // otherwise fire mid-animation and cancel the transition.
+                if snapshot.isFullScreen && window.stream64IsFullScreen { return }
                 window.stream64ApplyRestoredFrame(
                     snapshot.frame,
                     miniaturized: snapshot.isMiniaturized,

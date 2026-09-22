@@ -447,8 +447,12 @@ struct UltimateAPIClient {
         if !modelChanges.isEmpty {
             try await saveConfigCategoryToFlash("UltiSID Configuration")
         }
+        // Deduplicate while preserving insertion order (address changes first,
+        // then model changes) so the result is deterministic across runs.
+        var seen = Set<SIDConfiguration.Slot.Source>()
+        let slots = (addressChanges + modelChanges).filter { seen.insert($0).inserted }
         return SIDRoutingResult(
-            configuredSlots: Array(Set(addressChanges + modelChanges)),
+            configuredSlots: slots,
             warnings: warnings)
     }
 
@@ -955,8 +959,11 @@ struct UltimateAPIClient {
                     options: options)
             }
             if let options = value as? [String], !options.isEmpty {
-                return ConfigItem(
-                    key: key, value: options[0], options: options)
+                // A bare string array gives us the available options but no
+                // explicit current selection. Using options[0] would claim the
+                // first option is selected, which is usually wrong. Leaving
+                // value empty lets the UI show that no selection is known.
+                return ConfigItem(key: key, value: "", options: options)
             }
             if let string = value as? String {
                 return ConfigItem(key: key, value: string, options: [])
@@ -1167,7 +1174,8 @@ struct UltimateAPIClient {
     @discardableResult
     private func perform(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await transport.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+        let http = response as? HTTPURLResponse
+        if let http, !(200...299).contains(http.statusCode) {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw APIError.httpError(http.statusCode, body)
         }
@@ -1175,7 +1183,13 @@ struct UltimateAPIClient {
         // successful HTTP response. Treat a non-empty errors array as a real
         // failure so connect/retry logic does not accept a stream:start that
         // the device rejected.
-        if let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data),
+        // Only run the envelope check when the response is JSON (or has no
+        // declared type — safe fallback). Binary responses (screen captures,
+        // debug-register reads, file uploads) skip this decode entirely.
+        let mimeType = http?.mimeType ?? ""
+        let couldBeJSON = mimeType.hasPrefix("application/json") || mimeType.isEmpty
+        if couldBeJSON,
+           let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data),
            !envelope.errors.isEmpty {
             throw APIError.deviceErrors(envelope.errors)
         }

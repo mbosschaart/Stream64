@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.137b — 2026-09-23
+
+- Fixed plain `swift run` with Xcode 27 by copying the runtime Metal source and precompiled palette library instead of asking SwiftPM to compile the shader. Explicitly excluded the editor workspace file from the app target.
+
+- Fixed a priority-inversion hazard in the audio render path: the NSLock snapshot for buffer configuration was acquired while the real-time os_unfair_lock was already held, which could block the CoreAudio thread waiting on a lower-priority thread. The snapshot now runs before the ring-buffer lock.
+
+- Fixed `startStreaming` silently discarding a concurrent caller's video or audio parameters when an in-flight streaming op was already running. The gate now tracks which streams the in-flight op covers and starts a follow-up op when the caller requested a stream that was not included.
+
+- Fixed repeated fullscreen toggles on launch when restoring a fullscreen window. The restore retries fired at 0 ms, 50 ms and 150 ms — all before the 500–900 ms macOS animation completed — triggering multiple `toggleFullScreen` calls that cancelled each other. Retries now bail out once the fullscreen styleMask bit is set.
+
+- Fixed a memory leak where `DisplaySettings` instances and their Combine subscriptions were never freed after a device was removed. The static instance cache is now pruned when a device is permanently deleted.
+
+- Fixed `input.prepare()` task handles not being stored, causing tasks to accumulate across reconnects with no way to cancel them. The task is now tracked and cancelled during session teardown.
+
+- Fixed the JSON error-envelope check in `perform()` running on every response regardless of content type, including binary payloads (screen captures, debug-register reads, file uploads). The check is now skipped for responses with a non-JSON MIME type.
+
+- Fixed `fetchConfigItems` claiming the first option in a bare string-array config value is the current selection. The current value is now left empty when the response provides only a list of options without an explicit selection.
+
+- Fixed non-deterministic ordering of configured SID slots in `ensureSIDRouting` results. `Array(Set(...))` is replaced with an order-preserving deduplicate so the slot list is stable across runs.
+
+- Fixed `probeDebugCapability` creating its own `UltimateAPIClient` backed by a live `URLSession` instead of using the injected transport, making it untestable in isolation.
+
+- Reduced UserDefaults I/O in `WorkspaceSnapshotStore`: the decoded snapshot is now kept in memory and returned on subsequent calls, so window move and resize events no longer decode UserDefaults on every frame.
+
+- Reduced UserDefaults I/O in `DisplaySettings`: multiple rapid property changes (e.g. dragging a slider) are coalesced into a single encode and write per main-actor turn instead of one per property change.
+
+- Reduced allocations in the video receive path: the frame-observer array is only copied when observers are registered.
+
 ## 0.136b — 2026-09-21
 
 - Restored the pre-0.133 grouped viewer toolbar on macOS Sequoia and Sonoma to address missing toolbar controls. Tahoe and Golden Gate retain the 0.133 toolbar and its corrected selection text and SID Visualizations menu title.

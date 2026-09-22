@@ -19,6 +19,13 @@ final class DisplaySettings: ObservableObject {
         return created
     }
 
+    /// Remove the cached instance for a device that has been permanently
+    /// deleted. Call only from DeviceStore.remove — not from session teardown,
+    /// which also runs during device edits where the UUID is reused.
+    static func evict(for deviceID: UUID) {
+        instances.removeValue(forKey: deviceID)
+    }
+
     @Published var scalingMode: ScalingMode { didSet { save() } }
     @Published var filterMode: FilterMode { didSet { save() } }
     @Published var palette: PaletteChoice { didSet { save() } }
@@ -83,6 +90,9 @@ final class DisplaySettings: ObservableObject {
 
     private var storageKey: String { "displaySettings.\(deviceID.uuidString)" }
     private var loaded = false
+    /// True while a flush Task is already queued. Prevents multiple
+    /// back-to-back didSet calls from each triggering a separate encode+write.
+    private var saveScheduled = false
 
     init(deviceID: UUID) {
         self.deviceID = deviceID
@@ -148,7 +158,15 @@ final class DisplaySettings: ObservableObject {
     }
 
     private func save() {
-        guard loaded else { return }
+        guard loaded, !saveScheduled else { return }
+        saveScheduled = true
+        Task { @MainActor [weak self] in
+            self?.flush()
+            self?.saveScheduled = false
+        }
+    }
+
+    private func flush() {
         let data = Snapshot(
             scalingMode: scalingMode, filterMode: filterMode,
             palette: palette, selectedCustomPaletteID: selectedCustomPaletteID,

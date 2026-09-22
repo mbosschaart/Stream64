@@ -304,10 +304,10 @@ final class VideoReceiver {
         let frame = Data(publishPool[publishPoolIndex].prefix(byteCount))
         onFrame?(frame)
         frameObserversLock.lock()
-        let observers = Array(frameObservers.values)
+        let observers = frameObservers.isEmpty ? nil : Array(frameObservers.values)
         frameObserversLock.unlock()
-        for observer in observers {
-            observer(frame)
+        if let observers {
+            for observer in observers { observer(frame) }
         }
 
         frameCount += 1

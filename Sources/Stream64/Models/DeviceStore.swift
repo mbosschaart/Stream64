@@ -58,6 +58,7 @@ final class DeviceStore: ObservableObject {
         if selectedDeviceID == device.id {
             selectedDeviceID = devices.first?.id
         }
+        DisplaySettings.evict(for: device.id)
     }
 
     /// Reorders the sidebar list (drag-to-reorder). Purely cosmetic — it

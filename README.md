@@ -391,6 +391,12 @@ swift run
 
 Or open the folder in Xcode and run the `Stream64` scheme.
 
+The package copies the runtime Metal source and checked-in palette library as
+resources, so `swift run` does not require the optional Metal compiler toolchain.
+After editing `SIDVisualizationPalette.metal`, rebuild its companion library with
+`bash Scripts/build-visualisation-palette.sh` (requires the Metal toolchain).
+Release packaging continues to use `--build-system native`.
+
 ### Ad-hoc signed app and DMG
 
 Build distributable `.app`, ZIP and drag-to-Applications DMG packages:

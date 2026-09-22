@@ -70,6 +70,9 @@ struct WorkspaceSnapshot: Codable, Equatable {
 /// Live workspace persistence: updated on open/move/close, restored at launch.
 enum WorkspaceSnapshotStore {
     private static let key = "workspaceSnapshot.v1"
+    /// In-memory cache so upsert/remove operations don't decode UserDefaults
+    /// on every window move or resize event.
+    private static var cachedSnapshot: WorkspaceSnapshot?
 
     /// While true, main-viewer upsert/update are ignored so launch defaults
     /// cannot poison the store. Tool windows may still upsert. Removes are
@@ -99,19 +102,23 @@ enum WorkspaceSnapshotStore {
     }
 
     static func save(_ snapshot: WorkspaceSnapshot) {
+        cachedSnapshot = snapshot
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
 
     static func load() -> WorkspaceSnapshot? {
+        if let cached = cachedSnapshot { return cached }
         guard let data = UserDefaults.standard.data(forKey: key),
               let snapshot = try? JSONDecoder().decode(
                 WorkspaceSnapshot.self, from: data)
         else { return nil }
+        cachedSnapshot = snapshot
         return snapshot
     }
 
     static func clear() {
+        cachedSnapshot = nil
         UserDefaults.standard.removeObject(forKey: key)
     }
 
