@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.136b-purple)
+![Version](https://img.shields.io/badge/version-0.138b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -15,6 +15,7 @@ Designed by Martijn Bosschaart, 2026.
 ## Features
 
 - **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL or 384×240 @ ~60 fps NTSC) and SID audio (~47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
+- **Network buffering for Wi-Fi** — when this Mac reaches the Ultimate over Wi-Fi, picture and sound play a short, adjustable time behind the device on a steady clock, smoothing out Wi-Fi bursts and short pauses; a toolbar Wi-Fi / Ethernet icon shows the link and overrides the default. Wired Ethernet remains recommended for the Mac (see Requirements)
 - **Automatic device discovery** — bounded, cancellable Ethernet/Wi-Fi subnet scanning finds Ultimate REST endpoints, shows product/firmware details, and prefills setup with collision-free local stream ports; manual addressing remains available
 - **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays (NTSC skips the blend)
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
@@ -68,6 +69,8 @@ Browse any configured Ultimate or mounted Mac volume in either pane, then queue 
 - macOS 14 (Sonoma) or newer, Apple Silicon or Intel with a Metal-capable GPU
 - Ultimate 64/Elite firmware **3.11+**, or C64 Ultimate firmware **1.1+**, on the same network
 - UDP path from device to Mac (no firewall blocking the stream ports)
+- **The Ultimate must be connected by Ethernet cable.** It sends its video and audio streams only over its wired port; its Wi-Fi can answer control requests but does not carry the streams
+- **Wired Ethernet is recommended for the Mac as well**, for the smoothest picture and lowest input delay. Wi-Fi works with network buffering, which is on by default for Wi-Fi, but a busy or distant Wi-Fi network can still cause occasional stutters
 
 ## Upcoming Ultimate Firmware 3.15
 
@@ -403,10 +406,10 @@ Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.136b BUILD_NUMBER=136 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.138b BUILD_NUMBER=138 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.136b BUILD_NUMBER=136 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.138b BUILD_NUMBER=138 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:

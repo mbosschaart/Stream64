@@ -20,6 +20,36 @@ enum FilterMode: String, CaseIterable, Identifiable, Codable {
 
 /// Selects whether movies contain the decoded Ultimate stream or the same
 /// composited Metal image the viewer presents.
+/// Network buffering: on by default over Wi-Fi (arrival jitter alone makes
+/// the renderer drop frames), off by default on wired links (lowest input
+/// latency). The user can force it either way.
+enum NetworkBufferingMode: String, CaseIterable, Identifiable, Codable {
+    case automatic = "Automatic"
+    case on = "On"
+    case off = "Off"
+
+    var id: String { rawValue }
+
+    static func automaticDefault(onWiFi: Bool) -> Bool { onWiFi }
+
+    func isActive(onWiFi: Bool) -> Bool {
+        switch self {
+        case .automatic: Self.automaticDefault(onWiFi: onWiFi)
+        case .on: true
+        case .off: false
+        }
+    }
+
+    /// The mode after the user flips buffering on the given link. Flipping
+    /// back to that link's default returns to automatic, so a later Wi-Fi ↔
+    /// Ethernet switch uses the new link's default again.
+    func toggled(onWiFi: Bool) -> NetworkBufferingMode {
+        let wanted = !isActive(onWiFi: onWiFi)
+        if wanted == Self.automaticDefault(onWiFi: onWiFi) { return .automatic }
+        return wanted ? .on : .off
+    }
+}
+
 enum RecordingMode: String, CaseIterable, Identifiable, Codable {
     case source = "Source (fast)"
     case filtered = "Filtered viewer"
@@ -167,13 +197,39 @@ final class AppSettings: ObservableObject {
     // Audio
     @AppStorage("audioEnabled") var audioEnabled: Bool = true
     @AppStorage("volume") var volume: Double = 0.8
-    @AppStorage("audioBufferMs") var audioBufferMs: Double = 60
+    /// 100 ms rides out the ~50–70 ms pauses macOS Wi-Fi takes about once a
+    /// minute (seen in stream health logs); 60 ms underran on each one.
+    @AppStorage("audioBufferMs") var audioBufferMs: Double = 100
     /// CoreAudio device UID, or empty for the system default output.
     @AppStorage("audioOutputDeviceUID") var audioOutputDeviceUID: String = ""
 
     // Network
     @AppStorage("connectTimeoutSeconds") var connectTimeoutSeconds: Double = 5
     @AppStorage("streamDurationSeconds") var streamDurationSeconds: Int = 0 // 0 = forever
+    /// Wi-Fi gaps in stream health logs peaked around 250 ms, so 0.5 s has
+    /// headroom without making input feel sluggish.
+    @AppStorage("networkBufferSeconds") var networkBufferSeconds: Double = 0.5
+    @AppStorage("networkBufferingMode")
+    var networkBufferingMode: NetworkBufferingMode = .automatic
+    /// Write one CSV row of stream health per second to ~/Library/Logs/Stream64.
+    @AppStorage("streamHealthLogEnabled") var streamHealthLogEnabled: Bool = false
+
+    func buffersStream(onWiFi: Bool) -> Bool {
+        networkBufferingMode.isActive(onWiFi: onWiFi)
+    }
+
+    /// Video playout delay, or nil when buffering is off.
+    func videoPlayoutDelaySeconds(onWiFi: Bool) -> Double? {
+        buffersStream(onWiFi: onWiFi) ? networkBufferSeconds : nil
+    }
+
+    /// Audio jitter target. With buffering on it matches the video delay so
+    /// sound stays in sync with the picture.
+    func effectiveAudioBufferSeconds(onWiFi: Bool) -> Double {
+        let jitter = audioBufferMs / 1000
+        return buffersStream(onWiFi: onWiFi)
+            ? max(jitter, networkBufferSeconds) : jitter
+    }
     @AppStorage("recordingMode") var recordingMode: RecordingMode = .source
     @AppStorage("filteredRecordingSize")
     var filteredRecordingSize: FilteredRecordingSize = .fourThree
@@ -196,8 +252,11 @@ final class AppSettings: ObservableObject {
     var sidVisualizationC64Palette = false
     /// Keep the U64 debug stream alive for supported connected devices so
     /// Debug Trace / register SID windows never need to start it on demand.
+    /// Off by default: the trace runs at roughly 32 Mbit/s, more than video
+    /// and audio combined, which starves Wi-Fi links. Windows that need it
+    /// lease it on open and it stops when the last one closes.
     @AppStorage("keepDebugStreamWarm")
-    var keepDebugStreamWarm: Bool = true
+    var keepDebugStreamWarm: Bool = false
     /// Emits U64 debug-stream lifecycle counters to macOS unified logging.
     /// Off by default; useful only when diagnosing device/trace issues.
     @AppStorage("debugLifecycleLogging")

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SystemConfiguration
 
 /// Local IPv4 interface enumeration and bounded subnet expansion shared by
 /// stream routing and automatic Ultimate discovery.
@@ -18,6 +19,14 @@ enum LocalNetwork {
     static func primaryIPv4Address(
         reachingDevice deviceIP: String? = nil
     ) -> String? {
+        primaryInterface(reachingDevice: deviceIP)?.address
+    }
+
+    /// The interface `primaryIPv4Address` picks, so callers can also ask how
+    /// the Mac reaches the device.
+    static func primaryInterface(
+        reachingDevice deviceIP: String? = nil
+    ) -> IPv4Interface? {
         interfaces().sorted { lhs, rhs in
             let lhsSame = deviceIP.map {
                 sameSubnet(lhs.address, $0, mask: lhs.netmask)
@@ -27,7 +36,25 @@ enum LocalNetwork {
             } ?? false
             if lhsSame != rhsSame { return lhsSame }
             return lhs.isEthernetOrWiFi && !rhs.isEthernetOrWiFi
-        }.first?.address
+        }.first
+    }
+
+    /// True when this Mac reaches `deviceIP` over Wi-Fi. `en*` names cover
+    /// both Ethernet and Wi-Fi, so ask SystemConfiguration for the type.
+    static func reachesDeviceOverWiFi(_ deviceIP: String) -> Bool {
+        guard let name = primaryInterface(reachingDevice: deviceIP)?.name
+        else { return false }
+        return isWiFiInterface(named: name)
+    }
+
+    static func isWiFiInterface(named bsdName: String) -> Bool {
+        guard let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface]
+        else { return false }
+        return all.contains { interface in
+            SCNetworkInterfaceGetBSDName(interface) as String? == bsdName
+                && SCNetworkInterfaceGetInterfaceType(interface)
+                    == kSCNetworkInterfaceTypeIEEE80211
+        }
     }
 
     /// Active, routable IPv4 interfaces. VPN/tunnel interfaces are omitted

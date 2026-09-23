@@ -17,8 +17,11 @@ struct StreamContextMenu: View {
     /// session publish (fps ticks each second), which collapses submenus
     /// while the user is traversing them.
     let session: DeviceSession
-    let display: DisplaySettings
-    let input: InputSettings
+    /// Observed, unlike the session: these change only on user action, and
+    /// without observation SwiftUI keeps serving the menu built from the old
+    /// values, so a toggle stays ticked after being switched off.
+    @ObservedObject var display: DisplaySettings
+    @ObservedObject var input: InputSettings
     @EnvironmentObject var settings: AppSettings
     /// Host view's power-off path (shows the confirmation dialog when the
     /// preference asks for it).
@@ -33,15 +36,14 @@ struct StreamContextMenu: View {
         requestPowerOff: @escaping () -> Void
     ) {
         self.session = session
-        self.display = session.display
-        self.input = session.input.settings
+        self._display = ObservedObject(wrappedValue: session.display)
+        self._input = ObservedObject(wrappedValue: session.input.settings)
         self.monitorCaseVisible = monitorCaseVisible
         self.requestPictureControls = requestPictureControls
         self.requestPowerOff = requestPowerOff
     }
 
-    /// Snapshot binding into the display settings: writes go through,
-    /// reads don't subscribe the menu to updates.
+    /// Binding into the observed display settings.
     private func bind<T>(_ keyPath: ReferenceWritableKeyPath<DisplaySettings, T>) -> Binding<T> {
         Binding(get: { display[keyPath: keyPath] },
                 set: { display[keyPath: keyPath] = $0 })
@@ -269,7 +271,7 @@ struct StreamContextMenu: View {
 }
 
 private struct PaletteContextPicker: View {
-    let display: DisplaySettings
+    @ObservedObject var display: DisplaySettings
     @ObservedObject private var library = PaletteLibrary.shared
 
     var body: some View {

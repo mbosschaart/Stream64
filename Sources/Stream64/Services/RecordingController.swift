@@ -51,6 +51,24 @@ final class RecordingController: @unchecked Sendable {
     private var movieWidth = VideoReceiver.width
     private var movieHeight = VideoReceiver.palHeight
     private var acceptsIndexedFrames = true
+    private var filteredVideoDelayNanoseconds: UInt64 = 0
+    private var lastFilteredPresentationTime = CMTime.negativeInfinity
+
+    /// Filtered frames come from the renderer, which runs behind arrival by
+    /// the Wi-Fi playout delay; audio is tapped on arrival. Set before
+    /// `start` so filtered video is stamped back into step with the sound.
+    var filteredVideoDelaySeconds: Double {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return Double(filteredVideoDelayNanoseconds) / 1_000_000_000
+        }
+        set {
+            lock.lock()
+            filteredVideoDelayNanoseconds = UInt64(max(0, newValue) * 1_000_000_000)
+            lock.unlock()
+        }
+    }
 
     var isRecording: Bool {
         lock.lock()
@@ -150,6 +168,7 @@ final class RecordingController: @unchecked Sendable {
         startUptime = DispatchTime.now().uptimeNanoseconds
         videoQueue.removeAll(keepingCapacity: true)
         audioQueue.removeAll(keepingCapacity: true)
+        lastFilteredPresentationTime = .negativeInfinity
         droppedVideoFrames = 0
         droppedAudioPackets = 0
         isFinishing = false
@@ -181,13 +200,28 @@ final class RecordingController: @unchecked Sendable {
             lock.unlock()
             return
         }
+        let elapsed = DispatchTime.now().uptimeNanoseconds - startUptime
+        // Frames rendered from before recording began (still draining from
+        // the playout buffer) belong to no part of this movie.
+        guard elapsed >= filteredVideoDelayNanoseconds else {
+            lock.unlock()
+            return
+        }
+        let presentationTime = CMTime(
+            value: Int64(elapsed - filteredVideoDelayNanoseconds),
+            timescale: 1_000_000_000)
+        guard presentationTime > lastFilteredPresentationTime else {
+            lock.unlock()
+            return
+        }
+        lastFilteredPresentationTime = presentationTime
         if videoQueue.count == Self.maximumQueuedVideoFrames {
             videoQueue.removeFirst()
             droppedVideoFrames += 1
         }
         videoQueue.append(VideoPacket(
             contents: .pixelBuffer(pixelBuffer),
-            presentationTime: elapsedTimeLocked()))
+            presentationTime: presentationTime))
         lock.unlock()
         scheduleDrain()
     }

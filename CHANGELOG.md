@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.138b — 2026-09-24
+
+### Network buffering for Wi-Fi
+
+Wi-Fi delivers the Ultimate's picture and sound in small bursts with short pauses in between, which shows up as uneven scrolling, skipped frames and brief audio dropouts. Network buffering plays picture and sound a moment behind the Ultimate on a steady clock, so those bursts and pauses no longer reach the screen. When a few pieces of a frame go missing, Stream64 fills them in from the previous frame instead of skipping it.
+
+Buffering switches itself on when your Mac reaches the Ultimate over Wi-Fi and stays off over Ethernet, where you get the lowest delay. Keyboard and joystick input are delayed by the buffer length, so keep it short. You can change the length in Settings → Network → Network buffering (0.25 to 3 seconds, default 0.5 seconds). If the stream health details say the buffer ran dry, raise it a step.
+
+Buffering makes Wi-Fi usable, but it doesn't replace a cable. On a busy or distant Wi-Fi network you may still see an occasional stutter, and an Ethernet cable for your Mac gives the smoothest picture. The Ultimate itself must always be connected by cable: it sends video and audio only over its wired port.
+
+### Wi-Fi / Ethernet icon in the toolbar
+
+The viewer toolbar now shows how your Mac reaches the Ultimate, with a Wi-Fi or Ethernet icon next to AirPlay. The icon is highlighted while network buffering is on. Click it to override the automatic choice, for example to turn buffering on when the Ultimate sits on an unreliable wired network. Click again to go back to automatic. If you plug in or unplug a cable while connected, Stream64 follows within a few seconds.
+
+### Bandwidth and packet loss in stream health
+
+The Stream Health badge on the picture now shows the incoming bandwidth, and the packet loss whenever packets go missing. Click the badge for details: bandwidth for video, audio and the debug stream separately, packet loss, the longest pause between packets, and how full the buffer is.
+
+To record what happens over time, turn on "Log stream health to file" in the same panel. Stream64 writes one line per second while connected to `~/Library/Logs/Stream64`, which is handy to attach when you report a streaming problem.
+
+### Debug stream only when you need it
+
+The U64 debug stream feeds the SID visualisations and Debug Trace, and uses about 32 Mbit/s, more than video and audio together. It now starts when one of those windows opens and stops when the last one closes, which leaves your network far more room for the picture. If you'd rather have those windows open instantly, turn on "Keep U64 debug stream running while connected" in Settings → General.
+
+### Fewer audio dropouts
+
+The audio jitter buffer (Settings → Audio) now defaults to 100 ms instead of 60 ms, enough to ride out the short pauses Wi-Fi takes about once a minute. If you set the jitter buffer yourself, your setting is kept.
+
+### Readable release notes
+
+The update window now shows release notes with proper headings, lists and emphasis, and has more room to read them.
+
+### Fixes
+
+- Checkmarks in the viewer's right-click menu, such as Show Frame Rate and Show Stream Health, now update when you change them. The same applies to the Stream menu in the menu bar.
+
 ## 0.137b — 2026-09-23
 
 - Fixed plain `swift run` with Xcode 27 by copying the runtime Metal source and precompiled palette library instead of asking SwiftPM to compile the shader. Explicitly excluded the editor workspace file from the app target.

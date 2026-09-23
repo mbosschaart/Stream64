@@ -126,6 +126,12 @@ enum HelpTopic: String, CaseIterable, Identifiable {
 
     • Ultimate 64/Elite firmware 3.11+, or C64 Ultimate firmware 1.1+, on the same network
     • The device's data streams reach this Mac over UDP — no firewall blocking inbound UDP
+    • **The Ultimate must be connected by Ethernet cable.** It sends video and \
+    audio only over its wired port, so streams do not work over its Wi-Fi.
+    • **Connect this Mac by Ethernet too, if you can.** A cable gives the \
+    smoothest picture and lowest input delay. Over Wi-Fi, Stream64 turns on \
+    network buffering to smooth things out, but a busy or distant Wi-Fi \
+    network can still cause occasional stutters.
 
     **First connection**
 
@@ -613,7 +619,7 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     **Settings → Audio** — choose the Mac output device for local playback, \
     volume, and the jitter buffer. A larger buffer \
     smooths playback on busy networks at \
-    the cost of latency; 60 ms is a good default.
+    the cost of latency; 100 ms is a good default.
 
     **AirPlay** — use the AirPlay button in the main toolbar or Audio \
     Settings to send the currently selected C64's audio to a receiver. This \
@@ -801,9 +807,21 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     retry still fails, use **Reboot Device & Retry**; a genuinely wedged stack \
     can remain reachable over REST while refusing stream destinations.
 
-    **Choppy or stuttering audio** — raise the jitter buffer in Settings → \
-    Audio (try 100 ms). Wi-Fi is the usual culprit; wired Ethernet on either \
-    end helps.
+    **Choppy or stuttering audio** — Wi-Fi is the usual culprit, and \
+    connecting this Mac by Ethernet is the most reliable fix. Otherwise raise \
+    the jitter buffer in Settings → Audio (try 150 ms).
+
+    **Choppy picture or "Degraded" health on Wi-Fi** — **Network buffering** \
+    plays picture and sound 0.5 seconds behind the Ultimate on a steady \
+    clock, and patches frames missing a few packets from the previous frame. \
+    By default it is on over Wi-Fi and off over Ethernet, for the lowest \
+    input delay. The viewer toolbar shows a Wi-Fi or Ethernet icon for the \
+    current link, highlighted while buffering; click it to override the \
+    default (for example when the Ultimate sits on a poor cabled network). \
+    Settings → Network has the same choice and the buffer length. If the \
+    health popover says the buffer ran dry, raise the buffer. Buffering is a \
+    convenience for Wi-Fi rather than a replacement for a cable: if stutters \
+    persist, connecting this Mac by Ethernet is the reliable fix.
 
     **Keyboard input not arriving** — make sure keyboard capture is on \
     (toolbar) and the picture has focus (click it once). Check Settings → \

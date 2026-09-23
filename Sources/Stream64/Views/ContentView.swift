@@ -247,10 +247,65 @@ struct ContentView: View {
     }
 
     private var airPlayToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let device = deviceStore.selectedDevice {
+                let session = sessionManager.session(for: device, settings: settings)
+                WiFiBufferingControl(
+                    route: session.streamRoute,
+                    apply: { sessionManager.applyNetworkBuffering() })
+            }
             AirPlayGlobalControl(
                 controller: sessionManager.airPlayOutput)
         }
+    }
+}
+
+/// Link indicator for the selected device: a Wi-Fi or Ethernet symbol,
+/// highlighted while network buffering is active. Clicking overrides the
+/// automatic default (on for Wi-Fi, off for Ethernet).
+private struct WiFiBufferingControl: View {
+    @ObservedObject var route: StreamRouteStatus
+    @EnvironmentObject private var settings: AppSettings
+    let apply: () -> Void
+
+    private var active: Bool { settings.buffersStream(onWiFi: route.overWiFi) }
+    private var interfaceSuffix: String {
+        route.interfaceName.map { " (\($0))" } ?? ""
+    }
+
+    var body: some View {
+        Button {
+            settings.networkBufferingMode =
+                settings.networkBufferingMode.toggled(onWiFi: route.overWiFi)
+            apply()
+        } label: {
+            Label(
+                route.overWiFi ? "Wi-Fi Buffering" : "Wired Buffering",
+                systemImage: symbol)
+                .foregroundStyle(active ? Color.accentColor : Color.secondary)
+        }
+        .help(helpText)
+    }
+
+    private var symbol: String {
+        if route.overWiFi { return active ? "wifi" : "wifi.slash" }
+        return "cable.connector"
+    }
+
+    private var helpText: String {
+        let link = route.overWiFi ? "Wi-Fi" : "Ethernet"
+        let state = active
+            ? "network buffering \(bufferSeconds)" : "network buffering off"
+        let source = settings.networkBufferingMode == .automatic
+            ? "default for \(link)" : "your override"
+        let action = active ? "turn it off" : "turn it on"
+        let advice = route.overWiFi
+            ? " An Ethernet cable gives the smoothest stream." : ""
+        return "\(link)\(interfaceSuffix): \(state) (\(source)). Click to \(action).\(advice)"
+    }
+
+    private var bufferSeconds: String {
+        String(format: "%.2g s", settings.networkBufferSeconds)
     }
 }
 
@@ -565,6 +620,7 @@ private struct FPSOverlayLabel: View {
 /// diagnostics' once-per-second updates out of the Metal video host.
 private struct StreamHealthOverlay: View {
     @ObservedObject var diagnostics: StreamDiagnostics
+    @EnvironmentObject private var settings: AppSettings
     @State private var showingDetails = false
 
     var body: some View {
@@ -572,25 +628,40 @@ private struct StreamHealthOverlay: View {
         Button {
             showingDetails.toggle()
         } label: {
-            Label(
-                snapshot.healthLabel,
-                systemImage: snapshot.isDegraded
-                    ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(snapshot.isDegraded ? .yellow : .green)
+            HStack(spacing: 6) {
+                Label(
+                    snapshot.healthLabel,
+                    systemImage: snapshot.isDegraded
+                        ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(snapshot.isDegraded ? .yellow : .green)
+                Text("\(snapshot.totalMegabitsPerSecond, specifier: "%.1f") Mbit/s")
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.85))
+                if snapshot.video.lossRatio > 0 {
+                    Text("\(snapshot.video.lossRatio * 100, specifier: "%.1f")% loss")
+                        .monospacedDigit()
+                        .foregroundStyle(.yellow)
+                }
+            }
+            .font(.caption.weight(.medium))
         }
         .buttonStyle(.plain)
         .padding(6)
         .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
         .help("Stream health — click for details")
         .popover(isPresented: $showingDetails, arrowEdge: .top) {
-            StreamDiagnosticsDetail(snapshot: snapshot)
+            StreamDiagnosticsDetail(
+                snapshot: snapshot,
+                logEnabled: $settings.streamHealthLogEnabled,
+                logURL: diagnostics.logURL)
         }
     }
 }
 
 private struct StreamDiagnosticsDetail: View {
     let snapshot: StreamDiagnosticsSnapshot
+    @Binding var logEnabled: Bool
+    let logURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -602,9 +673,14 @@ private struct StreamDiagnosticsDetail: View {
                 .foregroundStyle(snapshot.isDegraded ? .yellow : .green)
             Divider()
             Group {
+                Text("Network in  \(snapshot.totalMegabitsPerSecond, specifier: "%.1f") Mbit/s · video \(snapshot.video.megabitsPerSecond, specifier: "%.1f") · audio \(snapshot.audio.megabitsPerSecond, specifier: "%.1f") · debug \(snapshot.debug.megabitsPerSecond, specifier: "%.1f")")
+                Text("Packet loss  \(snapshot.video.lossRatio * 100, specifier: "%.1f")% · longest gap \(max(snapshot.video.maxArrivalGapMilliseconds, snapshot.audio.maxArrivalGapMilliseconds), specifier: "%.0f") ms")
                 Text("Video  \(snapshot.video.framesPerSecond, specifier: "%.1f") fps · \(snapshot.video.packetsPerSecond, specifier: "%.0f") pkt/s")
                 Text("Display  \(snapshot.renderer.presentFPS, specifier: "%.1f") fps · \(snapshot.renderer.queuedFrames) queued")
                 Text("Audio  \(snapshot.audio.packetsPerSecond, specifier: "%.0f") pkt/s · \(snapshot.audio.bufferedMilliseconds) ms buffer")
+                if snapshot.buffering.enabled {
+                    Text("Wi-Fi buffer  \(snapshot.buffering.bufferedFrames)/\(snapshot.buffering.targetFrames) frames · \(snapshot.buffering.concealedFramesPerSecond, specifier: "%.0f") patched/s")
+                }
                 if snapshot.recording.active {
                     Text("Recording  \(snapshot.recording.filtered ? "filtered" : "source") · \(snapshot.recording.queuedVideoFrames) queued")
                 }
@@ -628,10 +704,43 @@ private struct StreamDiagnosticsDetail: View {
                         .font(.caption)
                 }
             }
+            if snapshot.video.lostPacketsPerSecond > 0
+                || snapshot.video.droppedFramesPerSecond > 0
+                || snapshot.audio.lostPacketsPerSecond > 0 {
+                Text("Lost: video \(snapshot.video.lostPacketsPerSecond, specifier: "%.0f") pkt/s (\(snapshot.video.droppedFramesPerSecond, specifier: "%.0f") frames/s) · audio \(snapshot.audio.lostPacketsPerSecond, specifier: "%.0f") pkt/s · reordered \(snapshot.video.reorderedPacketsPerSecond, specifier: "%.0f")/s")
+                    .font(.caption)
+            }
+            if snapshot.debug.megabitsPerSecond > 1 {
+                Text("The debug stream is running. On Wi-Fi, turn off \"Keep U64 debug stream running\" in Settings → General unless a trace or SID window needs it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if snapshot.buffering.underrunsPerSecond > 0 {
+                Text("Wi-Fi buffer ran dry; refilling. A larger buffer rides out longer dropouts; an Ethernet cable for this Mac avoids them.")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+            }
             if snapshot.renderer.gpuBehind {
                 Text("Display renderer is behind.")
                     .font(.caption)
                     .foregroundStyle(.yellow)
+            }
+            Divider()
+            Toggle("Log stream health to file", isOn: $logEnabled)
+                .font(.caption)
+            if let logURL {
+                HStack {
+                    Text(logURL.lastPathComponent)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Show") {
+                        NSWorkspace.shared.activateFileViewerSelecting([logURL])
+                    }
+                    .controlSize(.small)
+                }
             }
         }
         .padding(12)

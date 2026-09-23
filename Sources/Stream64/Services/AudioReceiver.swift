@@ -104,10 +104,24 @@ final class AudioReceiver: @unchecked Sendable {
         }
         set {
             configurationLock.lock()
-            storedBufferSeconds = max(0.01, newValue)
+            let previous = storedBufferSeconds
+            storedBufferSeconds = min(Self.maximumBufferSeconds, max(0.01, newValue))
+            let grew = storedBufferSeconds > previous
             configurationLock.unlock()
+            if grew {
+                // Render only trims a backlog; it never adds delay on its
+                // own. Re-prime so a larger target takes effect now (a brief
+                // silence) and stays in step with the video playout buffer.
+                os_unfair_lock_lock(lock)
+                primed = false
+                os_unfair_lock_unlock(lock)
+            }
         }
     }
+
+    /// The ring must hold the largest target plus render's trim slack and a
+    /// burst margin.
+    static let maximumBufferSeconds: Double = 3.5
 
     /// Empty / unset follows the system default output. Non-empty is a
     /// CoreAudio device UID from `AudioOutputDevices`.
@@ -136,21 +150,35 @@ final class AudioReceiver: @unchecked Sendable {
     /// Cumulative counter sampled at one hertz by DeviceSession. It is
     /// queue-confined and never publishes from the UDP receive callback.
     private var rejectedPacketCount = 0
+    // Transport counters (queue-confined), as in VideoReceiver.
+    private var byteCount = 0
+    private var lostPacketCount = 0
+    private var lastStreamSequence: UInt16?
+    private var lastArrivalNs: UInt64?
+    private var maxArrivalGapNs: UInt64 = 0
 
     var packetsReceived: Int {
         queue.sync { packetCount }
     }
 
+    /// Also restarts the longest-gap window, so call it from one sampler.
     func diagnosticsSnapshot() -> AudioReceiverDiagnostics {
-        let packetCounts = queue.sync { (packetCount, rejectedPacketCount) }
+        let transport = queue.sync {
+            defer { maxArrivalGapNs = 0 }
+            return (packetCount, rejectedPacketCount, byteCount,
+                    lostPacketCount, maxArrivalGapNs)
+        }
         os_unfair_lock_lock(lock)
         let snapshot = AudioReceiverDiagnostics(
-            packets: packetCounts.0,
-            rejectedPackets: packetCounts.1,
+            packets: transport.0,
+            rejectedPackets: transport.1,
             bufferedMilliseconds: Int(
                 (Double(framesAvailable) / Self.sampleRate) * 1_000),
             underruns: renderUnderrunCount,
-            droppedFrames: droppedInputFrameCount)
+            droppedFrames: droppedInputFrameCount,
+            bytes: transport.2,
+            lostPackets: transport.3,
+            maxArrivalGapMilliseconds: Double(transport.4) / 1_000_000)
         os_unfair_lock_unlock(lock)
         return snapshot
     }
@@ -187,7 +215,7 @@ final class AudioReceiver: @unchecked Sendable {
 
     // MARK: - Ring buffer (interleaved stereo floats), guarded by `lock`.
 
-    private static let capacityFrames = Int(sampleRate * 2) // ~2 s
+    private static let capacityFrames = Int(sampleRate * 8) // ~8 s, 3 MB
     private var ring = [Float](repeating: 0, count: capacityFrames * 2)
     private var readIndex = 0        // frames
     private var writeIndex = 0       // frames
@@ -360,6 +388,7 @@ final class AudioReceiver: @unchecked Sendable {
         for connection in connections {
             connection.cancel()
         }
+        resetSequenceTracking()
         if let configChangeObserver {
             NotificationCenter.default.removeObserver(configChangeObserver)
             self.configChangeObserver = nil
@@ -418,6 +447,15 @@ final class AudioReceiver: @unchecked Sendable {
         os_unfair_lock_unlock(lock)
     }
 
+    /// Forget the last sequence number, so a device-side stream restart is
+    /// not counted as loss or reordering.
+    func resetSequenceTracking() {
+        queue.async { [weak self] in
+            self?.lastStreamSequence = nil
+            self?.lastArrivalNs = nil
+        }
+    }
+
     // MARK: - Network side (writer)
 
     static func isStructurallyValidPacket(_ data: Data) -> Bool {
@@ -462,11 +500,34 @@ final class AudioReceiver: @unchecked Sendable {
         // 192 stereo Int16 frames (768 bytes). Do not let unrelated or
         // truncated UDP traffic satisfy DeviceSession's live-stream probe.
         guard started else { return }
+        byteCount += data.count
+        let now = DispatchTime.now().uptimeNanoseconds
+        if let lastArrivalNs, now > lastArrivalNs {
+            let gap = now - lastArrivalNs
+            maxArrivalGapNs = max(maxArrivalGapNs, gap)
+            // A second of silence is a stream restart (the device renumbers
+            // from scratch), not a second of lost packets.
+            if gap > 1_000_000_000 { lastStreamSequence = nil }
+        }
+        lastArrivalNs = now
         guard Self.isStructurallyValidPacket(data) else {
             rejectedPacketCount += 1
             return
         }
         packetCount += 1
+        let sequence = UInt16(data[data.startIndex])
+            | (UInt16(data[data.startIndex + 1]) << 8)
+        if let last = lastStreamSequence {
+            let delta = sequence &- last
+            if delta != 0, delta < 0x8000 {
+                lostPacketCount += Int(delta) - 1
+                lastStreamSequence = sequence
+            } else if delta >= 0x8000 {
+                lostPacketCount = max(0, lostPacketCount - 1)
+            }
+        } else {
+            lastStreamSequence = sequence
+        }
         let payload = data.dropFirst(2)
         let frameCount = payload.count / 4 // 2 channels × 2 bytes
         guard frameCount > 0 else { return }
@@ -525,7 +586,10 @@ final class AudioReceiver: @unchecked Sendable {
         defer { os_unfair_lock_unlock(lock) }
         let targetFrames = max(1, Int(configuredBufferSeconds * Self.sampleRate))
         // Allow bursts up to target + slack before trimming.
-        let slackFrames = max(targetFrames, Int(0.1 * Self.sampleRate))
+        // A fifth of the target (at least 100 ms) absorbs bursts without
+        // letting sound drift far behind the video playout buffer, which
+        // holds its own depth to within a few frames.
+        let slackFrames = max(Int(0.1 * Self.sampleRate), targetFrames / 5)
 
         // Wait (in silence) until the jitter buffer is primed.
         if !primed {

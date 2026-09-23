@@ -75,19 +75,93 @@ final class VideoReceiver {
         Data(count: width * maxHeight)
     }
     private var publishPoolIndex = 0
+    /// Frames published with missing rows filled from the previous frame.
+    private var concealedFrameCount = 0
+    /// Transport counters for the health popover and stream log. The
+    /// datagram sequence runs across frames, so gaps are real loss (on the
+    /// air or in the kernel) and backward steps are reordering.
+    private var byteCount = 0
+    private var lostPacketCount = 0
+    private var reorderedPacketCount = 0
+    private var droppedFrameCount = 0
+    private var lastStreamSequence: UInt16?
+    private var lastBegunFrameID: UInt16?
+    private var lastArrivalNs: UInt64?
+    /// Longest silence between datagrams since the previous snapshot.
+    private var maxArrivalGapNs: UInt64 = 0
+
+    /// Wi-Fi buffering. When set, `onFrame` receives frames from a steady
+    /// playout clock this many seconds behind arrival, and frames missing a
+    /// few packets are patched instead of dropped. Frame observers
+    /// (recording) still see frames on arrival, in step with the audio tap.
+    private let playoutLock = NSLock()
+    private var playout: VideoPlayoutBuffer?
+    private var concealsPacketLoss = false
+
+    var playoutDelaySeconds: Double? {
+        get {
+            playoutLock.lock()
+            defer { playoutLock.unlock() }
+            return playout?.targetSeconds
+        }
+        set {
+            playoutLock.lock()
+            if let newValue {
+                if let playout {
+                    playout.targetSeconds = newValue
+                } else {
+                    playout = VideoPlayoutBuffer(targetSeconds: newValue) {
+                        [weak self] frame in self?.onFrame?(frame)
+                    }
+                }
+            } else {
+                playout?.flush()
+                playout = nil
+            }
+            playoutLock.unlock()
+            queue.async { [weak self] in
+                self?.concealsPacketLoss = newValue != nil
+            }
+        }
+    }
+
+    /// Up to this many missing rows (a quarter of a PAL frame, 17 packets)
+    /// are taken from the previous frame. Beyond that the frame is dropped.
+    static let maximumConcealedLines = maxHeight / 4
 
     var packetsReceived: Int {
         queue.sync { packetCount }
     }
 
+    /// Also restarts the longest-gap window, so call it from one sampler.
     func diagnosticsSnapshot() -> VideoReceiverDiagnostics {
         queue.sync {
-            VideoReceiverDiagnostics(
+            defer { maxArrivalGapNs = 0 }
+            return VideoReceiverDiagnostics(
                 packets: packetCount,
                 rejectedPackets: rejectedPacketCount,
                 completedFrames: completedFrameCount,
-                frameHeight: lastCompletedFrameHeight)
+                frameHeight: lastCompletedFrameHeight,
+                concealedFrames: concealedFrameCount,
+                playout: currentPlayout()?.diagnosticsSnapshot(),
+                bytes: byteCount,
+                lostPackets: lostPacketCount,
+                reorderedPackets: reorderedPacketCount,
+                droppedFrames: droppedFrameCount,
+                maxArrivalGapMilliseconds: Double(maxArrivalGapNs) / 1_000_000)
         }
+    }
+
+    private func currentPlayout() -> VideoPlayoutBuffer? {
+        playoutLock.lock()
+        defer { playoutLock.unlock() }
+        return playout
+    }
+
+    /// Test hook: blocks until frames already handed to the playout buffer
+    /// have been queued there.
+    func waitForPlayoutQueue() {
+        currentPlayout()?.waitUntilIdle()
     }
 
     func start(port: UInt16) throws {
@@ -115,6 +189,7 @@ final class VideoReceiver {
         for connection in connections {
             connection.cancel()
         }
+        currentPlayout()?.flush()
         queue.async { [weak self] in
             self?.resetAssemblyState()
         }
@@ -125,6 +200,8 @@ final class VideoReceiver {
     private func resetAssemblyState() {
         assemblingFrameID = nil
         assemblingSequence = nil
+        resetSequenceTrackingOnQueue()
+        lastArrivalNs = nil
         receivedLines.withUnsafeMutableBufferPointer {
             $0.update(repeating: false)
         }
@@ -197,6 +274,16 @@ final class VideoReceiver {
     /// Internal for deterministic packet-assembly tests. Production callers
     /// invoke it only from the receiver's serial queue.
     func ingest(_ data: Data) {
+        byteCount += data.count
+        let now = DispatchTime.now().uptimeNanoseconds
+        if let lastArrivalNs, now > lastArrivalNs {
+            let gap = now - lastArrivalNs
+            maxArrivalGapNs = max(maxArrivalGapNs, gap)
+            // A second of silence is a stream restart (the device renumbers
+            // from scratch), not a second of lost packets.
+            if gap > 1_000_000_000 { resetSequenceTrackingOnQueue() }
+        }
+        lastArrivalNs = now
         guard Self.isStructurallyValidPacket(data) else {
             rejectedPacketCount += 1
             if Self.debug { dbgRejected += 1 }
@@ -211,18 +298,40 @@ final class VideoReceiver {
             let startLine = Int(lineField & 0x7FFF)
             let pixelsPerLine = Int(UInt16(raw[6]) | (UInt16(raw[7]) << 8))
             let linesPerPacket = Int(raw[8])
+            trackSequence(sequence)
 
+            var lateWithinFrame = false
             if assemblingFrameID != frameID {
+                if assemblingFrameID != nil, !concealUnfinishedFrame() {
+                    // The previous frame's last packet never arrived.
+                    droppedFrameCount += 1
+                }
+                if let lastBegunFrameID {
+                    let skipped = frameID &- lastBegunFrameID
+                    if skipped > 1, skipped < 0x8000 {
+                        // Frames with no packet received at all.
+                        droppedFrameCount += Int(skipped) - 1
+                    }
+                    if skipped < 0x8000 { self.lastBegunFrameID = frameID }
+                } else {
+                    lastBegunFrameID = frameID
+                }
                 beginFrame(id: frameID, sequence: sequence)
             } else if let previousSequence = assemblingSequence,
                       !isForwardOrSame(sequence, after: previousSequence) {
-                // A late/out-of-order packet from this frame is safe to
-                // ignore: newer rows already won, and it must not roll the
-                // assembler back to stale content.
-                rejectedPacketCount += 1
-                return
+                // A late/out-of-order packet from this frame must not roll
+                // the assembler back to stale content. With concealment on,
+                // it may still fill rows nothing else has written yet.
+                let fillsGap = concealsPacketLoss
+                    && !(startLine..<(startLine + linesPerPacket))
+                        .contains(where: { receivedLines[$0] })
+                guard fillsGap else {
+                    rejectedPacketCount += 1
+                    return
+                }
+                lateWithinFrame = true
             }
-            assemblingSequence = sequence
+            if !lateWithinFrame { assemblingSequence = sequence }
 
             packetCount += 1
             if Self.debug {
@@ -261,12 +370,75 @@ final class VideoReceiver {
                     publishFrame(height: frameHeight)
                     completedFrameCount += 1
                     lastCompletedFrameHeight = frameHeight
-                } else if Self.debug {
-                    dbgRejected += 1
+                } else if canConceal(height: frameHeight) {
+                    publishFrame(height: frameHeight)
+                    completedFrameCount += 1
+                    concealedFrameCount += 1
+                } else {
+                    droppedFrameCount += 1
+                    if Self.debug { dbgRejected += 1 }
                 }
                 assemblingFrameID = nil
                 assemblingSequence = nil
             }
+        }
+    }
+
+    /// Missing rows still hold the previous frame's pixels (the assembly
+    /// buffer is never cleared), so a mostly complete frame of the same
+    /// height can be shown with those few rows one frame old.
+    private func canConceal(height: Int) -> Bool {
+        guard concealsPacketLoss,
+              Self.isSupportedFrameHeight(height),
+              height == lastCompletedFrameHeight else { return false }
+        var missing = 0
+        for line in 0..<height where !receivedLines[line] {
+            missing += 1
+            if missing > Self.maximumConcealedLines { return false }
+        }
+        return true
+    }
+
+    private func concealUnfinishedFrame() -> Bool {
+        let height = lastCompletedFrameHeight
+        guard canConceal(height: height) else { return false }
+        publishFrame(height: height)
+        completedFrameCount += 1
+        concealedFrameCount += 1
+        return true
+    }
+
+    /// Forget the last packet and frame numbers, so a device-side stream
+    /// restart is not counted as loss, reordering or dropped frames.
+    func resetSequenceTracking() {
+        queue.async { [weak self] in
+            self?.resetSequenceTrackingOnQueue()
+            self?.lastArrivalNs = nil
+        }
+    }
+
+    private func resetSequenceTrackingOnQueue() {
+        lastStreamSequence = nil
+        lastBegunFrameID = nil
+    }
+
+    private func trackSequence(_ sequence: UInt16) {
+        defer {
+            if let last = lastStreamSequence {
+                if sequence &- last < 0x8000 { lastStreamSequence = sequence }
+            } else {
+                lastStreamSequence = sequence
+            }
+        }
+        guard let last = lastStreamSequence else { return }
+        let delta = sequence &- last
+        if delta == 0 { return }
+        if delta < 0x8000 {
+            lostPacketCount += Int(delta) - 1
+        } else {
+            // Arrived after a later packet: it was counted lost at the gap.
+            reorderedPacketCount += 1
+            lostPacketCount = max(0, lostPacketCount - 1)
         }
     }
 
@@ -302,7 +474,11 @@ final class VideoReceiver {
         // Copy-out a correctly sized Data so pool reuse cannot mutate a
         // frame still held in the renderer's pending queue.
         let frame = Data(publishPool[publishPoolIndex].prefix(byteCount))
-        onFrame?(frame)
+        if let playout = currentPlayout() {
+            playout.enqueue(frame)
+        } else {
+            onFrame?(frame)
+        }
         frameObserversLock.lock()
         let observers = frameObservers.isEmpty ? nil : Array(frameObservers.values)
         frameObserversLock.unlock()

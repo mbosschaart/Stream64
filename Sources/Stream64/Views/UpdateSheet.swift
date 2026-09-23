@@ -18,7 +18,7 @@ struct UpdateSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(24)
-        .frame(width: 520, height: 360)
+        .frame(width: 580, height: 540)
         .interactiveDismissDisabled(isInstalling)
     }
 
@@ -89,11 +89,11 @@ struct UpdateSheet: View {
                 .foregroundStyle(.secondary)
             if let body = release.body, !body.isEmpty {
                 ScrollView {
-                    Text(body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    ReleaseNotesView(markdown: body)
+                        .padding(12)
                 }
-                .frame(maxHeight: 170)
+                .frame(maxHeight: .infinity)
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
                 Button(buttonTitle, action: action)

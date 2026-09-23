@@ -191,6 +191,7 @@ final class DeviceSession: ObservableObject {
         startStreamStalenessMonitor()
         startHealthMonitor()
         startDiagnosticsMonitor()
+        refreshNetworkRoute()
     }
 
     func attachRendererDiagnostics(
@@ -218,6 +219,8 @@ final class DeviceSession: ObservableObject {
     private var previousRendererDiagnostics = MetalRendererDiagnostics()
     private var previousRecordingDiagnostics = RecordingDiagnostics()
     private var lastDiagnosticsSample = Date()
+    private var previousDebugBytes = 0
+    private var streamHealthLog: StreamHealthLog?
     /// Single generation-scoped silent-stream watchdog. Replaced on each
     /// schedule so connect/recovery/restart cannot stack overlapping
     /// stop/settle/start cycles.
@@ -258,10 +261,16 @@ final class DeviceSession: ObservableObject {
     private func startDiagnosticsMonitor() {
         diagnosticsMonitor?.cancel()
         diagnosticsMonitor = Task { [weak self] in
+            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self else { return }
                 self.publishDiagnostics()
+                tick += 1
+                // Follow a Wi-Fi ↔ Ethernet switch without a reconnect.
+                if tick % 5 == 0, self.refreshNetworkRoute() {
+                    self.applyNetworkBuffering()
+                }
             }
         }
     }
@@ -276,13 +285,39 @@ final class DeviceSession: ObservableObject {
         func rate(_ current: Int, _ previous: Int) -> Double {
             Double(max(0, current - previous)) / elapsed
         }
-        streamDiagnostics.publish(StreamDiagnosticsSnapshot(
+        func megabits(_ current: Int, _ previous: Int) -> Double {
+            rate(current, previous) * 8 / 1_000_000
+        }
+        let debugBytes = debugStreamReceiver.bytesReceived
+        let debugRate = megabits(debugBytes, previousDebugBytes)
+        previousDebugBytes = debugBytes
+        let playout = video.playout
+        let previousPlayout = previousVideoDiagnostics.playout
+        let buffering = StreamDiagnosticsSnapshot.Buffering(
+            enabled: playout != nil,
+            targetFrames: playout?.targetFrames ?? 0,
+            bufferedFrames: playout?.bufferedFrames ?? 0,
+            underrunsPerSecond: rate(
+                playout?.underruns ?? 0, previousPlayout?.underruns ?? 0),
+            concealedFramesPerSecond: rate(
+                video.concealedFrames, previousVideoDiagnostics.concealedFrames),
+            overflowDropsPerSecond: rate(
+                playout?.overflowDrops ?? 0, previousPlayout?.overflowDrops ?? 0))
+        let snapshot = StreamDiagnosticsSnapshot(
             video: .init(
                 packetsPerSecond: rate(video.packets, previousVideoDiagnostics.packets),
                 framesPerSecond: rate(video.completedFrames, previousVideoDiagnostics.completedFrames),
                 rejectedPacketsPerSecond: rate(
                     video.rejectedPackets, previousVideoDiagnostics.rejectedPackets),
-                frameHeight: video.frameHeight),
+                frameHeight: video.frameHeight,
+                megabitsPerSecond: megabits(video.bytes, previousVideoDiagnostics.bytes),
+                lostPacketsPerSecond: rate(
+                    video.lostPackets, previousVideoDiagnostics.lostPackets),
+                reorderedPacketsPerSecond: rate(
+                    video.reorderedPackets, previousVideoDiagnostics.reorderedPackets),
+                droppedFramesPerSecond: rate(
+                    video.droppedFrames, previousVideoDiagnostics.droppedFrames),
+                maxArrivalGapMilliseconds: video.maxArrivalGapMilliseconds),
             audio: .init(
                 packetsPerSecond: rate(audio.packets, previousAudioDiagnostics.packets),
                 rejectedPacketsPerSecond: rate(
@@ -290,7 +325,11 @@ final class DeviceSession: ObservableObject {
                 bufferedMilliseconds: audio.bufferedMilliseconds,
                 underrunsPerSecond: rate(audio.underruns, previousAudioDiagnostics.underruns),
                 droppedFramesPerSecond: rate(
-                    audio.droppedFrames, previousAudioDiagnostics.droppedFrames)),
+                    audio.droppedFrames, previousAudioDiagnostics.droppedFrames),
+                megabitsPerSecond: megabits(audio.bytes, previousAudioDiagnostics.bytes),
+                lostPacketsPerSecond: rate(
+                    audio.lostPackets, previousAudioDiagnostics.lostPackets),
+                maxArrivalGapMilliseconds: audio.maxArrivalGapMilliseconds),
             renderer: .init(
                 presentFPS: renderer.presentFPS,
                 queuedFrames: renderer.queuedFrames,
@@ -306,12 +345,40 @@ final class DeviceSession: ObservableObject {
                     previousRecordingDiagnostics.droppedVideoFrames),
                 droppedAudioPacketsPerSecond: rate(
                     recording.droppedAudioPackets,
-                    previousRecordingDiagnostics.droppedAudioPackets))))
+                    previousRecordingDiagnostics.droppedAudioPackets)),
+            buffering: buffering,
+            debug: .init(megabitsPerSecond: debugRate))
+        streamDiagnostics.publish(snapshot)
+        updateStreamHealthLog(snapshot)
         previousVideoDiagnostics = video
         previousAudioDiagnostics = audio
         previousRendererDiagnostics = renderer
         previousRecordingDiagnostics = recording
         lastDiagnosticsSample = now
+    }
+
+    /// Logs only while connected, so an idle viewer does not fill the disk
+    /// with zero rows.
+    private func updateStreamHealthLog(_ snapshot: StreamDiagnosticsSnapshot) {
+        guard settings.streamHealthLogEnabled, isConnected else {
+            if streamHealthLog != nil {
+                streamHealthLog = nil
+                streamDiagnostics.logURL = nil
+            }
+            return
+        }
+        if streamHealthLog == nil {
+            streamHealthLog = try? StreamHealthLog(deviceName: device.name)
+            streamDiagnostics.logURL = streamHealthLog?.url
+        }
+        do {
+            try streamHealthLog?.append(snapshot)
+        } catch {
+            // Disk full or file removed: stop logging rather than crash.
+            // The toggle stays on, so the next sample opens a fresh file.
+            streamHealthLog = nil
+            streamDiagnostics.logURL = nil
+        }
     }
 
     // MARK: - Mid-session disconnect detection & automatic reconnect
@@ -563,6 +630,8 @@ final class DeviceSession: ObservableObject {
         do {
             // Start local UDP receivers first so no packets are dropped.
             try validateLocalPortSet()
+            refreshNetworkRoute()
+            videoReceiver.playoutDelaySeconds = settings.videoPlayoutDelaySeconds(onWiFi: reachesDeviceOverWiFi)
             try videoReceiver.start(port: try validatedLocalPort(
                 device.videoPort, name: "Video"))
             let audioOK = await startAudioIfEnabled()
@@ -666,7 +735,7 @@ final class DeviceSession: ObservableObject {
     private func startAudioIfEnabled() async -> Bool {
         guard settings.audioEnabled else { return true }
         audioReceiver.volume = Float(settings.volume)
-        audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
+        audioReceiver.bufferSeconds = settings.effectiveAudioBufferSeconds(onWiFi: reachesDeviceOverWiFi)
         audioReceiver.preferredOutputDeviceUID = settings.audioOutputDeviceUID
         audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
         do {
@@ -877,6 +946,9 @@ final class DeviceSession: ObservableObject {
         if video || startAudio {
             try await Task.sleep(for: .seconds(1))
         }
+        // The restarted streams renumber their packets and frames.
+        if video { videoReceiver.resetSequenceTracking() }
+        if startAudio { audioReceiver.resetSequenceTracking() }
         guard isCurrentConnection(generation),
               isConnected || connecting else {
             throw CancellationError()
@@ -1934,6 +2006,9 @@ final class DeviceSession: ObservableObject {
                         height: VideoReceiver.palHeight)
                 }
                 do {
+                    self.recordingController.filteredVideoDelaySeconds =
+                        self.settings.videoPlayoutDelaySeconds(
+                            onWiFi: self.reachesDeviceOverWiFi) ?? 0
                     let filteredHighQuality = activeMode == .filtered
                         && self.settings.filteredRecordingQuality == .proRes422HQ
                     try self.recordingController.start(
@@ -2010,9 +2085,34 @@ final class DeviceSession: ObservableObject {
 
     func applyAudioSettings() {
         audioReceiver.volume = Float(settings.volume)
-        audioReceiver.bufferSeconds = settings.audioBufferMs / 1000
+        audioReceiver.bufferSeconds = settings.effectiveAudioBufferSeconds(onWiFi: reachesDeviceOverWiFi)
         audioReceiver.preferredOutputDeviceUID = settings.audioOutputDeviceUID
         audioReceiver.rfAudioEnabled = display.tubeInput == .rf && isCRTFilterActive
+    }
+
+    /// Whether the stream path to the device is Wi-Fi, for automatic
+    /// buffering. Refreshed on connect and whenever buffering settings apply.
+    let streamRoute = StreamRouteStatus()
+    var reachesDeviceOverWiFi: Bool { streamRoute.overWiFi }
+
+    /// Returns true when the path switched between Wi-Fi and wired.
+    @discardableResult
+    private func refreshNetworkRoute() -> Bool {
+        let interface = LocalNetwork.primaryInterface(reachingDevice: device.host)
+        let wifi = interface.map { LocalNetwork.isWiFiInterface(named: $0.name) } ?? false
+        return streamRoute.update(overWiFi: wifi, interfaceName: interface?.name)
+    }
+
+    /// Applies Wi-Fi buffering to a live stream: the picture re-primes at
+    /// the new depth and audio follows so the two stay in sync.
+    func applyNetworkBuffering() {
+        refreshNetworkRoute()
+        let delay = settings.videoPlayoutDelaySeconds(onWiFi: reachesDeviceOverWiFi)
+        videoReceiver.playoutDelaySeconds = delay
+        audioReceiver.bufferSeconds = settings.effectiveAudioBufferSeconds(onWiFi: reachesDeviceOverWiFi)
+        // A filtered recording in progress stamps renderer output back by
+        // the playout delay; keep it in step when the delay changes.
+        recordingController.filteredVideoDelaySeconds = delay ?? 0
     }
 
     /// The input-signal simulation (including RF audio) only runs when a

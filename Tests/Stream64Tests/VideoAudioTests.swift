@@ -1064,7 +1064,7 @@ final class VideoAudioTests: XCTestCase {
 
 
     @MainActor
-    func testCRTOpticsPersistPerDevice() throws {
+    func testCRTOpticsPersistPerDevice() async throws {
         let id = UUID()
         let key = "displaySettings.\(id.uuidString)"
         defer { UserDefaults.standard.removeObject(forKey: key) }
@@ -1075,6 +1075,8 @@ final class VideoAudioTests: XCTestCase {
         display.crtBloomAmount = 0.8
         display.crtMaskIntensity = 0.1
         display.crtBarrelDistortion = 0.9
+        // Saves are coalesced into one write on a later main-actor turn.
+        for _ in 0..<5 { await Task.yield() }
 
         let reloaded = DisplaySettings(deviceID: id)
         XCTAssertEqual(reloaded.crtScanlineStrength, 0.2, accuracy: 0.0001)
