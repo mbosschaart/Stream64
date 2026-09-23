@@ -69,6 +69,39 @@ record_extractor_digest() {
     /usr/libexec/PlistBuddy -c "Set :HVSC7zSHA256 $digest" "$APP_BUNDLE/Contents/Info.plist"
 }
 
+# Apple's timestamp service intermittently drops requests ("A timestamp was
+# expected but was not found"). Retry the signing step itself so one dropped
+# request does not force a full rebuild and a second notarization.
+timestamped_codesign() {
+    local attempt
+    for attempt in 1 2 3 4; do
+        if codesign "$@"; then
+            return 0
+        fi
+        if ((attempt < 4)); then
+            echo "codesign failed (attempt $attempt); retrying in $((attempt * 5)) s..." >&2
+            sleep $((attempt * 5))
+        fi
+    done
+    return 1
+}
+
+# Ticket lookup goes through CloudKit and can time out (error 68) even after
+# notarization is accepted; retry rather than rebuild and resubmit.
+staple_with_retry() {
+    local attempt
+    for attempt in 1 2 3 4; do
+        if xcrun stapler staple "$1"; then
+            return 0
+        fi
+        if ((attempt < 4)); then
+            echo "Stapling failed (attempt $attempt); retrying in $((attempt * 10)) s..." >&2
+            sleep $((attempt * 10))
+        fi
+    done
+    return 1
+}
+
 sign_app_developer_id() {
     echo "Signing with $CODESIGN_IDENTITY..."
     chmod -R u+w "$APP_BUNDLE"
@@ -76,7 +109,7 @@ sign_app_developer_id() {
     xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
 
     # Sign the executable first, then the bundle (Apple's preferred nesting order).
-    codesign \
+    timestamped_codesign \
         --force \
         --options runtime \
         --timestamp=http://timestamp.apple.com/ts01 \
@@ -84,7 +117,7 @@ sign_app_developer_id() {
         --sign "$CODESIGN_IDENTITY" \
         "$APP_BUNDLE/Contents/MacOS/Stream64"
     if [[ -f "$APP_BUNDLE/Contents/Resources/hvsc-7zz" ]]; then
-        codesign \
+        timestamped_codesign \
             --force \
             --options runtime \
             --timestamp=http://timestamp.apple.com/ts01 \
@@ -92,7 +125,7 @@ sign_app_developer_id() {
             "$APP_BUNDLE/Contents/Resources/hvsc-7zz"
     fi
     record_extractor_digest
-    codesign \
+    timestamped_codesign \
         --force \
         --options runtime \
         --timestamp=http://timestamp.apple.com/ts01 \
@@ -125,7 +158,7 @@ notarize_and_staple_app() {
         --password "$APPLE_APP_SPECIFIC_PASSWORD" \
         --wait
     echo "Stapling notarization ticket to app..."
-    xcrun stapler staple "$APP_BUNDLE"
+    staple_with_retry "$APP_BUNDLE"
     xcrun stapler validate "$APP_BUNDLE"
     spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
 }
@@ -147,7 +180,7 @@ notarize_and_staple_dmg() {
         --password "$APPLE_APP_SPECIFIC_PASSWORD" \
         --wait
     echo "Stapling notarization ticket to DMG..."
-    xcrun stapler staple "$submit_dmg"
+    staple_with_retry "$submit_dmg"
     xcrun stapler validate "$submit_dmg"
     cp -f "$submit_dmg" "$DMG_PATH"
     rm -f "$submit_dmg"
@@ -276,7 +309,7 @@ hdiutil create \
 
 if [[ "$SIGNING" == "developer-id" ]]; then
     echo "Signing DMG with $CODESIGN_IDENTITY..."
-    codesign \
+    timestamped_codesign \
         --force \
         --timestamp=http://timestamp.apple.com/ts01 \
         --sign "$CODESIGN_IDENTITY" \
