@@ -113,18 +113,52 @@ enum CRTScreenColor: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum BezelChoice: String, CaseIterable, Identifiable, Codable {
-    case c1702 = "Commodore 1702"
-    case c1084 = "Commodore 1084S"
+enum CRTMaskType: String, CaseIterable, Identifiable, Codable {
+    case automatic = "Automatic (monitor preset)"
+    case shadowMask = "Shadow mask"
+    case apertureGrille = "Aperture grille"
+    case slotMask = "Slot mask"
 
     var id: String { rawValue }
 
-    /// Published phosphor/shadow-mask dot pitch for the physical monitor.
+    /// Automatic preserves the existing desktop and SX-64 mask appearances.
+    func shaderValue(for monitor: BezelChoice) -> Float {
+        switch self {
+        case .automatic: return monitor == .sx64 ? 1 : 0
+        case .shadowMask: return 2
+        case .apertureGrille: return 3
+        case .slotMask: return 4
+        }
+    }
+}
+
+enum BezelChoice: String, CaseIterable, Identifiable, Codable {
+    case c1702 = "Commodore 1702"
+    case c1084 = "Commodore 1084S"
+    case sx64 = "Commodore SX-64 (5-inch)"
+
+    var id: String { rawValue }
+
+    /// SX-64 uses an approximate coarse-mask pitch, not a verified tube spec.
     var dotPitchMillimeters: Float {
         switch self {
         case .c1702: return 0.64
         case .c1084: return 0.42
+        case .sx64: return 0.8
         }
+    }
+
+    /// Nominal 4:3 screen width. Preserve the existing desktop-monitor
+    /// geometry; the SX-64's 5-inch tube has fewer phosphor triads.
+    var screenWidthMillimeters: Float {
+        switch self {
+        case .c1702, .c1084: return 264.2
+        case .sx64: return 101.6
+        }
+    }
+
+    var phosphorTriadsAcrossScreen: Float {
+        screenWidthMillimeters / dotPitchMillimeters
     }
 }
 

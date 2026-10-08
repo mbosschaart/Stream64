@@ -16,6 +16,7 @@ struct PictureControlsView: View {
     @State private var barrelDistortion: Double
     @State private var reflection: Bool
     @State private var bezelStyle: BezelChoice
+    @State private var maskType: CRTMaskType
 
     init(
         display: DisplaySettings,
@@ -33,6 +34,7 @@ struct PictureControlsView: View {
         _barrelDistortion = State(initialValue: display.crtBarrelDistortion)
         _reflection = State(initialValue: display.bezelReflection)
         _bezelStyle = State(initialValue: display.bezelStyle)
+        _maskType = State(initialValue: display.crtMaskType)
     }
 
     var body: some View {
@@ -47,9 +49,10 @@ struct PictureControlsView: View {
                     Text("Picture")
                 } footer: {
                     Text(
-                        "The center position is neutral. Higher brightness "
-                            + "and color settings deliberately allow CRT "
-                            + "overdrive."
+                        "The center position is neutral. In CRT modes, higher "
+                            + "brightness lifts the raster and stronger contrast "
+                            + "drives highlights; both increase phosphor glow. "
+                            + "Bloom controls the light spreading."
                     )
                 }
 
@@ -60,6 +63,12 @@ struct PictureControlsView: View {
                     control("Barrel Distortion", value: $barrelDistortion)
                     Toggle("Glass reflection", isOn: $reflection)
                         .disabled(!isCRTTube)
+                    Picker("Mask type", selection: $maskType) {
+                        ForEach(CRTMaskType.allCases) { type in
+                            Text(type.rawValue).tag(type)
+                        }
+                    }
+                    .disabled(display.filterMode != .crt && !isCRTTube)
                     Picker("Phosphor pitch", selection: $bezelStyle) {
                         ForEach(BezelChoice.allCases) { choice in
                             Text(choice.rawValue).tag(choice)
@@ -128,6 +137,9 @@ struct PictureControlsView: View {
         .onChange(of: reflection) {
             display.bezelReflection = reflection
         }
+        .onChange(of: maskType) {
+            display.crtMaskType = maskType
+        }
         .onChange(of: bezelStyle) {
             display.bezelStyle = bezelStyle
         }
@@ -142,6 +154,7 @@ struct PictureControlsView: View {
             display.crtBarrelDistortion = barrelDistortion
             display.bezelReflection = reflection
             display.bezelStyle = bezelStyle
+            display.crtMaskType = maskType
         }
     }
 

@@ -197,7 +197,7 @@ final class SIDMusicCompoTests: XCTestCase {
         let sampler = try XCTUnwrap(device.makeSamplerState(descriptor: MTLSamplerDescriptor()))
         var uniforms = MetalFrameRenderer.Uniforms(scale: SIMD2(1, 1), reflection: 0, signal: 0,
             time: 0, brightness: 0.5, contrast: 0.5, saturation: 0.5, tint: 0.5,
-            phosphorColor: 0, dirtyGlass: 0, maskPitch: 1, historyHead: 0,
+            phosphorColor: 0, dirtyGlass: 0, maskPitch: 1, maskType: 0, historyHead: 0,
             historyValidCount: 0, historyPhase: 0, powerOff: 0, bezelSurfaceMode: 0,
             scanlineStrength: 0.5, bloomAmount: 0.5, maskIntensity: 0.5, barrelDistortion: 0.5, motionBlend: 1)
         var images = Set<Data>()

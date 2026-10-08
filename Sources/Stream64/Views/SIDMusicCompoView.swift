@@ -157,7 +157,8 @@ private struct SIDMusicCompoSurface: NSViewRepresentable {
         renderer.signalLevel = display.tubeInput.signalLevel
         renderer.crtScreenColor = display.crtScreenColor
         renderer.crtDirtyGlass = display.crtDirtyGlass
-        renderer.monitorDotPitchMillimeters = display.bezelStyle.dotPitchMillimeters
+        renderer.monitor = display.bezelStyle
+        renderer.maskType = display.crtMaskType
         renderer.picture = display.picture
         renderer.optics = display.optics
         let palette = display.resolvedPalette

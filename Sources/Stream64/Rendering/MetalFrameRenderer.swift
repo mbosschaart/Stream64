@@ -119,7 +119,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     var signalLevel: Float = 0
     var crtScreenColor: CRTScreenColor = .color
     var crtDirtyGlass: Bool = false
-    var monitorDotPitchMillimeters: Float = BezelChoice.c1702.dotPitchMillimeters
+    var monitor: BezelChoice = .c1702
+    var maskType: CRTMaskType = .automatic
     /// 0 = standalone/fullscreen dark bezel, 1 = 1702, 2 = 1084S.
     var bezelSurfaceMode: Float = 0
     private var powerOffEffectStartedAt: UInt64?
@@ -148,6 +149,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         var phosphorColor: Float
         var dirtyGlass: Float
         var maskPitch: Float
+        var maskType: Float
         var historyHead: Float
         var historyValidCount: Float
         var historyPhase: Float
@@ -196,6 +198,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float phosphorColor;
         float dirtyGlass;
         float maskPitch;
+        float maskType;
         float historyHead;
         float historyValidCount;
         float historyPhase;
@@ -211,12 +214,13 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     // Monitor picture controls, all neutral at 0.5. Saturation and tint
     // work on the chroma plane (YIQ), like the color/tint pots on a real
     // composite monitor.
-    static float brightnessOffset(constant Uniforms &u) {
-        // Preserve a useful darkening range, but provide substantially more
-        // headroom above neutral for a deliberately overdriven CRT picture.
+    static float brightnessOffset(constant Uniforms &u, bool crt = false) {
+        // CRT brightness lifts cutoff gradually; beam glow supplies the
+        // upper-range light instead of washing the entire picture to white.
+        // Sharp/Smooth retain their existing signal-space response.
         return u.brightness < 0.5
              ? (u.brightness - 0.5) * 0.70
-             : (u.brightness - 0.5) * 1.30;
+             : (u.brightness - 0.5) * (crt ? 0.64 : 1.30);
     }
 
     static float saturationScale(constant Uniforms &u) {
@@ -227,9 +231,20 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
              : 1.0 + (u.saturation - 0.5) * 6.0;
     }
 
-    static float3 applyPicture(float3 c, constant Uniforms &u) {
-        c = (c - 0.5) * mix(0.4, 1.6, u.contrast)
-          + 0.5 + brightnessOffset(u);
+    static float pictureContrastScale(constant Uniforms &u, bool crt = false) {
+        return crt && u.contrast > 0.5
+             ? 1.0 + (u.contrast - 0.5) * 5.2
+             : mix(0.4, 1.6, u.contrast);
+    }
+
+    static float crtBeamDrive(constant Uniforms &u) {
+        return max(0.0, (u.brightness - 0.5) * 2.0) * 1.35
+             + max(0.0, (u.contrast - 0.5) * 2.0) * 1.9;
+    }
+
+    static float3 applyPicture(float3 c, constant Uniforms &u, bool crt = false) {
+        c = (c - 0.5) * pictureContrastScale(u, crt)
+          + 0.5 + brightnessOffset(u, crt);
         float3 yiq = float3(dot(c, float3(0.299,  0.587,  0.114)),
                             dot(c, float3(0.596, -0.274, -0.322)),
                             dot(c, float3(0.211, -0.523,  0.312)));
@@ -246,7 +261,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
     // Physical CRT phosphor color applied after picture controls. Color mode
     // leaves RGB intact; amber/green/monochrome convert the decoded picture
     // to luminance, then excite a single-color or white phosphor.
-    static float3 applyPhosphorColor(float3 c, constant Uniforms &u) {
+    static float3 applyPhosphorColor(float3 c, constant Uniforms &u, bool crt = false) {
         if (u.phosphorColor < 0.5) {
             return c;
         }
@@ -255,9 +270,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         // black level into a glowing amber/green background, so subtract the
         // exact output level that a true RGB black receives from those same
         // controls before tinting. Signal noise above black remains visible.
-        float contrastScale = mix(0.4, 1.6, u.contrast);
+        float contrastScale = pictureContrastScale(u, crt);
         float blackLevel = clamp(0.5 - 0.5 * contrastScale
-                               + brightnessOffset(u), 0.0, 0.98);
+                               + brightnessOffset(u, crt), 0.0, 0.98);
         float luminance = dot(c, float3(0.299, 0.587, 0.114));
         luminance = max(0.0, (luminance - blackLevel)
                              / max(1.0 - blackLevel, 0.001));
@@ -667,7 +682,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         }
 
         float lumaSoft = rf > 0.5 ? 0.85 : 0.55; // tap spacing; wider on RF
-        float chromaStep = rf > 0.5 ? 1.85 : 1.35; // broad color bleed
+        float chromaStep = rf > 0.5 ? 3.0 : 2.15; // broader color bleed
 
         // Luma: 5-tap gaussian soften — on RF the taps sit far enough
         // apart that individual C64 pixels melt together.
@@ -693,7 +708,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         // collapses, arrives late and bleeds well beyond sharp luma edges.
         float2 iq = float2(0.0);
         float wsum = 0.0;
-        float chromaFalloff = rf > 0.5 ? 0.16 : 0.20;
+        float chromaFalloff = rf > 0.5 ? 0.10 : 0.12;
         for (int k = -2; k <= 6; k++) {
             float shifted = float(k) - 0.7;
             float w = exp(-chromaFalloff * shifted * shifted);
@@ -875,14 +890,10 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         float scanStrength = mix(0.35, 0.15, lum)
                            * opticsGain(scanlineAmount, 4.0);
         scanStrength = min(scanStrength, 0.95);
-        // Near the top of the brightness control, amber/green tubes emulate
-        // beam-current bloom: phosphor light spills vertically into the dark
-        // gap and the scanline structure starts glowing together. Keep the
-        // normal scanline look through most of the knob's range.
-        float monoPhosphor = phosphorColor > 0.5 && phosphorColor < 2.5
-                           ? 1.0 : 0.0;
-        float beamDrive = smoothstep(0.62, 1.0, brightness)
-                        * monoPhosphor;
+        // Driven highlights spread into the scanline gaps for every phosphor
+        // color. Dark regions retain scanline separation.
+        float beamDrive = saturate(crtBeamDrive(u))
+                        * smoothstep(0.05, 0.6, lum);
         scanStrength *= mix(1.0, 0.22, beamDrive);
         color *= mix(1.0 - scanStrength, 1.0, scan);
         color += blur * 0.5 * (1.0 - scan) * beamDrive * 0.18;
@@ -891,6 +902,53 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         // pitch. Alternate rows are staggered and vertically modulated into
         // soft oval dots rather than an aperture-grille stripe pattern.
         float pitch = max(maskPitch, 3.0);
+        if (u.maskType > 0.5) {
+            // Mask geometry is independent of monitor pitch. All patterns
+            // stay attached to the glass, rather than to source pixels.
+            bool presetDots = u.maskType < 1.5;
+            float rowHeight = pitch * (presetDots ? 0.5 : 0.288675);
+            float row = floor(pixelPos.y / rowHeight);
+            float rowOffset = u.maskType < 2.5 ? fmod(row, 2.0) * 0.5 : 0.0;
+            float y = (fract(pixelPos.y / rowHeight) - 0.5)
+                      * (rowHeight / pitch);
+            float3 dots;
+            for (int c = 0; c < 3; ++c) {
+                float x = fract(pixelPos.x / pitch + rowOffset
+                                - float(c) / 3.0 + 0.5) - 0.5;
+                float distance;
+                if (u.maskType > 3.5) {
+                    // Adjacent RGB triplets stagger the vertical slot breaks.
+                    float group = floor(pixelPos.x / pitch + 1.0 / 6.0);
+                    float slotY = fract(pixelPos.y / pitch
+                                      + fmod(group, 2.0) * 0.5) - 0.5;
+                    float2 q = abs(float2(x, slotY)) - float2(0.025, 0.28);
+                    distance = length(max(q, float2(0.0)))
+                               + min(max(q.x, q.y), 0.0) - 0.12;
+                } else if (u.maskType > 2.5) {
+                    // Aperture grille: uninterrupted vertical RGB stripes.
+                    distance = abs(x) - 0.145;
+                } else {
+                    // Circular staggered dots; Automatic SX-64 retains the
+                    // photograph-calibrated oval aperture from its preset.
+                    float radius = length(float2(x / 0.145,
+                        y / (presetDots ? 0.215 : 0.145)));
+                    distance = (radius - 1.0) * 0.145;
+                }
+                float aa = max(fwidth(distance) * 0.5, 0.003);
+                dots[c] = 1.0 - smoothstep(-aa, aa, distance);
+            }
+            float aperture = max(dots.r, max(dots.g, dots.b));
+            float3 dotMask = (0.55 + aperture * 0.65)
+                            * (float3(0.82) + dots * 0.25);
+            // Unresolved dots fade towards their average instead of making
+            // crawling, high-contrast interference in small viewer tiles.
+            float resolved = smoothstep(3.0, 6.0, pitch);
+            dotMask = mix(float3(0.88), dotMask, resolved);
+            float gain = opticsGain(maskIntensity, 4.0);
+            color *= max(float3(0.03), float3(1.0)
+                         + (dotMask - float3(1.0)) * gain);
+            return color;
+        }
         float maskRow = floor(pixelPos.y / (pitch * 0.52));
         float stagger = fmod(maskRow, 2.0) * (pitch / 6.0);
         float phase = fmod(pixelPos.x + stagger, pitch) / pitch;
@@ -911,6 +969,53 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         return color;
     }
 
+    static float3 drivenEmission(float3 sample, constant Uniforms &u) {
+        float lum = dot(sample, float3(0.299, 0.587, 0.114));
+        float excitation = pow(saturate((lum - 0.18) / 0.82), 1.5);
+        return sample * excitation;
+    }
+
+    static float3 crtBeamGlow(float3 color, float2 uv,
+                             texture2d<uint> indexTex,
+                             texture2d<float> paletteTex,
+                             constant Uniforms &u) {
+        float drive = crtBeamDrive(u);
+        if (drive <= 0.0 || u.bloomAmount <= 0.0) { return color; }
+        // A bounded Gaussian footprint spreads light without displaced
+        // copies of bright shapes. Neutral settings incur no extra sampling.
+        // The existing renderer-pressure bloom cap selects the cheaper 3x3
+        // kernel; normal rendering uses 5x5, independent of screen size.
+        float2 texel = 1.0 / float2(indexTex.get_width(), indexTex.get_height());
+        float radius = 1.0 + min(drive, 3.25) * 2.2;
+        bool lite = u.bloomAmount <= 0.35;
+        int taps = lite ? 1 : 2;
+        float step = radius / float(taps);
+        float3 glow = float3(0.0);
+        for (int y = -taps; y <= taps; ++y) {
+            float wy = lite ? (y == 0 ? 0.5 : 0.25)
+                            : (y == 0 ? 0.375 : abs(y) == 1 ? 0.25 : 0.0625);
+            for (int x = -taps; x <= taps; ++x) {
+                float wx = lite ? (x == 0 ? 0.5 : 0.25)
+                                : (x == 0 ? 0.375 : abs(x) == 1 ? 0.25 : 0.0625);
+                float2 offset = float2(float(x), float(y) * 0.65) * texel * step;
+                glow += drivenEmission(sampleBilinear(uv + offset, indexTex, paletteTex).rgb, u)
+                      * wx * wy;
+            }
+        }
+        if (u.phosphorColor > 0.5) {
+            float light = dot(glow, float3(0.299, 0.587, 0.114));
+            float3 phosphor = u.phosphorColor < 1.5 ? float3(1.0, 0.76, 0.06)
+                            : u.phosphorColor < 2.5 ? float3(0.20, 1.0, 0.32)
+                                                   : float3(1.0);
+            glow = light * phosphor;
+        }
+        float energy = drive * (0.65 + drive * 0.40)
+                     * min(opticsGain(u.bloomAmount, 4.0), 2.0);
+        // Screen blend rolls highlights towards white smoothly while the
+        // surrounding glow continues growing after the core reaches white.
+        return 1.0 - (1.0 - saturate(color)) * exp(-glow * energy);
+    }
+
     fragment float4 fragmentCRT(VertexOut in [[stage_in]],
                                 constant Uniforms &uniforms [[buffer(0)]],
                                 texture2d<uint> indexTex [[texture(0)]],
@@ -929,7 +1034,8 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                 uniforms.scanlineStrength,
                                 uniforms.bloomAmount,
                                 uniforms.maskIntensity);
-        color = applyPhosphorColor(applyPicture(color, uniforms), uniforms);
+        color = applyPhosphorColor(applyPicture(color, uniforms, true), uniforms, true);
+        color = crtBeamGlow(color, sourceUV, indexTex, paletteTex, uniforms);
         color = applyDirtyGlass(color, in.texCoord, in.position.xy,
                                 uniforms, dirtTex);
         return float4(dither(color, in.position.xy), 1.0);
@@ -1069,7 +1175,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
             float reflLuma = dot(refl, float3(0.299, 0.587, 0.114));
             refl = mix(refl, float3(reflLuma), roughness * 0.07);
 
-            refl = applyPhosphorColor(applyPicture(refl, uniforms), uniforms);
+            refl = applyPhosphorColor(applyPicture(refl, uniforms, true), uniforms, true);
             refl *= 1.0 - smoothstep(0.08, 0.58, shutdown);
 
             // Bloom: soft-knee boost so bright content flares while dark
@@ -1128,8 +1234,9 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                                   uniforms.scanlineStrength,
                                   uniforms.bloomAmount,
                                   uniforms.maskIntensity),
-                         uniforms),
-            uniforms);
+                         uniforms, true),
+            uniforms, true);
+        color = crtBeamGlow(color, sourceUV, indexTex, paletteTex, uniforms);
 
         // Flyback collapse concentrates beam energy into a bright horizontal
         // line, then a hot center dot, before the high voltage drains away.
@@ -1528,7 +1635,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
         let pictureWidthPixels = Float(drawableSize.width) * scale.x
         let maskPitch = max(
             3.0,
-            monitorDotPitchMillimeters * pictureWidthPixels / 264.2)
+            pictureWidthPixels / monitor.phosphorTriadsAcrossScreen)
         let now = DispatchTime.now().uptimeNanoseconds
         let elapsedSinceSourceFrame = historyLastUploadUptime == 0
             ? 0
@@ -1561,6 +1668,7 @@ final class MetalFrameRenderer: NSObject, MTKViewDelegate {
                         phosphorColor: crtScreenColor.shaderValue,
                         dirtyGlass: (crtDirtyGlass && !lite) ? 1 : 0,
                         maskPitch: maskPitch,
+                        maskType: maskType.shaderValue(for: monitor),
                         historyHead: Float(historyHead),
                         historyValidCount: Float(histCount),
                         historyPhase: historyPhase,

@@ -580,6 +580,12 @@ private struct DeviceVideoSettings: View {
                     }
                 }
                 .disabled(!isCRTTube)
+                Picker("Mask type", selection: $display.crtMaskType) {
+                    ForEach(CRTMaskType.allCases) { type in
+                        Text(type.rawValue).tag(type)
+                    }
+                }
+                .disabled(!isCRTFilter)
                 HStack {
                     Text("Scanlines")
                     Slider(value: $display.crtScanlineStrength, in: 0...1)
@@ -605,8 +611,11 @@ private struct DeviceVideoSettings: View {
             } footer: {
                 Text(
                     "Phosphor pitch matches Commodore 1702 (0.64 mm) or "
-                        + "1084S (0.42 mm) shadow-mask spacing. Glass "
-                        + "reflection and pitch apply in CRT Tube mode."
+                        + "1084S (0.42 mm) shadow-mask spacing, or an approximate "
+                        + "coarse SX-64 mask scaled to its 5-inch screen. Glass "
+                        + "reflection and pitch apply in CRT Tube mode. Mask type "
+                        + "chooses staggered dots, vertical stripes, or staggered "
+                        + "slots in either CRT filter. Automatic keeps the monitor preset."
                 )
                 .foregroundStyle(.secondary)
             }

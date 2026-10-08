@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.138b-purple)
+![Version](https://img.shields.io/badge/version-0.139b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -17,7 +17,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL or 384×240 @ ~60 fps NTSC) and SID audio (~47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
 - **Network buffering for Wi-Fi** — when this Mac reaches the Ultimate over Wi-Fi, picture and sound play a short, adjustable time behind the device on a steady clock, smoothing out Wi-Fi bursts and short pauses; a toolbar Wi-Fi / Ethernet icon shows the link and overrides the default. Wired Ethernet remains recommended for the Mac (see Requirements)
 - **Automatic device discovery** — bounded, cancellable Ethernet/Wi-Fi subnet scanning finds Ultimate REST endpoints, shows product/firmware details, and prefills setup with collision-free local stream ports; manual addressing remains available
-- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays (NTSC skips the blend)
+- **CRT simulation** — selectable Shadow mask, Aperture grille and Slot mask patterns, luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm, plus an approximate coarse 5-inch SX-64 mask), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays (NTSC skips the blend)
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
@@ -43,6 +43,35 @@ Designed by Martijn Bosschaart, 2026.
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
 - **In-app documentation** — Help → Stream64 Help (⌘?)
+
+## CRT masks and picture controls
+
+Choose a mask in **Settings → Display → Mask type** or **Picture Controls → CRT
+Optics → Mask type**. It applies to both CRT filters, saves per device, and is
+shared with Music Compo. **Automatic** preserves the selected monitor preset.
+
+| Mask type | Pattern |
+|---|---|
+| Shadow mask | Staggered round phosphor dots |
+| Aperture grille | Continuous vertical RGB stripes |
+| Slot mask | Rounded vertical slots with staggered breaks |
+
+Mask type and phosphor pitch are independent. In **CRT Tube** mode, the pitch
+choices are Commodore 1702 (0.64 mm), Commodore 1084S (0.42 mm), and Commodore
+SX-64 (5-inch). The SX-64 preset approximates the coarse pattern in reference
+photographs: about 127 RGB triads across a nominal 101.6 mm screen width. Its
+0.8 mm pitch is a simulation estimate, not a verified original tube specification.
+
+Brightness and Contrast remain neutral at their midpoint. In CRT modes, turning
+Brightness higher lifts the raster gradually and increases phosphor glow;
+Contrast drives highlights harder, up to 3.6× signal gain. Both widen the glow
+around bright details and fill bright scanline gaps. **Bloom** controls this light
+spreading; setting it to zero disables the added glow. Sharp and Smooth retain
+their existing picture-control response.
+
+**Composite** now spreads colour further horizontally across pixel boundaries
+while retaining the separate luminance detail. S-Video keeps its clean colour
+transitions; RF adds a wider chroma footprint plus its existing noise and jitter.
 
 ## Screenshots
 
@@ -400,16 +429,16 @@ After editing `SIDVisualizationPalette.metal`, rebuild its companion library wit
 `bash Scripts/build-visualisation-palette.sh` (requires the Metal toolchain).
 Release packaging continues to use `--build-system native`.
 
-### Ad-hoc signed app and DMG
+### Signed and notarized app packages
 
 Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.138b BUILD_NUMBER=138 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.139b BUILD_NUMBER=139 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.138b BUILD_NUMBER=138 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.139b BUILD_NUMBER=139 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -591,7 +620,7 @@ The CRT Tube face has an invariant dark charcoal glass base independent of C64 s
 
 Output is **dithered** (±0.5 LSB hash noise) to prevent 8-bit banding rings in the vignette and reflection gradients — visible when brightness is raised or contrast lowered.
 
-Monitor picture controls (brightness/contrast in signal space; saturation/tint as YIQ chroma rotation — exactly what the real pots did) apply as shader uniforms in every mode. Knob drags write to a plain `PictureControls` object the renderer reads per frame, bypassing SwiftUI so adjustments track at full frame rate.
+Monitor picture controls apply as shader uniforms in every mode. CRT modes combine signal-space brightness/contrast with highlight-driven Gaussian glow; saturation and tint adjust YIQ chroma. The midpoint preserves the previous calibrated look. Knob drags write to a plain `PictureControls` object the renderer reads per frame, bypassing SwiftUI so adjustments track at full frame rate.
 
 ### Keyboard and Joystick
 

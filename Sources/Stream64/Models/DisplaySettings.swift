@@ -34,9 +34,10 @@ final class DisplaySettings: ObservableObject {
     @Published var tubeInput: TubeInput { didSet { save() } }
     @Published var crtScreenColor: CRTScreenColor { didSet { save() } }
     @Published var crtDirtyGlass: Bool { didSet { save() } }
+    @Published var crtMaskType: CRTMaskType { didSet { save() } }
     @Published var showFPS: Bool { didSet { save() } }
     @Published var showStreamDiagnostics: Bool { didSet { save() } }
-    /// CRT Tube phosphor / shadow-mask geometry (1702 vs 1084S pitch).
+    /// CRT Tube phosphor / shadow-mask geometry, including the 5-inch SX-64.
     /// Physical monitor-case chrome was removed; this only feeds shaders.
     @Published var bezelStyle: BezelChoice { didSet { save() } }
     @Published var bezelReflection: Bool { didSet { save() } }
@@ -72,6 +73,7 @@ final class DisplaySettings: ObservableObject {
         /// Optional for backward compatibility with existing per-device JSON.
         var crtScreenColor: CRTScreenColor?
         var crtDirtyGlass: Bool?
+        var crtMaskType: CRTMaskType?
         var showFPS: Bool
         var showStreamDiagnostics: Bool?
         /// Ignored; kept optional so older per-device JSON still decodes.
@@ -107,6 +109,7 @@ final class DisplaySettings: ObservableObject {
             tubeInput = data.tubeInput
             crtScreenColor = data.crtScreenColor ?? .color
             crtDirtyGlass = data.crtDirtyGlass ?? false
+            crtMaskType = data.crtMaskType ?? .automatic
             showFPS = data.showFPS
             showStreamDiagnostics = data.showStreamDiagnostics ?? false
             bezelStyle = data.bezelStyle
@@ -133,6 +136,7 @@ final class DisplaySettings: ObservableObject {
             crtDirtyGlass = defaults.object(
                 forKey: "crtDirtyGlass") as? Bool ?? false
             showFPS = defaults.bool(forKey: "showFPS")
+            crtMaskType = .automatic
             showStreamDiagnostics = false
             bezelStyle = BezelChoice(rawValue: defaults.string(forKey: "bezelStyle") ?? "") ?? .c1702
             bezelReflection = defaults.object(forKey: "bezelReflection") as? Bool ?? true
@@ -173,6 +177,7 @@ final class DisplaySettings: ObservableObject {
             tubeInput: tubeInput,
             crtScreenColor: crtScreenColor,
             crtDirtyGlass: crtDirtyGlass,
+            crtMaskType: crtMaskType,
             showFPS: showFPS,
             showStreamDiagnostics: showStreamDiagnostics,
             showBezel: nil,

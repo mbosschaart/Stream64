@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.139b — 2026-10-08
+
+- Composite colour now bleeds further across pixel boundaries with a broader horizontal chroma filter, while luminance retains its existing sharpness. RF uses a still wider chroma footprint.
+
+- CRT brightness now lifts black level gradually while increasing phosphor glow; contrast has greater highlight-drive range (up to 3.6×), with expanded upper brightness and glow headroom. Both controls widen bloom around bright details and soften scanline gaps under overdrive. Neutral settings and Sharp/Smooth retain their previous response.
+
+- Added independent CRT mask types: Shadow mask (staggered dots), Aperture grille (continuous RGB stripes), and Slot mask (staggered rounded slots). Automatic preserves monitor presets. Settings and Picture Controls save the choice per device, shared by the viewer and Music Compo.
+
+- Added Commodore SX-64 (5-inch) to the CRT Tube phosphor pitch choices in Settings and Picture Controls. The photograph-calibrated coarse mask has staggered phosphor dots and dark gaps, using the smaller screen geometry in the viewer and Music Compo, with the selection saved per device.
+
 ## 0.138b — 2026-09-24
 
 ### Network buffering for Wi-Fi

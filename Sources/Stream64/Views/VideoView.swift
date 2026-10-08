@@ -114,7 +114,7 @@ struct VideoView: NSViewRepresentable {
             ? (display.bezelStyle == .c1702 ? 1 : 2)
             : 0
         let signalLevel = display.tubeInput.signalLevel
-        let dotPitch = display.bezelStyle.dotPitchMillimeters
+        let monitor = display.bezelStyle
         var needsRedraw = false
 
         if context.coordinator.appliedScalingMode != display.scalingMode {
@@ -147,9 +147,14 @@ struct VideoView: NSViewRepresentable {
             context.coordinator.appliedCRTDirtyGlass = display.crtDirtyGlass
             needsRedraw = true
         }
-        if context.coordinator.appliedDotPitch != dotPitch {
-            renderer.monitorDotPitchMillimeters = dotPitch
-            context.coordinator.appliedDotPitch = dotPitch
+        if context.coordinator.appliedMaskType != display.crtMaskType {
+            renderer.maskType = display.crtMaskType
+            context.coordinator.appliedMaskType = display.crtMaskType
+            needsRedraw = true
+        }
+        if context.coordinator.appliedMonitor != monitor {
+            renderer.monitor = monitor
+            context.coordinator.appliedMonitor = monitor
             needsRedraw = true
         }
         if context.coordinator.appliedBezelSurfaceMode != bezelSurfaceMode {
@@ -193,7 +198,8 @@ struct VideoView: NSViewRepresentable {
         var appliedSignalLevel: Float?
         var appliedCRTScreenColor: CRTScreenColor?
         var appliedCRTDirtyGlass: Bool?
-        var appliedDotPitch: Float?
+        var appliedMonitor: BezelChoice?
+        var appliedMaskType: CRTMaskType?
         var appliedBezelSurfaceMode: Float?
         var appliedPalette: [SIMD4<UInt8>]?
 
