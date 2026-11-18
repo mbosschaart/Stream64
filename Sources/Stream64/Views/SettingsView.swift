@@ -286,10 +286,12 @@ struct GeneralSettingsTab: View {
                         + "Drive Bay power-off / unmount. When "
                         + "auto-follow is on, open SID and Memory Map / "
                         + "Debug Trace windows switch to the newly selected "
-                        + "machine. Sound always follows selection. The warm "
-                        + "debug stream applies only to hardware that supports "
-                        + "it and avoids restarting it when opening SID or "
-                        + "Debug Trace windows. Debug lifecycle logging writes "
+                        + "machine. Sound always follows selection. The debug "
+                        + "stream normally starts when a SID or Debug Trace "
+                        + "window opens and stops when the last one closes. "
+                        + "Keeping it running makes those windows open faster "
+                        + "but adds about 32 Mbit/s of traffic, which can "
+                        + "make video stutter on Wi-Fi. Debug lifecycle logging writes "
                         + "diagnostic counters to the macOS unified log. The "
                         + "oscilloscope lowpass overlay shows real post-mix "
                         + "bass/kick energy for filter or digi-driven drums."
@@ -613,6 +615,12 @@ private struct DeviceVideoSettings: View {
                     }
                 }
                 .disabled(!isCRTTube)
+                Picker("Mask type", selection: $display.crtMaskType) {
+                    ForEach(CRTMaskType.allCases) { type in
+                        Text(type.rawValue).tag(type)
+                    }
+                }
+                .disabled(!isCRTFilter)
                 HStack {
                     Text("Scanlines")
                     Slider(value: $display.crtScanlineStrength, in: 0...1)
@@ -638,8 +646,11 @@ private struct DeviceVideoSettings: View {
             } footer: {
                 Text(
                     "Phosphor pitch matches Commodore 1702 (0.64 mm) or "
-                        + "1084S (0.42 mm) shadow-mask spacing. Glass "
-                        + "reflection and pitch apply in CRT Tube mode."
+                        + "1084S (0.42 mm) shadow-mask spacing, or an approximate "
+                        + "coarse SX-64 mask scaled to its 5-inch screen. Glass "
+                        + "reflection and pitch apply in CRT Tube mode. Mask type "
+                        + "chooses staggered dots, vertical stripes, or staggered "
+                        + "slots in either CRT filter. Automatic keeps the monitor preset."
                 )
                 .foregroundStyle(.secondary)
             }
@@ -783,6 +794,21 @@ private struct AirPlaySettingsControl: View {
 
 struct NetworkSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var sessionManager: SessionManager
+    @EnvironmentObject var deviceStore: DeviceStore
+
+    /// How this Mac currently reaches each configured device, so the
+    /// automatic Wi-Fi rule is not a guess.
+    private var wifiRouteDescription: String? {
+        let lines = deviceStore.devices.compactMap { device -> String? in
+            guard let interface = LocalNetwork.primaryInterface(
+                reachingDevice: device.host) else { return nil }
+            let medium = LocalNetwork.isWiFiInterface(named: interface.name)
+                ? "Wi-Fi" : "a wired or other link"
+            return "\(device.name) is reached over \(medium) (\(interface.name))."
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
 
     var body: some View {
         Form {
@@ -806,6 +832,39 @@ struct NetworkSettingsTab: View {
             } footer: {
                 Text("The Ultimate can automatically stop streaming after a fixed duration — useful as a safety net if the viewer loses connectivity.")
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Network buffering", selection: $settings.networkBufferingMode) {
+                    Text("Automatic (on for Wi-Fi, off for Ethernet)")
+                        .tag(NetworkBufferingMode.automatic)
+                    Text("On").tag(NetworkBufferingMode.on)
+                    Text("Off").tag(NetworkBufferingMode.off)
+                }
+                HStack {
+                    Text("Buffer")
+                    Slider(value: $settings.networkBufferSeconds, in: 0.25...3, step: 0.25)
+                    Text(String(format: "%.2f s", settings.networkBufferSeconds))
+                        .monospacedDigit()
+                        .frame(width: 56, alignment: .trailing)
+                }
+                .disabled(settings.networkBufferingMode == .off)
+                if let route = wifiRouteDescription {
+                    Text(route)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Network buffering")
+            } footer: {
+                Text("Plays picture and sound a fixed time behind the Ultimate, so Wi-Fi bursts and short dropouts play smoothly. Frames missing a few packets are patched from the previous frame instead of skipped. Typing and joystick feel delayed by the same amount, so Automatic leaves wired connections unbuffered. The Wi-Fi / Ethernet icon in the viewer toolbar switches it for the current link. Applies immediately.\n\nWired Ethernet is recommended for this Mac: buffering makes Wi-Fi usable, but busy or distant Wi-Fi can still stutter. The Ultimate itself must always be wired; it does not stream over its Wi-Fi.")
+                    .foregroundStyle(.secondary)
+            }
+            .onChange(of: settings.networkBufferingMode) {
+                sessionManager.applyNetworkBuffering()
+            }
+            .onChange(of: settings.networkBufferSeconds) {
+                sessionManager.applyNetworkBuffering()
             }
 
             Section {

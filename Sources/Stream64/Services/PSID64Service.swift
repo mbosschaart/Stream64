@@ -6,10 +6,21 @@ import Foundation
 /// publisher only after an explicit first-use confirmation.
 @MainActor
 final class PSID64Service {
+    /// The v1.3 macOS DMG contains an ARM64 (Apple Silicon) binary only.
+    /// No Intel build exists for v1.3; Intel users must supply their own binary.
     static let releaseURL = URL(
         string: "https://github.com/hermansr/psid64/releases/download/v1.3/psid64-1.3.dmg")!
     static let projectURL = URL(string: "https://psid64.sourceforge.io/")!
     static let sourceURL = URL(string: "https://github.com/hermansr/psid64")!
+
+    /// True when running natively on Apple Silicon; false on Intel (including
+    /// when the arm64 app binary is translated by Rosetta).
+    static var isAppleSilicon: Bool {
+        var cpu: cpu_type_t = 0
+        var size = MemoryLayout<cpu_type_t>.size
+        sysctlbyname("hw.cputype", &cpu, &size, nil, 0)
+        return cpu == CPU_TYPE_ARM64
+    }
 
     enum ServiceError: LocalizedError {
         case installationDeclined
@@ -22,7 +33,7 @@ final class PSID64Service {
             case .installationDeclined:
                 return "PSID playback requires PSID64 conversion. Installation was cancelled."
             case .invalidExecutable:
-                return "PSID64 could not run on this Mac. Its v1.3 macOS release may require Rosetta."
+                return "PSID64 could not run on this Mac. The chosen binary may be incompatible with this machine's architecture."
             case .conversionFailed(let message):
                 return "PSID64 conversion failed: \(message)"
             case .invalidPRG:
@@ -104,19 +115,36 @@ final class PSID64Service {
 
     private func presentInstallPrompt() -> InstallChoice {
         let alert = NSAlert()
-        alert.messageText = "Install PSID64 for PSID Playback?"
-        alert.informativeText = """
-        PSID64 converts PSID files into C64 PRGs with a relocated driver, improving real-C64 compatibility. It cannot fix missing or mismatched SID hardware and has memory/timing limitations.
+        if Self.isAppleSilicon {
+            alert.messageText = "Install PSID64 for PSID Playback?"
+            alert.informativeText = """
+            PSID64 converts PSID files into C64 PRGs with a relocated driver, improving real-C64 compatibility. It cannot fix missing or mismatched SID hardware and has memory/timing limitations.
 
-        Stream64 will download PSID64 v1.3 from its official GitHub release. PSID64 is GPL-2.0-or-later; project and source links are available in Settings after installation.
-        """
-        alert.addButton(withTitle: "Install PSID64")
-        alert.addButton(withTitle: "Choose Executable…")
-        alert.addButton(withTitle: "Cancel")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return .install
-        case .alertSecondButtonReturn: return .choose
-        default: return .cancel
+            Stream64 will download PSID64 v1.3 from its official GitHub release. PSID64 is GPL-2.0-or-later; project and source links are available in Settings after installation.
+            """
+            alert.addButton(withTitle: "Install PSID64")
+            alert.addButton(withTitle: "Choose Executable…")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: return .install
+            case .alertSecondButtonReturn: return .choose
+            default: return .cancel
+            }
+        } else {
+            // The v1.3 macOS release is ARM64-only; no Intel build exists.
+            // Auto-download is unavailable; offer manual selection instead.
+            alert.messageText = "PSID64 Not Available for Intel Macs"
+            alert.informativeText = """
+            The PSID64 v1.3 macOS release is built for Apple Silicon only and cannot run on an Intel Mac.
+
+            If you have a compatible Intel build of PSID64, choose its executable below. PSID64 is GPL-2.0-or-later; a source archive is available at its GitHub page.
+            """
+            alert.addButton(withTitle: "Choose Executable…")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: return .choose
+            default: return .cancel
+            }
         }
     }
 

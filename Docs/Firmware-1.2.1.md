@@ -1,5 +1,7 @@
 # C64 Ultimate firmware 1.2.1 integration
 
+Included in Stream64 0.140b (build 140).
+
 The official [1.2.1 changelog](https://downloads.commodore-international.com/documentation/changelog-1.2.1.txt) and the OpenAPI document served by the test machine informed these additions. Upstream firmware source can describe features absent from a released build; the device's actual API and menu labels take precedence.
 
 ## Features
@@ -16,7 +18,7 @@ The official [1.2.1 changelog](https://downloads.commodore-international.com/doc
 
 ## Validation
 
-Automated coverage is in `Firmware121Tests.swift`, `MouseInputTests.swift`, and opt-in `Firmware121LiveTests.swift`, alongside the existing suite. Final validation on 2026-11-18: 297 regression tests, 12 skipped, zero failures; all three opt-in hardware tests passed separately, including the mouse queue-drain assertions. Both arm64 and x86_64 builds succeeded.
+Automated coverage is in `Firmware121Tests.swift`, `MouseInputTests.swift`, and opt-in `Firmware121LiveTests.swift`, alongside the existing suite. Final validation on 2026-11-18: 316 regression tests after integrating upstream 0.139b, 13 skipped, zero failures; all three opt-in hardware tests passed separately, including the mouse queue-drain assertions. Both arm64 and x86_64 builds succeeded.
 
 ```sh
 swift test --build-system native
@@ -35,7 +37,7 @@ Validated on C64 Ultimate 1.2.1, core 1.50, firmware hash `31687dbd`:
 - Native app mouse enable/Escape, device tabs and settings, Drive Bay/DNP controls, and profile editor save/readback.
 - Apple Silicon and Intel compilation; automated magic-packet format and actual UDP loopback delivery.
 
-The test machine uses Ethernet only. Actual standby-to-awake behavior is therefore **not hardware-verified**. Physical gamepad models and mouse behavior inside individual C64 applications also require application/hardware-specific acceptance; automated input and mapping tests do not establish compatibility with every title or controller.
+The test machine uses Ethernet only. Actual standby-to-awake behavior is therefore **not hardware-verified**. Manual GEOS testing confirmed pointer movement after selecting COMM 1351. Physical gamepad models and other C64 applications still require application/hardware-specific acceptance; automated input and mapping tests do not establish compatibility with every title or controller.
 
 ## GEOS: clicks work but the pointer does not move
 

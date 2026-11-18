@@ -72,6 +72,8 @@ final class DebugStreamReceiver {
     /// Packet-sequence gaps observed since `start(port:)` — a rough
     /// "dropped packets" indicator surfaced in the trace window.
     private var missedPacketCount = 0
+    /// Lifetime byte count for the health popover's bandwidth line.
+    private var byteCount = 0
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "debug-stream-receiver")
@@ -93,6 +95,10 @@ final class DebugStreamReceiver {
 
     var packetsReceived: Int {
         onReceiverQueue ? packetCount : queue.sync { packetCount }
+    }
+
+    var bytesReceived: Int {
+        onReceiverQueue ? byteCount : queue.sync { byteCount }
     }
 
     var missedPackets: Int {
@@ -192,6 +198,7 @@ final class DebugStreamReceiver {
     /// Internal packet entry point, kept separate for deterministic sequence
     /// accounting tests. Production calls it only from the receiver queue.
     func ingest(_ data: Data) {
+        byteCount += data.count
         guard data.count >= 4 else { return }
         packetCount += 1
 

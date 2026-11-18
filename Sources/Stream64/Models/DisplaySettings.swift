@@ -19,6 +19,13 @@ final class DisplaySettings: ObservableObject {
         return created
     }
 
+    /// Remove the cached instance for a device that has been permanently
+    /// deleted. Call only from DeviceStore.remove — not from session teardown,
+    /// which also runs during device edits where the UUID is reused.
+    static func evict(for deviceID: UUID) {
+        instances.removeValue(forKey: deviceID)
+    }
+
     @Published var scalingMode: ScalingMode { didSet { save() } }
     @Published var filterMode: FilterMode { didSet { save() } }
     @Published var palette: PaletteChoice { didSet { save() } }
@@ -27,9 +34,10 @@ final class DisplaySettings: ObservableObject {
     @Published var tubeInput: TubeInput { didSet { save() } }
     @Published var crtScreenColor: CRTScreenColor { didSet { save() } }
     @Published var crtDirtyGlass: Bool { didSet { save() } }
+    @Published var crtMaskType: CRTMaskType { didSet { save() } }
     @Published var showFPS: Bool { didSet { save() } }
     @Published var showStreamDiagnostics: Bool { didSet { save() } }
-    /// CRT Tube phosphor / shadow-mask geometry (1702 vs 1084S pitch).
+    /// CRT Tube phosphor / shadow-mask geometry, including the 5-inch SX-64.
     /// Physical monitor-case chrome was removed; this only feeds shaders.
     @Published var bezelStyle: BezelChoice { didSet { save() } }
     @Published var bezelReflection: Bool { didSet { save() } }
@@ -65,6 +73,7 @@ final class DisplaySettings: ObservableObject {
         /// Optional for backward compatibility with existing per-device JSON.
         var crtScreenColor: CRTScreenColor?
         var crtDirtyGlass: Bool?
+        var crtMaskType: CRTMaskType?
         var showFPS: Bool
         var showStreamDiagnostics: Bool?
         /// Ignored; kept optional so older per-device JSON still decodes.
@@ -83,6 +92,9 @@ final class DisplaySettings: ObservableObject {
 
     private var storageKey: String { "displaySettings.\(deviceID.uuidString)" }
     private var loaded = false
+    /// True while a flush Task is already queued. Prevents multiple
+    /// back-to-back didSet calls from each triggering a separate encode+write.
+    private var saveScheduled = false
 
     init(deviceID: UUID) {
         self.deviceID = deviceID
@@ -97,6 +109,7 @@ final class DisplaySettings: ObservableObject {
             tubeInput = data.tubeInput
             crtScreenColor = data.crtScreenColor ?? .color
             crtDirtyGlass = data.crtDirtyGlass ?? false
+            crtMaskType = data.crtMaskType ?? .automatic
             showFPS = data.showFPS
             showStreamDiagnostics = data.showStreamDiagnostics ?? false
             bezelStyle = data.bezelStyle
@@ -123,6 +136,7 @@ final class DisplaySettings: ObservableObject {
             crtDirtyGlass = defaults.object(
                 forKey: "crtDirtyGlass") as? Bool ?? false
             showFPS = defaults.bool(forKey: "showFPS")
+            crtMaskType = .automatic
             showStreamDiagnostics = false
             bezelStyle = BezelChoice(rawValue: defaults.string(forKey: "bezelStyle") ?? "") ?? .c1702
             bezelReflection = defaults.object(forKey: "bezelReflection") as? Bool ?? true
@@ -148,13 +162,22 @@ final class DisplaySettings: ObservableObject {
     }
 
     private func save() {
-        guard loaded else { return }
+        guard loaded, !saveScheduled else { return }
+        saveScheduled = true
+        Task { @MainActor [weak self] in
+            self?.flush()
+            self?.saveScheduled = false
+        }
+    }
+
+    private func flush() {
         let data = Snapshot(
             scalingMode: scalingMode, filterMode: filterMode,
             palette: palette, selectedCustomPaletteID: selectedCustomPaletteID,
             tubeInput: tubeInput,
             crtScreenColor: crtScreenColor,
             crtDirtyGlass: crtDirtyGlass,
+            crtMaskType: crtMaskType,
             showFPS: showFPS,
             showStreamDiagnostics: showStreamDiagnostics,
             showBezel: nil,

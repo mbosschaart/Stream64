@@ -7,7 +7,7 @@ Designed by Martijn Bosschaart, 2026.
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-green)
-![Version](https://img.shields.io/badge/version-0.136b-purple)
+![Version](https://img.shields.io/badge/version-0.140b-purple)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-red)
 
 ![Stream64 focus view with CRT Tube rendering](Screenshots/Focus%20view.png)
@@ -15,8 +15,9 @@ Designed by Martijn Bosschaart, 2026.
 ## Features
 
 - **Live video/audio streaming** — the Ultimate's VIC video stream (384×272 @ ~50 fps PAL or 384×240 @ ~60 fps NTSC) and SID audio (~47983 Hz stereo) over UDP, rendered via Metal with low video latency, automatic reconnect/stream re-arm, stop-settle-start firmware recovery, and packet-baseline liveness checks
+- **Network buffering for Wi-Fi** — when this Mac reaches the Ultimate over Wi-Fi, picture and sound play a short, adjustable time behind the device on a steady clock, smoothing out Wi-Fi bursts and short pauses; a toolbar Wi-Fi / Ethernet icon shows the link and overrides the default. Wired Ethernet remains recommended for the Mac (see Requirements)
 - **Automatic device discovery** — bounded, cancellable Ethernet/Wi-Fi subnet scanning finds Ultimate REST endpoints, shows product/firmware details, and prefills setup with collision-free local stream ports; manual addressing remains available
-- **CRT simulation** — luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays (NTSC skips the blend)
+- **CRT simulation** — selectable Shadow mask, Aperture grille and Slot mask patterns, luminance-aware scanlines, monitor-specific shadow-mask pitch (1084S 0.42 mm, 1702 0.64 mm, plus an approximate coarse 5-inch SX-64 mask), bloom, curved glass, vignette, reflection, selectable Color/Amber/Green/Black & White phosphors, long analog Amber afterglow sourced from the C64's indexed 16-color history, and per-device CRT optics knobs (scanlines / bloom / phosphor mask / barrel) with ~4× headroom above the historical center look; live mode motion-blends PAL frames for smoother scrolltext on 60 Hz displays (NTSC skips the blend)
 - **Signal-path simulation** — S-Video (clean), Composite (strong asymmetric chroma bleed, dot crawl, ghosting), or RF (snow, line jitter, interference bar, stronger ghosting — plus matching TV-speaker audio: mono, two-pole bass/treble roll-off, distortion, static, mains hum)
 - **Dirty Glass mode** — optional years-of-neglect layer for CRT modes with photographic corner lint, procedural film/dust/dark flecks, separated smudges, droplet-sized mineral residue, subtle refraction, warm haze and contrast loss
 - **Multi-device** — view all machines simultaneously in a grid, each with its own rendering settings; one-click audio switching; ←/→ channel-surfing and five-second pointer auto-hide in fullscreen
@@ -32,7 +33,7 @@ Designed by Martijn Bosschaart, 2026.
 - **Stream Health diagnostics** — an optional overlay shows video/audio receive rates and rejects, audio buffering/underruns, renderer queue/GPU pressure, and recording queue/drop state without disturbing the live viewer
 - **Palette Library** — create, name, edit, and delete shared custom 16-colour C64 palettes; select one per device alongside Pepto, Colodore, and VICE
 - **Keyboard and joystick input** — capability-probed matrix press/release with symbolic/positional keymaps, safe KERNAL-buffer fallback, Arrow/configurable-fire-key virtual joystick, native macOS game-controller support, port switching, and release-all focus safety
-- **Remote mouse input** — opt-in Mouse Input beside keyboard/joystick controls, enabled only for detected C64 Ultimate firmware 1.2.1+ with a mouse-capable REST endpoint. Click the viewer to send relative movement, left/right/middle buttons, dragging and scrolling to the C64's port-1 mouse. Escape turns it off; Option-right-click opens Stream64's menu. Available in source; not yet packaged in a release.
+- **Remote mouse input** — opt-in Mouse Input beside keyboard/joystick controls, enabled only for detected C64 Ultimate firmware 1.2.1+ with a mouse-capable REST endpoint. Click the viewer to send relative movement, left/right/middle buttons, dragging and scrolling to the C64's port-1 mouse. Escape turns it off; Option-right-click opens Stream64's menu.
 - **Firmware 1.2.1 tools** — Device Controls exposes hardware audio levels, mouse options, Software IEC diagnostics, and Wi-Fi wake configuration. Drive Bay adds Software IEC status/reset, upload write modes, and DNP creation. Offline Wake uses the remembered Wi-Fi MAC and requires associated Wi-Fi.
 - **Titles and extra buttons** — validated P00 loading, embedded filenames, configurable fire2/fire3 keys and gamepad buttons, and companion CFG editing/capture/application. Commander can copy or move title settings with a title and guards mounted images against mutation.
 - **Firmware Menu shortcuts** — tape start/pause/resume/stop, cartridge save, and debug log export use the device's menu. Select a TAP before Start Tape; select a writable folder before saving. Enter the destination filename in the firmware dialog; files can then be retrieved in Commander. See [firmware integration and validation](Docs/Firmware-1.2.1.md).
@@ -46,6 +47,35 @@ Designed by Martijn Bosschaart, 2026.
 - **Single-instance safety** — repeated launches activate the existing app instead of creating competing UDP listeners; closing any viewer fully closes Assembly64/Help/Settings and terminates the process
 - **Branded macOS experience** — native Stream64 app icon, centered standalone launch splash with version display, and a custom About window linking Retro8BITShop
 - **In-app documentation** — Help → Stream64 Help (⌘?)
+
+## CRT masks and picture controls
+
+Choose a mask in **Settings → Display → Mask type** or **Picture Controls → CRT
+Optics → Mask type**. It applies to both CRT filters, saves per device, and is
+shared with Music Compo. **Automatic** preserves the selected monitor preset.
+
+| Mask type | Pattern |
+|---|---|
+| Shadow mask | Staggered round phosphor dots |
+| Aperture grille | Continuous vertical RGB stripes |
+| Slot mask | Rounded vertical slots with staggered breaks |
+
+Mask type and phosphor pitch are independent. In **CRT Tube** mode, the pitch
+choices are Commodore 1702 (0.64 mm), Commodore 1084S (0.42 mm), and Commodore
+SX-64 (5-inch). The SX-64 preset approximates the coarse pattern in reference
+photographs: about 127 RGB triads across a nominal 101.6 mm screen width. Its
+0.8 mm pitch is a simulation estimate, not a verified original tube specification.
+
+Brightness and Contrast remain neutral at their midpoint. In CRT modes, turning
+Brightness higher lifts the raster gradually and increases phosphor glow;
+Contrast drives highlights harder, up to 3.6× signal gain. Both widen the glow
+around bright details and fill bright scanline gaps. **Bloom** controls this light
+spreading; setting it to zero disables the added glow. Sharp and Smooth retain
+their existing picture-control response.
+
+**Composite** now spreads colour further horizontally across pixel boundaries
+while retaining the separate luminance detail. S-Video keeps its clean colour
+transitions; RF adds a wider chroma footprint plus its existing noise and jitter.
 
 ## Screenshots
 
@@ -72,6 +102,8 @@ Browse any configured Ultimate or mounted Mac volume in either pane, then queue 
 - macOS 14 (Sonoma) or newer, Apple Silicon or Intel with a Metal-capable GPU
 - Ultimate 64/Elite firmware **3.11+**, or C64 Ultimate firmware **1.1+**, on the same network
 - UDP path from device to Mac (no firewall blocking the stream ports)
+- **The Ultimate must be connected by Ethernet cable.** It sends its video and audio streams only over its wired port; its Wi-Fi can answer control requests but does not carry the streams
+- **Wired Ethernet is recommended for the Mac as well**, for the smoothest picture and lowest input delay. Wi-Fi works with network buffering, which is on by default for Wi-Fi, but a busy or distant Wi-Fi network can still cause occasional stutters
 
 ## Upcoming Ultimate Firmware 3.15
 
@@ -395,16 +427,22 @@ swift run
 
 Or open the folder in Xcode and run the `Stream64` scheme.
 
-### Ad-hoc signed app and DMG
+The package copies the runtime Metal source and checked-in palette library as
+resources, so `swift run` does not require the optional Metal compiler toolchain.
+After editing `SIDVisualizationPalette.metal`, rebuild its companion library with
+`bash Scripts/build-visualisation-palette.sh` (requires the Metal toolchain).
+Release packaging continues to use `--build-system native`.
+
+### Signed and notarized app packages
 
 Build distributable `.app`, ZIP and drag-to-Applications DMG packages:
 
 ```sh
 # Apple Silicon (default)
-VERSION=0.136b BUILD_NUMBER=136 ARCH=arm64 ./Scripts/build-release.sh
+VERSION=0.140b BUILD_NUMBER=140 ARCH=arm64 ./Scripts/build-release.sh
 
 # Intel
-VERSION=0.136b BUILD_NUMBER=136 ARCH=x86_64 ./Scripts/build-release.sh
+VERSION=0.140b BUILD_NUMBER=140 ARCH=x86_64 ./Scripts/build-release.sh
 ```
 
 Artifacts are written to `dist/<architecture>/`:
@@ -586,7 +624,7 @@ The CRT Tube face has an invariant dark charcoal glass base independent of C64 s
 
 Output is **dithered** (±0.5 LSB hash noise) to prevent 8-bit banding rings in the vignette and reflection gradients — visible when brightness is raised or contrast lowered.
 
-Monitor picture controls (brightness/contrast in signal space; saturation/tint as YIQ chroma rotation — exactly what the real pots did) apply as shader uniforms in every mode. Knob drags write to a plain `PictureControls` object the renderer reads per frame, bypassing SwiftUI so adjustments track at full frame rate.
+Monitor picture controls apply as shader uniforms in every mode. CRT modes combine signal-space brightness/contrast with highlight-driven Gaussian glow; saturation and tint adjust YIQ chroma. The midpoint preserves the previous calibrated look. Knob drags write to a plain `PictureControls` object the renderer reads per frame, bypassing SwiftUI so adjustments track at full frame rate.
 
 ### Keyboard and Joystick
 

@@ -98,6 +98,12 @@ final class SessionManager: ObservableObject {
         }
     }
 
+    func applyNetworkBuffering() {
+        for session in sessions.values {
+            session.applyNetworkBuffering()
+        }
+    }
+
     func applyDebugStreamWarmPreference() {
         for session in sessions.values {
             session.updateDebugStreamWarmPreference()

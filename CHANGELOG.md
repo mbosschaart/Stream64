@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.140b — 2026-11-18
 
 - Added Device Controls for the hardware mixer, mouse configuration, Software IEC diagnostics, and Wi-Fi wake settings. Changes verify by readback; saving to flash is explicit. Offline Wake uses the remembered Wi-Fi MAC.
 - Drive Bay now shows Software IEC state, partitions and errors, supports drive reset and upload write modes, and creates DNP images with selectable track counts.
@@ -11,6 +11,82 @@
 
 - Added opt-in remote mouse input alongside keyboard and joystick in the viewer toolbar, Input menu and Input settings. Requires detected C64 Ultimate firmware 1.2.1 or newer plus a mouse-capable input endpoint. Supports relative movement, three buttons, dragging and scrolling on port 1. Escape turns mouse input off; Option-right-click opens Stream64's menu.
 - Mouse traffic is coalesced and bounded. Focus loss, pointer exit, disconnect and disabling mouse input release held input and detach the REST mouse. Older firmware retains keyboard and joystick behavior.
+
+## 0.139b — 2026-10-08
+
+- Composite colour now bleeds further across pixel boundaries with a broader horizontal chroma filter, while luminance retains its existing sharpness. RF uses a still wider chroma footprint.
+
+- CRT brightness now lifts black level gradually while increasing phosphor glow; contrast has greater highlight-drive range (up to 3.6×), with expanded upper brightness and glow headroom. Both controls widen bloom around bright details and soften scanline gaps under overdrive. Neutral settings and Sharp/Smooth retain their previous response.
+
+- Added independent CRT mask types: Shadow mask (staggered dots), Aperture grille (continuous RGB stripes), and Slot mask (staggered rounded slots). Automatic preserves monitor presets. Settings and Picture Controls save the choice per device, shared by the viewer and Music Compo.
+
+- Added Commodore SX-64 (5-inch) to the CRT Tube phosphor pitch choices in Settings and Picture Controls. The photograph-calibrated coarse mask has staggered phosphor dots and dark gaps, using the smaller screen geometry in the viewer and Music Compo, with the selection saved per device.
+
+## 0.138b — 2026-09-24
+
+### Network buffering for Wi-Fi
+
+Wi-Fi delivers the Ultimate's picture and sound in small bursts with short pauses in between, which shows up as uneven scrolling, skipped frames and brief audio dropouts. Network buffering plays picture and sound a moment behind the Ultimate on a steady clock, so those bursts and pauses no longer reach the screen. When a few pieces of a frame go missing, Stream64 fills them in from the previous frame instead of skipping it.
+
+Buffering switches itself on when your Mac reaches the Ultimate over Wi-Fi and stays off over Ethernet, where you get the lowest delay. Keyboard and joystick input are delayed by the buffer length, so keep it short. You can change the length in Settings → Network → Network buffering (0.25 to 3 seconds, default 0.5 seconds). If the stream health details say the buffer ran dry, raise it a step.
+
+Buffering makes Wi-Fi usable, but it doesn't replace a cable. On a busy or distant Wi-Fi network you may still see an occasional stutter, and an Ethernet cable for your Mac gives the smoothest picture. The Ultimate itself must always be connected by cable: it sends video and audio only over its wired port.
+
+### Wi-Fi / Ethernet icon in the toolbar
+
+The viewer toolbar now shows how your Mac reaches the Ultimate, with a Wi-Fi or Ethernet icon next to AirPlay. The icon is highlighted while network buffering is on. Click it to override the automatic choice, for example to turn buffering on when the Ultimate sits on an unreliable wired network. Click again to go back to automatic. If you plug in or unplug a cable while connected, Stream64 follows within a few seconds.
+
+### Bandwidth and packet loss in stream health
+
+The Stream Health badge on the picture now shows the incoming bandwidth, and the packet loss whenever packets go missing. Click the badge for details: bandwidth for video, audio and the debug stream separately, packet loss, the longest pause between packets, and how full the buffer is.
+
+To record what happens over time, turn on "Log stream health to file" in the same panel. Stream64 writes one line per second while connected to `~/Library/Logs/Stream64`, which is handy to attach when you report a streaming problem.
+
+### Debug stream only when you need it
+
+The U64 debug stream feeds the SID visualisations and Debug Trace, and uses about 32 Mbit/s, more than video and audio together. It now starts when one of those windows opens and stops when the last one closes, which leaves your network far more room for the picture. If you'd rather have those windows open instantly, turn on "Keep U64 debug stream running while connected" in Settings → General.
+
+### Fewer audio dropouts
+
+The audio jitter buffer (Settings → Audio) now defaults to 100 ms instead of 60 ms, enough to ride out the short pauses Wi-Fi takes about once a minute. If you set the jitter buffer yourself, your setting is kept.
+
+### Readable release notes
+
+The update window now shows release notes with proper headings, lists and emphasis, and has more room to read them.
+
+### Fixes
+
+- Checkmarks in the viewer's right-click menu, such as Show Frame Rate and Show Stream Health, now update when you change them. The same applies to the Stream menu in the menu bar.
+
+## 0.137b — 2026-09-23
+
+- Fixed plain `swift run` with Xcode 27 by copying the runtime Metal source and precompiled palette library instead of asking SwiftPM to compile the shader. Explicitly excluded the editor workspace file from the app target.
+
+- Fixed a priority-inversion hazard in the audio render path: the NSLock snapshot for buffer configuration was acquired while the real-time os_unfair_lock was already held, which could block the CoreAudio thread waiting on a lower-priority thread. The snapshot now runs before the ring-buffer lock.
+
+- Fixed `startStreaming` silently discarding a concurrent caller's video or audio parameters when an in-flight streaming op was already running. The gate now tracks which streams the in-flight op covers and starts a follow-up op when the caller requested a stream that was not included.
+
+- Fixed repeated fullscreen toggles on launch when restoring a fullscreen window. The restore retries fired at 0 ms, 50 ms and 150 ms — all before the 500–900 ms macOS animation completed — triggering multiple `toggleFullScreen` calls that cancelled each other. Retries now bail out once the fullscreen styleMask bit is set.
+
+- Fixed a memory leak where `DisplaySettings` instances and their Combine subscriptions were never freed after a device was removed. The static instance cache is now pruned when a device is permanently deleted.
+
+- Fixed `input.prepare()` task handles not being stored, causing tasks to accumulate across reconnects with no way to cancel them. The task is now tracked and cancelled during session teardown.
+
+- Fixed the JSON error-envelope check in `perform()` running on every response regardless of content type, including binary payloads (screen captures, debug-register reads, file uploads). The check is now skipped for responses with a non-JSON MIME type.
+
+- Fixed `fetchConfigItems` claiming the first option in a bare string-array config value is the current selection. The current value is now left empty when the response provides only a list of options without an explicit selection.
+
+- Fixed non-deterministic ordering of configured SID slots in `ensureSIDRouting` results. `Array(Set(...))` is replaced with an order-preserving deduplicate so the slot list is stable across runs.
+
+- Fixed `probeDebugCapability` creating its own `UltimateAPIClient` backed by a live `URLSession` instead of using the injected transport, making it untestable in isolation.
+
+- Reduced UserDefaults I/O in `WorkspaceSnapshotStore`: the decoded snapshot is now kept in memory and returned on subsequent calls, so window move and resize events no longer decode UserDefaults on every frame.
+
+- Reduced UserDefaults I/O in `DisplaySettings`: multiple rapid property changes (e.g. dragging a slider) are coalesced into a single encode and write per main-actor turn instead of one per property change.
+
+- Reduced allocations in the video receive path: the frame-observer array is only copied when observers are registered.
+
+- On Intel Macs, the PSID64 install prompt no longer attempts to auto-download the v1.3 macOS release (which is ARM64-only and cannot run on Intel). Intel users are directed to choose their own compatible executable instead.
 
 ## 0.136b — 2026-09-21
 

@@ -53,6 +53,20 @@ final class VideoAudioTests: XCTestCase {
         XCTAssertEqual(BezelChoice.c1702.dotPitchMillimeters, 0.64)
     }
 
+    func testSX64MaskUsesSmallScreenGeometry() {
+        // Enlarging the 5-inch tube must preserve its coarse mask, with
+        // about 127 triads across the photographed tube face.
+        XCTAssertEqual(BezelChoice.sx64.phosphorTriadsAcrossScreen, 127,
+                       accuracy: 0.01)
+        XCTAssertEqual(BezelChoice.c1702.phosphorTriadsAcrossScreen, 412.8125,
+                       accuracy: 0.01)
+        XCTAssertEqual(BezelChoice.c1084.phosphorTriadsAcrossScreen, 264.2 / 0.42,
+                       accuracy: 0.01)
+        XCTAssertGreaterThan(
+            1920 / BezelChoice.sx64.phosphorTriadsAcrossScreen,
+            2.5 * 1920 / BezelChoice.c1702.phosphorTriadsAcrossScreen)
+    }
+
 
     func testStreamPickupRejectsMalformedUDPNoise() {
         XCTAssertFalse(VideoReceiver.isStructurallyValidPacket(
@@ -1053,6 +1067,7 @@ final class VideoAudioTests: XCTestCase {
         let display = DisplaySettings(deviceID: id)
         XCTAssertEqual(display.crtScreenColor, .color)
         XCTAssertFalse(display.crtDirtyGlass)
+        XCTAssertEqual(display.crtMaskType, .automatic)
         XCTAssertEqual(display.filterMode, .crtTube)
         XCTAssertEqual(display.palette, .colodore)
         XCTAssertEqual(display.crtScanlineStrength, 0.5, accuracy: 0.0001)
@@ -1064,7 +1079,7 @@ final class VideoAudioTests: XCTestCase {
 
 
     @MainActor
-    func testCRTOpticsPersistPerDevice() throws {
+    func testCRTOpticsPersistPerDevice() async throws {
         let id = UUID()
         let key = "displaySettings.\(id.uuidString)"
         defer { UserDefaults.standard.removeObject(forKey: key) }
@@ -1075,12 +1090,18 @@ final class VideoAudioTests: XCTestCase {
         display.crtBloomAmount = 0.8
         display.crtMaskIntensity = 0.1
         display.crtBarrelDistortion = 0.9
+        display.bezelStyle = .sx64
+        display.crtMaskType = .slotMask
+        // Saves are coalesced into one write on a later main-actor turn.
+        for _ in 0..<5 { await Task.yield() }
 
         let reloaded = DisplaySettings(deviceID: id)
         XCTAssertEqual(reloaded.crtScanlineStrength, 0.2, accuracy: 0.0001)
         XCTAssertEqual(reloaded.crtBloomAmount, 0.8, accuracy: 0.0001)
         XCTAssertEqual(reloaded.crtMaskIntensity, 0.1, accuracy: 0.0001)
         XCTAssertEqual(reloaded.crtBarrelDistortion, 0.9, accuracy: 0.0001)
+        XCTAssertEqual(reloaded.bezelStyle, .sx64)
+        XCTAssertEqual(reloaded.crtMaskType, .slotMask)
         XCTAssertEqual(reloaded.optics.bloomAmount, 0.8, accuracy: 0.0001)
     }
 
