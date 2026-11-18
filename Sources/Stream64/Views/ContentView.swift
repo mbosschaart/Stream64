@@ -126,6 +126,8 @@ struct ContentView: View {
             // Escape always leaves fullscreen (standard viewer behavior).
             // Consumed here so keyboard capture cannot treat it as RUN/STOP.
             if event.keyCode == 53, modifiers.isEmpty {
+                if let view = NSApp.keyWindow?.firstResponder as? KeyCapturingMTKView,
+                   view.releaseMouseCaptureIfNeeded() { return nil }
                 let window = mainViewerWindow ?? NSApp.keyWindow
                 if let window, window.styleMask.contains(.fullScreen) {
                     window.toggleFullScreen(nil)
@@ -990,7 +992,7 @@ struct ViewerPane: View {
     }
 
     static let droppableExtensions: Set<String> = [
-        "prg", "d64", "g64", "d71", "g71", "d81", "sid",
+        "prg", "p00", "d64", "g64", "d71", "g71", "d81", "sid",
         "mod", "crt", "zip",
     ]
 
@@ -1361,6 +1363,15 @@ struct ViewerSessionToolbar: ToolbarContent {
             }
         }
 
+        ToolbarItem(id: "viewer.wake") {
+            if !session.isConnected && session.canWake {
+                Button { Task { await session.wake() } } label: {
+                    Label("Wake C64", systemImage: "sun.max")
+                }
+                .help("Wake over Wi-Fi; requires Wake On Wi-Fi enabled on the C64")
+            }
+        }
+
         ToolbarItem(id: "viewer.streaming") {
             if session.isStreaming {
                 Button {
@@ -1615,6 +1626,11 @@ struct ViewerSessionToolbar: ToolbarContent {
             .help("Browse and transfer files between this Mac and the Ultimate")
         }
 
+        ToolbarItem(id: "viewer.firmwareControls") {
+            Button { FirmwareControlsWindowController.show(session: session) } label: {
+                Label("Device Controls", systemImage: "slider.horizontal.3")
+            }.disabled(!session.isConnected)
+        }
         ToolbarItem(id: "viewer.driveBay") {
             Button {
                 DriveBayWindowController.show(session: session)
@@ -1686,6 +1702,9 @@ private struct JoystickToolbarControls: ToolbarContent {
     @ObservedObject var input: InputSettings
 
     var body: some ToolbarContent {
+        ToolbarItem(id: "viewer.mouseEnabled") {
+            MouseInputToggle(input: input)
+        }
         ToolbarItem(id: "viewer.joystickEnabled") {
             Toggle(isOn: $input.joystickEnabled) {
                 Label(

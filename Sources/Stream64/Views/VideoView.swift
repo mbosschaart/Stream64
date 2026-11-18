@@ -60,6 +60,26 @@ struct VideoView: NSViewRepresentable {
                 context.coordinator.session.input.releaseAllIfNeeded()
             }
         }
+        view.mouseCaptureAllowed = {
+            MainActor.assumeIsolated {
+                context.coordinator.session.isConnected
+                    && context.coordinator.session.input.canCaptureMouse
+            }
+        }
+        view.onMouseMotion = { x, y in
+            MainActor.assumeIsolated { context.coordinator.session.input.moveMouse(x: x, y: y) }
+        }
+        view.onMouseScroll = { horizontal, vertical in
+            MainActor.assumeIsolated {
+                context.coordinator.session.input.scrollMouse(horizontal: horizontal, vertical: vertical)
+            }
+        }
+        view.onMouseButton = { button, pressed in
+            MainActor.assumeIsolated { context.coordinator.session.input.mouseButton(button, pressed: pressed) }
+        }
+        view.onMouseEscape = {
+            MainActor.assumeIsolated { context.coordinator.session.input.settings.mouseEnabled = false }
+        }
         context.coordinator.session.videoReceiver.onFrame = {
             [weak renderer, weak session = context.coordinator.session] frame in
             let height = frame.count / VideoReceiver.width
@@ -208,6 +228,88 @@ struct VideoView: NSViewRepresentable {
 /// occluded (MTKView's display link pauses then, which made background
 /// playback jumpy) by driving draw() from a timer.
 final class KeyCapturingMTKView: MTKView {
+    var mouseCaptureAllowed: (() -> Bool)?
+    var onMouseMotion: ((Double, Double) -> Void)?
+    var onMouseScroll: ((Double, Double) -> Void)?
+    var onMouseButton: ((String, Bool) -> Void)?
+    var onMouseEscape: (() -> Void)?
+    private var mouseTrackingArea: NSTrackingArea?
+
+    private var capturesMouse: Bool {
+        window?.isKeyWindow == true && window?.firstResponder === self
+            && mouseCaptureAllowed?() == true
+    }
+
+    @discardableResult
+    func releaseMouseCaptureIfNeeded() -> Bool {
+        guard capturesMouse else { return false }
+        onMouseEscape?()
+        onFocusLost?()
+        return true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area = mouseTrackingArea { removeTrackingArea(area) }
+        let area = NSTrackingArea(rect: .zero,
+            options: [.inVisibleRect, .activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        mouseTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if capturesMouse && bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onMouseMotion?(event.deltaX, event.deltaY)
+        }
+        else if capturesMouse { onFocusLost?() }
+        else { super.mouseMoved(with: event) }
+    }
+
+    override func mouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+    override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+    override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseExited(with event: NSEvent) {
+        if capturesMouse { onFocusLost?() }
+        super.mouseExited(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if capturesMouse { onMouseButton?("left", false) }
+        else { super.mouseUp(with: event) }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        // Option-right-click retains access to Stream64's context menu.
+        if capturesMouse && !event.modifierFlags.contains(.option) { onMouseButton?("right", true) }
+        else { onFocusLost?(); super.rightMouseDown(with: event) }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        if capturesMouse { onMouseButton?("right", false) }
+        else { super.rightMouseUp(with: event) }
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        if capturesMouse && event.buttonNumber == 2 { onMouseButton?("middle", true) }
+        else { super.otherMouseDown(with: event) }
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        if capturesMouse && event.buttonNumber == 2 { onMouseButton?("middle", false) }
+        else { super.otherMouseUp(with: event) }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard capturesMouse else { super.scrollWheel(with: event); return }
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        // Trackpad pixel deltas become detents; ordinary wheels already report
+        // line-sized deltas. Momentum is ignored to avoid delayed C64 input.
+        guard event.momentumPhase.isEmpty else { return }
+        let scale = event.hasPreciseScrollingDeltas ? 0.1 : 1.0
+        onMouseScroll?(event.scrollingDeltaX * scale, event.scrollingDeltaY * scale)
+    }
     var onKeyDown: ((HostKeyInput) -> Bool)?
     var onKeyUp: ((HostKeyInput) -> Bool)?
     var onFlagsChanged: ((UInt16, NSEvent.ModifierFlags) -> Bool)?
@@ -237,6 +339,7 @@ final class KeyCapturingMTKView: MTKView {
         }
         stopBackgroundDriving()
         guard let window else { return }
+        window.acceptsMouseMovedEvents = true
         occlusionObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification,
             object: window, queue: .main) { [weak self] note in
@@ -292,6 +395,9 @@ final class KeyCapturingMTKView: MTKView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 && releaseMouseCaptureIfNeeded() {
+            return
+        }
         guard captureEnabled else {
             super.keyDown(with: event)
             return
@@ -328,7 +434,8 @@ final class KeyCapturingMTKView: MTKView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        super.mouseDown(with: event)
+        if capturesMouse { onMouseButton?("left", true) }
+        else { super.mouseDown(with: event) }
     }
 
     private static func hostInput(_ event: NSEvent) -> HostKeyInput {

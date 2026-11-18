@@ -39,6 +39,10 @@ enum C64HostKeyMapper {
                     && event.keyCode == 49) {
                 return .joystick(.fire)
             }
+            if settings.joystickPort == 2 {
+                if settings.fire2Key.keyCode == event.keyCode { return .joystick(.fire2) }
+                if settings.fire3Key.keyCode == event.keyCode { return .joystick(.fire3) }
+            }
             switch event.keyCode {
             case 123: return .joystick(.left)
             case 124: return .joystick(.right)

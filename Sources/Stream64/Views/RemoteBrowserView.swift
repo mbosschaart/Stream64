@@ -16,7 +16,7 @@ private struct FileDragPayload: Codable, Transferable {
 
 private enum PaneContextAction: Equatable {
     case open, rename, copy, move, newFolder, delete
-    case deviceAction, mountAndRun
+    case deviceAction, mountAndRun, titleSettings
 }
 
 @MainActor
@@ -181,6 +181,8 @@ struct RemoteBrowserView: View {
     @State private var operationError: String?
     @State private var conflictJobID: UUID?
     @State private var keyMonitor: Any?
+    @State private var profileItem: FilesystemItem?
+    @AppStorage("commanderIncludeTitleSettings") private var includeTitleSettings = true
 
     private var activePane: FilePaneModel {
         activePaneID == right.id ? right : left
@@ -208,6 +210,11 @@ struct RemoteBrowserView: View {
 
     var body: some View {
         browserBase
+        .sheet(item: $profileItem) { item in
+            TitleProfileEditorView(item: item, devices: deviceStore.devices,
+                target: actionTargetDevices.first.map { UltimateAPIClient(device: $0) })
+        }
+        .onChange(of: includeTitleSettings) { transferQueue.includeTitleSettings = includeTitleSettings }
         .confirmationDialog(
             pendingTransfer?.move == true ? "Move selected items?" : "Copy selected items?",
             isPresented: Binding(
@@ -322,6 +329,10 @@ struct RemoteBrowserView: View {
     @ToolbarContentBuilder
     private var browserToolbar: some ToolbarContent {
         ToolbarItemGroup {
+            Toggle("Include Title Settings", isOn: $includeTitleSettings)
+                .help("Copy or move a title's companion .cfg file too")
+            Button("Title Settings…") { profileItem = activePane.selectedItems.first }
+                .disabled(activePane.selectedItems.count != 1 || !(TitleSettingsProfile.isTitle(activePane.selectedItems[0].name) || activePane.selectedItems[0].fileExtension == "cfg"))
             Picker("Run Target", selection: $actionTarget) {
                 ForEach(deviceStore.devices) { device in
                     Text(device.name)
@@ -449,6 +460,7 @@ struct RemoteBrowserView: View {
     }
 
     private func configureAndRefresh() {
+        transferQueue.includeTitleSettings = includeTitleSettings
         let coordinator = FileOperationCoordinator { id in
             await MainActor.run {
                 deviceStore.devices.first { $0.id == id }
@@ -692,6 +704,10 @@ struct RemoteBrowserView: View {
         let behavior: DeviceSession.MountBehavior =
             mountAndRun ? .mountAndRun : .mountOnly
         Task {
+            let profile: TitleSettingsProfile?
+            do {
+                profile = TitleSettingsProfile.isTitle(item.name) ? try await TitleProfileFileStore(devices: deviceStore.devices).load(for: item) : nil
+            } catch { operationError = error.localizedDescription; return }
             // A single target can execute its own remote file directly.
             if targets.count == 1,
                case .ultimate(let sourceID) = item.endpoint,
@@ -700,7 +716,7 @@ struct RemoteBrowserView: View {
                     for: targets[0], settings: settings)
                 await session.loadRemoteFile(
                     path: item.path.rawValue,
-                    filename: item.name,
+                    filename: item.name, titleProfile: profile,
                     mountBehavior: behavior)
                 return
             }
@@ -713,7 +729,7 @@ struct RemoteBrowserView: View {
                             for: device, settings: settings)
                         group.addTask {
                             _ = await session.loadData(
-                                data, filename: item.name,
+                                data, filename: item.name, titleProfile: profile,
                                 mountBehavior: behavior)
                         }
                     }
@@ -836,6 +852,8 @@ struct RemoteBrowserView: View {
                 beginNewFolder()
             case .delete:
                 requestDelete()
+            case .titleSettings:
+                profileItem = pane.selectedItems.first
             case .deviceAction:
                 performDeviceAction()
             case .mountAndRun:
@@ -991,6 +1009,9 @@ private struct FilePaneView: View {
                     Divider()
                     Button("New Folder…") {
                         contextAction(.newFolder, selection)
+                    }
+                    if selected.count == 1, TitleSettingsProfile.isTitle(selected[0].name) || selected[0].fileExtension == "cfg" {
+                        Button("Title Settings…") { contextAction(.titleSettings, selection) }
                     }
                     if selected.count == 1,
                        selected[0].kind.supportsDeviceAction {

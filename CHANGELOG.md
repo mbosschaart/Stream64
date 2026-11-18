@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Added Device Controls for the hardware mixer, mouse configuration, Software IEC diagnostics, and Wi-Fi wake settings. Changes verify by readback; saving to flash is explicit. Offline Wake uses the remembered Wi-Fi MAC.
+- Drive Bay now shows Software IEC state, partitions and errors, supports drive reset and upload write modes, and creates DNP images with selectable track counts.
+- Added fire2/fire3 keyboard bindings and configurable gamepad face buttons, plus validated P00 loading with embedded filenames.
+- Added per-title companion CFG editing, current-settings capture, launch-time validation/application, ZIP companions, and optional companion copy/move in Commander. Failed application restores earlier settings.
+- Commander protects mounted disk images and containing folders from mutation using fresh drive snapshots, including another check before transfer promotion.
+- Firmware Menu provides tape playback, cartridge save, and debug log export shortcuts using observed menu labels; filename dialogs stay in the firmware UI.
+
+- Added opt-in remote mouse input alongside keyboard and joystick in the viewer toolbar, Input menu and Input settings. Requires detected C64 Ultimate firmware 1.2.1 or newer plus a mouse-capable input endpoint. Supports relative movement, three buttons, dragging and scrolling on port 1. Escape turns mouse input off; Option-right-click opens Stream64's menu.
+- Mouse traffic is coalesced and bounded. Focus loss, pointer exit, disconnect and disabling mouse input release held input and detach the REST mouse. Older firmware retains keyboard and joystick behavior.
+
 ## 0.136b — 2026-09-21
 
 - Restored the pre-0.133 grouped viewer toolbar on macOS Sequoia and Sonoma to address missing toolbar controls. Tahoe and Golden Gate retain the 0.133 toolbar and its corrected selection text and SID Visualizations menu title.

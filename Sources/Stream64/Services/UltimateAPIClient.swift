@@ -130,8 +130,8 @@ struct UltimateAPIClient {
         }
     }
 
-    private func fetchConfigCategory(_ category: String) async throws -> [String: Any] {
-        let request = try makeRequest(path: "/v1/configs/\(category)", method: "GET")
+    private func fetchConfigCategory(_ category: String, details: Bool = false) async throws -> [String: Any] {
+        let request = try makeRequest(path: "/v1/configs/\(category)" + (details ? "/*" : ""), method: "GET")
         let data = try await perform(request)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let inner = object[category] as? [String: Any] else {
@@ -565,9 +565,28 @@ struct UltimateAPIClient {
 
     // MARK: - Matrix keyboard / joystick input
 
+    struct MachineInputState: Decodable {
+        struct Joystick: Decodable { let port: Int; let inputs: [String] }
+        struct Keyboard: Decodable { let inputs: [String] }
+        struct Mouse: Decodable {
+            let attached: Bool
+            let inputs: [String]
+            let pending: Int
+        }
+        let mouse: Mouse?
+        var joysticks: [Joystick]? = nil
+        var keyboard: Keyboard? = nil
+    }
+
+    func fetchMachineInputState() async throws -> MachineInputState {
+        let request = try makeRequest(path: "/v1/machine:input", method: "GET")
+        return try JSONDecoder().decode(MachineInputState.self, from: await perform(request))
+    }
+
+    @discardableResult
     func sendMachineInput(
         _ events: [C64MachineInputEvent]
-    ) async throws {
+    ) async throws -> MachineInputState? {
         guard !events.isEmpty, events.count <= 64 else {
             throw APIError.httpError(
                 400, "Matrix input requires 1...64 events")
@@ -578,7 +597,11 @@ struct UltimateAPIClient {
             "application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
             C64MachineInputEnvelope(events: events))
-        _ = try await perform(request)
+        guard (request.httpBody?.count ?? 0) <= 4096 else {
+            throw APIError.httpError(400, "Input batch exceeds 4096 bytes")
+        }
+        let data = try await perform(request)
+        return try? JSONDecoder().decode(MachineInputState.self, from: data)
     }
 
     func releaseAllInput() async throws {
@@ -779,7 +802,7 @@ struct UltimateAPIClient {
 
     /// Upload a disk image and mount it. `type` (d64/g64/d71/g71/d81) is
     /// otherwise inferred by the device from the filename.
-    func mountDisk(data: Data, filename: String, drive: String = "a", type: String? = nil) async throws {
+    func mountDisk(data: Data, filename: String, drive: String = "a", type: String? = nil, mode: DiskMountMode = .readwrite) async throws {
         guard Self.isSafeMultipartFilename(filename) else {
             throw APIError.invalidURL
         }
@@ -787,6 +810,7 @@ struct UltimateAPIClient {
         if let type {
             items.append(URLQueryItem(name: "type", value: type))
         }
+        items.append(URLQueryItem(name: "mode", value: mode.rawValue))
         var request = try makeRequest(path: "/v1/drives/\(drive):mount", method: "POST", queryItems: items)
         let boundary = "Stream64-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -847,13 +871,14 @@ struct UltimateAPIClient {
     }
 
     enum BlankDiskKind: String, CaseIterable, Identifiable {
-        case d64, d71, d81
+        case d64, d71, d81, dnp
         var id: String { rawValue }
         var apiSuffix: String {
             switch self {
             case .d64: return "create_d64"
             case .d71: return "create_d71"
             case .d81: return "create_d81"
+            case .dnp: return "create_dnp"
             }
         }
         var fileExtension: String { rawValue }
@@ -868,6 +893,9 @@ struct UltimateAPIClient {
         tracks: Int? = nil,
         diskName: String? = nil
     ) async throws {
+        if kind == .dnp, !(1...255).contains(tracks ?? 0) {
+            throw APIError.httpError(400, "DNP images require 1...255 tracks")
+        }
         var items: [URLQueryItem] = []
         if let tracks { items.append(URLQueryItem(name: "tracks", value: String(tracks))) }
         if let diskName, !diskName.isEmpty {
@@ -879,6 +907,27 @@ struct UltimateAPIClient {
             queryItems: items)
     }
 
+    enum DiskMountMode: String, CaseIterable, Identifiable, Codable {
+        case readwrite, readonly, unlinked
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .readwrite: return "Read / Write"
+            case .readonly: return "Read Only"
+            case .unlinked: return "Temporary Writes"
+            }
+        }
+    }
+
+    func resetDrive(drive: String) async throws {
+        try await put("/v1/drives/\(drive):reset")
+    }
+
+    struct DrivePartition: Equatable, Decodable {
+        let id: Int
+        let path: String
+    }
+
     struct DriveInfo: Equatable, Identifiable {
         var id: String { letter }
         let letter: String
@@ -887,6 +936,20 @@ struct UltimateAPIClient {
         let type: String?
         let imageFile: String?
         let partition: String?
+        var imagePath: String? = nil
+        var lastError: String? = nil
+        var partitions: [DrivePartition] = []
+        var isEmulated: Bool { letter == "a" || letter == "b" }
+        var isSoftIEC: Bool { letter == "softiec" }
+        var displayName: String {
+            isSoftIEC ? "Software IEC Drive" : (isEmulated ? "Drive \(letter.uppercased())" : letter)
+        }
+        var mountedImagePath: String? {
+            guard let imageFile else { return nil }
+            if imageFile.hasPrefix("/") { return imageFile }
+            guard let imagePath, !imagePath.isEmpty else { return nil }
+            return (imagePath as NSString).appendingPathComponent(imageFile)
+        }
     }
 
     /// Snapshot of IEC / emulated drives (`GET /v1/drives`).
@@ -901,18 +964,24 @@ struct UltimateAPIClient {
         var result: [DriveInfo] = []
         for entry in drives {
             guard let (letter, payload) = entry.first(
-                where: { $0.key.count == 1 && ($0.value as? [String: Any]) != nil }
+                where: { ($0.value as? [String: Any]) != nil }
             ),
                   let info = payload as? [String: Any] else { continue }
             result.append(DriveInfo(
-                letter: letter.lowercased(),
+                letter: ["iec drive", "softiec"].contains(letter.lowercased()) ? "softiec" : letter.lowercased(),
                 enabled: info["enabled"] as? Bool ?? false,
                 busID: info["bus_id"] as? Int,
                 type: info["type"] as? String,
                 imageFile: (info["image_file"] as? String)
                     .flatMap { $0.isEmpty ? nil : $0 },
                 partition: (info["partition"] as? String)
-                    .flatMap { $0.isEmpty ? nil : $0 }))
+                    .flatMap { $0.isEmpty ? nil : $0 },
+                imagePath: info["image_path"] as? String,
+                lastError: info["last_error"] as? String,
+                partitions: (info["partitions"] as? [[String: Any]] ?? []).compactMap {
+                    guard let id = $0["id"] as? Int, let path = $0["path"] as? String else { return nil }
+                    return DrivePartition(id: id, path: path)
+                }))
         }
         return result.sorted { $0.letter < $1.letter }
     }
@@ -934,17 +1003,17 @@ struct UltimateAPIClient {
         let key: String
         let value: String
         let options: [String]
+        var minimum: Int? = nil
+        var maximum: Int? = nil
     }
 
     func fetchConfigItems(category: String) async throws -> [ConfigItem] {
-        let inner = try await fetchConfigCategory(category)
+        let inner = try await fetchConfigCategory(category, details: true)
         return inner.keys.sorted().compactMap { key in
             guard let value = inner[key] else { return nil }
             if let object = value as? [String: Any] {
-                let current = (object["value"] as? String)
-                    ?? (object["current"] as? String)
-                    ?? (object["selected"] as? String)
-                    ?? ""
+                let raw = object["value"] ?? object["current"] ?? object["selected"]
+                let current = (raw as? String) ?? (raw as? NSNumber)?.stringValue ?? ""
                 let options = (object["options"] as? [String])
                     ?? (object["choices"] as? [String])
                     ?? (object["values"] as? [String])
@@ -952,7 +1021,9 @@ struct UltimateAPIClient {
                 return ConfigItem(
                     key: key,
                     value: current.isEmpty ? String(describing: value) : current,
-                    options: options)
+                    options: options,
+                    minimum: object["min"] as? Int,
+                    maximum: object["max"] as? Int)
             }
             if let options = value as? [String], !options.isEmpty {
                 return ConfigItem(
@@ -1074,12 +1145,32 @@ struct UltimateAPIClient {
         let firmwareVersion: String?
         let hostname: String?
         let uniqueId: String?
+        var wifiMAC: String? = nil
+        var ethernetMAC: String? = nil
+        var gitCommitHash: String? = nil
+
+        /// Commodore's firmware line is separate from Ultimate 64's 3.x.
+        /// Require a final numeric version; release candidates are not 1.2.1.
+        var supportsRemoteMouseFirmware: Bool {
+            guard product?.localizedCaseInsensitiveContains("C64 Ultimate") == true,
+                  let version = displayFirmwareVersion else { return false }
+            let text = version.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 3,
+                  parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy({ $0.isASCII && $0.isNumber }) }),
+                  let major = Int(parts[0]), let minor = Int(parts[1]), let patch = Int(parts[2])
+            else { return false }
+            return major > 1 || (major == 1 && (minor > 2 || (minor == 2 && patch >= 1)))
+        }
 
         enum CodingKeys: String, CodingKey {
             case product
             case firmwareVersion = "firmware_version"
             case hostname
             case uniqueId = "unique_id"
+            case wifiMAC = "wifi_mac"
+            case ethernetMAC = "ethernet_mac"
+            case gitCommitHash = "git_commit_hash"
         }
 
         /// Product label for UI. Founder units often report bare

@@ -40,13 +40,30 @@ enum C64InputTransition: String, Codable {
 
 struct C64MachineInputEvent: Codable, Equatable {
     enum Kind: String, Codable {
-        case keyboard, joystick, releaseAll = "release_all"
+        case keyboard, joystick, mouse, releaseAll = "release_all"
     }
 
     let kind: Kind
     var inputs: [String]?
     var transition: C64InputTransition?
     var port: Int?
+    var move: MouseMotion?
+    var wheel: MouseWheel?
+
+    struct MouseMotion: Codable, Equatable { let x: Int; let y: Int }
+    struct MouseWheel: Codable, Equatable { let vertical: Int; let horizontal: Int }
+
+    static func mouseMove(x: Int, y: Int) -> Self {
+        Self(kind: .mouse, move: .init(x: x, y: y))
+    }
+
+    static func mouseWheel(vertical: Int, horizontal: Int) -> Self {
+        Self(kind: .mouse, wheel: .init(vertical: vertical, horizontal: horizontal))
+    }
+
+    static func mouseButton(_ button: String, transition: C64InputTransition) -> Self {
+        Self(kind: .mouse, inputs: [button], transition: transition)
+    }
 
     static func keyboard(
         _ inputs: [String],
@@ -74,7 +91,7 @@ struct C64MachineInputEnvelope: Codable, Equatable {
 }
 
 enum JoystickDirection: String, CaseIterable, Hashable {
-    case up, down, left, right, fire
+    case up, down, left, right, fire, fire2, fire3
 }
 
 enum JoystickFireKey: String, Codable, CaseIterable, Identifiable {
@@ -84,6 +101,33 @@ enum JoystickFireKey: String, Codable, CaseIterable, Identifiable {
     case option = "Option"
     case space = "Space"
     var id: String { rawValue }
+}
+
+enum GamepadFireMapping: String, Codable, CaseIterable, Identifiable {
+    case none = "None", fire = "Fire", fire2 = "Fire 2", fire3 = "Fire 3"
+    var id: String { rawValue }
+    var direction: JoystickDirection? {
+        switch self {
+        case .none: return nil
+        case .fire: return .fire
+        case .fire2: return .fire2
+        case .fire3: return .fire3
+        }
+    }
+}
+
+enum ExtraFireKey: String, Codable, CaseIterable, Identifiable {
+    case none = "None", z = "Z", x = "X", c = "C", space = "Space"
+    var id: String { rawValue }
+    var keyCode: UInt16? {
+        switch self {
+        case .none: return nil
+        case .z: return 6
+        case .x: return 7
+        case .c: return 8
+        case .space: return 49
+        }
+    }
 }
 
 @MainActor
@@ -101,8 +145,21 @@ final class InputSettings: ObservableObject {
     @Published var transport: InputTransportPreference { didSet { save() } }
     @Published var keymap: C64KeymapChoice { didSet { save() } }
     @Published var joystickEnabled: Bool { didSet { save() } }
+    @Published var mouseEnabled: Bool { didSet { save() } }
+    /// Live detection only; never persist hardware capabilities.
+    @Published private(set) var mouseAvailable = false
+
+    func updateMouseAvailability(_ available: Bool) {
+        if mouseAvailable != available { mouseAvailable = available }
+    }
     @Published var joystickPort: Int { didSet { save() } }
     @Published var joystickFireKey: JoystickFireKey { didSet { save() } }
+    @Published var fire2Key: ExtraFireKey { didSet { save() } }
+    @Published var fire3Key: ExtraFireKey { didSet { save() } }
+    @Published var buttonA: GamepadFireMapping { didSet { save() } }
+    @Published var buttonB: GamepadFireMapping { didSet { save() } }
+    @Published var buttonX: GamepadFireMapping { didSet { save() } }
+    @Published var buttonY: GamepadFireMapping { didSet { save() } }
     @Published var gameControllerEnabled: Bool { didSet { save() } }
     @Published var deadzone: Double { didSet { save() } }
     @Published private(set) var customKeymapName: String?
@@ -129,8 +186,15 @@ final class InputSettings: ObservableObject {
         var transport: InputTransportPreference
         var keymap: C64KeymapChoice
         var joystickEnabled: Bool
+        var mouseEnabled: Bool?
         var joystickPort: Int
         var joystickFireKey: JoystickFireKey?
+        var fire2Key: ExtraFireKey?
+        var fire3Key: ExtraFireKey?
+        var buttonA: GamepadFireMapping?
+        var buttonB: GamepadFireMapping?
+        var buttonX: GamepadFireMapping?
+        var buttonY: GamepadFireMapping?
         var gameControllerEnabled: Bool
         var deadzone: Double
         var customKeymapPath: String?
@@ -144,8 +208,15 @@ final class InputSettings: ObservableObject {
             transport = snapshot.transport
             keymap = snapshot.keymap
             joystickEnabled = snapshot.joystickEnabled
+            mouseEnabled = snapshot.mouseEnabled ?? false
             joystickPort = snapshot.joystickPort
             joystickFireKey = snapshot.joystickFireKey ?? .backquote
+            fire2Key = snapshot.fire2Key ?? .none
+            fire3Key = snapshot.fire3Key ?? .none
+            buttonA = snapshot.buttonA ?? .fire
+            buttonB = snapshot.buttonB ?? .none
+            buttonX = snapshot.buttonX ?? .none
+            buttonY = snapshot.buttonY ?? .none
             gameControllerEnabled = snapshot.gameControllerEnabled
             deadzone = snapshot.deadzone
             if let path = snapshot.customKeymapPath,
@@ -160,8 +231,11 @@ final class InputSettings: ObservableObject {
             transport = .auto
             keymap = .symbolic
             joystickEnabled = false
+            mouseEnabled = false
             joystickPort = 2
             joystickFireKey = .backquote
+            fire2Key = .none; fire3Key = .none
+            buttonA = .fire; buttonB = .none; buttonX = .none; buttonY = .none
             gameControllerEnabled = true
             deadzone = 0.35
             customKeymapName = nil
@@ -172,8 +246,11 @@ final class InputSettings: ObservableObject {
         let snapshot = Snapshot(
             transport: transport, keymap: keymap,
             joystickEnabled: joystickEnabled,
+            mouseEnabled: mouseEnabled,
             joystickPort: joystickPort == 1 ? 1 : 2,
             joystickFireKey: joystickFireKey,
+            fire2Key: fire2Key, fire3Key: fire3Key,
+            buttonA: buttonA, buttonB: buttonB, buttonX: buttonX, buttonY: buttonY,
             gameControllerEnabled: gameControllerEnabled,
             deadzone: min(max(deadzone, 0.05), 0.9),
             customKeymapPath: UserDefaults.standard.string(

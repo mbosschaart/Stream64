@@ -19,6 +19,8 @@ final class TelnetMonitorViewModel: ObservableObject {
     /// knows to redraw.
     @Published private(set) var revision = 0
     @Published private(set) var status = "Connecting…"
+    @Published private(set) var actionBusy = false
+    private var actionTask: Task<Void, Never>?
 
     let session: DeviceSession
     private let client = UltimateTelnetClient()
@@ -52,11 +54,94 @@ final class TelnetMonitorViewModel: ObservableObject {
     }
 
     func stop() {
+        actionTask?.cancel()
         client.disconnect()
     }
 
     func send(_ data: Data) {
+        actionTask?.cancel()
         client.send(data)
+    }
+
+    /// Read the menu after each navigation step. Never send Return based on
+    /// a guessed row number: category order and available actions vary by build.
+    func perform(_ action: FirmwareMenuAction) {
+        guard !actionBusy else { return }
+        actionBusy = true
+        status = "Opening \(action.rawValue)…"
+        actionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.actionBusy = false }
+            do {
+                if action == .startTape {
+                    self.client.send(Data([13])) // Open the selected TAP's context menu.
+                } else {
+                    try await self.openTaskCategory(for: action)
+                    if action == .stopTape, FirmwareMenuSelection.contains("Pause Tape Playback", in: self.screen) {
+                        try await self.selectMenuLabel("Pause Tape Playback")
+                        self.client.send(Data([13]))
+                        try await Task.sleep(for: .milliseconds(150))
+                        try await self.openTaskCategory(for: action)
+                    }
+                }
+                try await self.waitFor { FirmwareMenuSelection.contains(action.rawValue, in: self.screen) }
+                try await self.selectMenuLabel(action.rawValue)
+                try Task.checkCancellation()
+                self.client.send(Data([13]))
+                self.status = action == .saveCartridge || action == .saveDebugLog
+                    ? "Enter a filename in the firmware dialog; the current folder is the destination."
+                    : "Requested \(action.rawValue)."
+            } catch is CancellationError { }
+            catch {
+                self.status = "\(action.rawValue) unavailable here. Return to the file browser and select a writable folder; cartridge/tape actions require active media."
+            }
+        }
+    }
+
+    private func openTaskCategory(for action: FirmwareMenuAction) async throws {
+        client.send(Data("\u{1B}OP".utf8)) // F1 on released C64U 1.2.1
+        try await waitFor { action.categories.contains { FirmwareMenuSelection.contains($0, in: self.screen) } }
+        guard let category = action.categories.first(where: { FirmwareMenuSelection.contains($0, in: screen) }) else { throw CancellationError() }
+        try await selectMenuLabel(category)
+        client.send(Data([13]))
+        try await Task.sleep(for: .milliseconds(150))
+    }
+
+    private func waitFor(_ predicate: () -> Bool) async throws {
+        for _ in 0..<60 {
+            try Task.checkCancellation()
+            if predicate() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw FileSystemError.invalidResponse("Firmware menu did not show the expected action")
+    }
+
+    func selectMenuLabel(_ label: String) async throws {
+        // Space executes a firmware menu item. Do not type names: released
+        // builds also interpret some letters as navigation keys. Start at
+        // the top and inspect each highlight before advancing.
+        for _ in 0..<32 {
+            if !(try await moveMenuSelection(up: true)) { break }
+        }
+        for _ in 0..<32 {
+            try Task.checkCancellation()
+            if FirmwareMenuSelection.contains(label, in: screen, selected: true) { return }
+            if !(try await moveMenuSelection(up: false)) { break }
+        }
+        throw FileSystemError.invalidResponse("The requested menu item is unavailable")
+    }
+
+    private func moveMenuSelection(up: Bool) async throws -> Bool {
+        let previous = FirmwareMenuSelection.highlights(in: screen)
+        client.send(Data((up ? "\u{1B}[A" : "\u{1B}[B").utf8))
+        for _ in 0..<30 {
+            try await Task.sleep(for: .milliseconds(25))
+            if FirmwareMenuSelection.highlights(in: screen) != previous {
+                try await Task.sleep(for: .milliseconds(40))
+                return true
+            }
+        }
+        return false
     }
 }
 
@@ -97,6 +182,17 @@ struct TelnetMonitorView: View {
             .background(.bar)
         }
         .background(Color.black)
+        .toolbar {
+            ToolbarItemGroup {
+                Menu("Tape") {
+                    ForEach([FirmwareMenuAction.startTape, .pauseTape, .resumeTape, .stopTape]) { action in
+                        Button(action.rawValue) { model.perform(action) }
+                    }
+                }.disabled(model.actionBusy)
+                Button("Save Cartridge…") { model.perform(.saveCartridge) }.disabled(model.actionBusy)
+                Button("Save Debug Log…") { model.perform(.saveDebugLog) }.disabled(model.actionBusy)
+            }
+        }
     }
 }
 

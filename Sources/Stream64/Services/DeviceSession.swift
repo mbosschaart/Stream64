@@ -142,7 +142,7 @@ final class DeviceSession: ObservableObject {
     init(device: UltimateDevice, settings: AppSettings,
          transport: any HTTPTransport = URLSessionHTTPTransport()) {
         self.display = DisplaySettings.shared(for: device.id)
-        self.input = C64InputController(device: device)
+        self.input = C64InputController(device: device, transport: transport)
         self.device = device
         self.settings = settings
         self.transport = transport
@@ -353,6 +353,7 @@ final class DeviceSession: ObservableObject {
     /// automatic reconnect loop or surface an error for the user to retry.
     private func handleConnectionLost() {
         guard isConnected else { return }
+        input.invalidateMouseSupport()
         // `startDebugTrace` can be suspended in a REST request or its
         // stop/settle/start delay. Invalidate that work before changing to
         // `.connecting`, because debug startup otherwise treats reconnecting
@@ -438,6 +439,17 @@ final class DeviceSession: ObservableObject {
         return false
     }
 
+    var canWake: Bool { DeviceNetworkIdentity.wifiMAC(for: device.id) != nil }
+
+    func wake() async {
+        guard !isConnected, let mac = DeviceNetworkIdentity.wifiMAC(for: device.id) else { return }
+        do {
+            try WakeOnLANService.send(mac: mac)
+            transferStatus = .uploading("Wake packet sent; waiting for \(device.name)…")
+            startReconnectLoop(requiresPreference: false)
+        } catch { transferStatus = .failed(error.localizedDescription) }
+    }
+
     private enum PortConfigurationError: LocalizedError {
         case invalid(String, Int)
         case duplicate
@@ -517,6 +529,7 @@ final class DeviceSession: ObservableObject {
         // and the receivers.
         guard !connecting else { return }
         connecting = true
+        input.invalidateMouseSupport()
         connectionGeneration &+= 1
         let generation = connectionGeneration
         connectionRetryAllowed = false
@@ -550,6 +563,7 @@ final class DeviceSession: ObservableObject {
         }
         guard isCurrentConnection(generation), !Task.isCancelled else { return }
         reportedProduct = info.product ?? info.displayProduct
+        DeviceNetworkIdentity.remember(info, for: device.id)
         let description = info.connectionDescription
         do {
             // Start local UDP receivers first so no packets are dropped.
@@ -619,6 +633,7 @@ final class DeviceSession: ObservableObject {
             }
             state = .connected(
                 info: description.isEmpty ? device.displayAddress : description)
+            input.setDeviceInfo(info)
             // These are not required to show the live picture. Run them
             // asynchronously so restarting the app reconnects promptly;
             // SID playback itself awaits the debug task below.
@@ -942,6 +957,7 @@ final class DeviceSession: ObservableObject {
     /// asynchronous `disconnect()` tail. Idempotent: a second call after
     /// locals are already down does not bump `connectionGeneration` again.
     func prepareForEviction() {
+        input.invalidateMouseSupport()
         sidPlayback.beginPlayback()
         stopRecording()
         let needsInvalidate = state != .disconnected
@@ -1593,8 +1609,11 @@ final class DeviceSession: ObservableObject {
     ) async {
         do {
             let data = try Data(contentsOf: url)
+            let item = FilesystemItem(endpoint: .local, path: ManagedPath(url.path),
+                kind: ManagedFileKind.classify(name: url.lastPathComponent, isDirectory: false), size: Int64(data.count), modified: nil)
+            let profile = TitleSettingsProfile.isTitle(item.name) ? try await TitleProfileFileStore(devices: []).load(for: item) : nil
             _ = await loadData(
-                data, filename: url.lastPathComponent,
+                data, filename: url.lastPathComponent, titleProfile: profile,
                 mountBehavior: mountBehavior)
         } catch {
             transferStatus = .failed("\(url.lastPathComponent): \(error.localizedDescription)")
@@ -1607,6 +1626,7 @@ final class DeviceSession: ObservableObject {
     func loadRemoteFile(
         path: String,
         filename: String,
+        titleProfile: TitleSettingsProfile? = nil,
         mountBehavior: MountBehavior = .mountOnly
     ) async {
         let ext: String
@@ -1617,8 +1637,9 @@ final class DeviceSession: ObservableObject {
         }
         transferStatus = .uploading(filename)
         do {
+            if let titleProfile, ext != "zip" { try await TitleSettingsService.apply(titleProfile, api: client) }
             switch ext {
-            case "prg":
+            case "prg", "p00":
                 sidPlayback.beginPlayback()
                 await flushPendingKeys()
                 try await client.runPRG(path: path)
@@ -1682,6 +1703,7 @@ final class DeviceSession: ObservableObject {
         _ data: Data,
         filename: String,
         songNumber: Int? = nil,
+        titleProfile: TitleSettingsProfile? = nil,
         onUploadStarted: (() -> Void)? = nil,
         mountBehavior: MountBehavior = .mountOnly
     ) async -> LoadOutcome? {
@@ -1695,12 +1717,16 @@ final class DeviceSession: ObservableObject {
         onUploadStarted?()
         let outcome: LoadOutcome
         do {
+            if ext == "p00" { _ = try PC64File(data: data, filename: filename) }
+            if let titleProfile, ext != "zip" { try await TitleSettingsService.apply(titleProfile, api: client) }
             switch ext {
-            case "prg":
+            case "prg", "p00":
                 sidPlayback.beginPlayback()
                 await flushPendingKeys()
-                try await client.runPRG(data: data)
-                transferStatus = .done("Running \(filename)")
+                let program = ext == "p00" ? try PC64File(data: data, filename: filename).programData() : data
+                try await client.runPRG(data: program)
+                let name = ext == "p00" ? try PC64File(data: data, filename: filename).name : filename
+                transferStatus = .done("Running \(name)")
                 outcome = .running(filename)
             case "d64", "g64", "d71", "g71", "d81":
                 try await client.mountDisk(data: data, filename: filename, type: ext)
@@ -1767,6 +1793,7 @@ final class DeviceSession: ObservableObject {
                     payload.data,
                     filename: payload.filename,
                     songNumber: songNumber,
+                    titleProfile: titleProfile ?? payload.titleProfile,
                     onUploadStarted: nil,
                     mountBehavior: mountBehavior)
             case "crt":

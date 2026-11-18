@@ -22,6 +22,16 @@ final class C64InputController: ObservableObject {
     private var heldKeys: [UInt16: (inputs: [String], fallback: UInt8?)] = [:]
     private var joystickSources: [String: Set<JoystickDirection>] = [:]
     private var emittedJoystick: Set<JoystickDirection> = []
+    private var mouseFirmwareEligible = false
+    private var mouseProbeGeneration = 0
+    private var mouseAttached = false
+    private var mouseButtons = Set<String>()
+    private var mouseX = 0.0, mouseY = 0.0
+    private var wheelX = 0.0, wheelY = 0.0
+    private var mouseFlushTask: Task<Void, Never>?
+    private var remoteMousePending = 0
+    private var remoteMouseSampleTime = 0.0
+    private var preferenceObservers = Set<AnyCancellable>()
 
     init(
         device: UltimateDevice,
@@ -31,6 +41,111 @@ final class C64InputController: ObservableObject {
         settings = InputSettings.shared(for: device.id)
         client = UltimateAPIClient(device: device, transport: transport)
         self.maximumQueueDepth = maximumQueueDepth
+        settings.$mouseEnabled.dropFirst().sink { [weak self] enabled in
+            if !enabled { self?.releaseAllIfNeeded() }
+        }.store(in: &preferenceObservers)
+        Publishers.MergeMany([settings.$buttonA, settings.$buttonB, settings.$buttonX, settings.$buttonY])
+            .dropFirst(4).sink { [weak self] _ in self?.releaseAllIfNeeded() }
+            .store(in: &preferenceObservers)
+        Publishers.Merge(settings.$fire2Key, settings.$fire3Key)
+            .dropFirst(2).sink { [weak self] _ in self?.releaseAllIfNeeded() }
+            .store(in: &preferenceObservers)
+        settings.$transport.dropFirst().sink { [weak self] transport in
+            if transport == .legacy { self?.releaseAllIfNeeded() }
+        }.store(in: &preferenceObservers)
+    }
+
+    var canCaptureMouse: Bool {
+        settings.mouseEnabled && settings.mouseAvailable
+            && settings.transport != .legacy && settings.capability == .supported && !isTearingDown
+    }
+
+    func setDeviceInfo(_ info: UltimateAPIClient.DeviceInfo) {
+        invalidateMouseSupport()
+        mouseFirmwareEligible = info.supportsRemoteMouseFirmware
+    }
+
+    func invalidateMouseSupport() {
+        mouseProbeGeneration += 1
+        mouseFirmwareEligible = false
+        settings.updateMouseAvailability(false)
+        if mouseAttached || mouseFlushTask != nil { releaseAll() }
+    }
+
+    func moveMouse(x: Double, y: Double) {
+        guard canCaptureMouse, x.isFinite, y.isFinite else { return }
+        // Bound unsent motion under transport stalls; never replay old movement.
+        mouseX = min(254, max(-254, mouseX + x))
+        mouseY = min(254, max(-254, mouseY + y))
+        scheduleMouseFlush()
+    }
+
+    func scrollMouse(horizontal: Double, vertical: Double) {
+        guard canCaptureMouse, horizontal.isFinite, vertical.isFinite else { return }
+        wheelX = min(8, max(-8, wheelX + horizontal))
+        wheelY = min(8, max(-8, wheelY + vertical))
+        scheduleMouseFlush()
+    }
+
+    func mouseButton(_ button: String, pressed: Bool) {
+        guard canCaptureMouse, ["left", "right", "middle"].contains(button) else { return }
+        if pressed {
+            guard mouseButtons.insert(button).inserted else { return }
+        } else {
+            guard mouseButtons.remove(button) != nil else { return }
+        }
+        flushMouseMotion()
+        mouseAttached = true
+        enqueue(.matrix(.mouseButton(button, transition: pressed ? .press : .release), fallback: []))
+    }
+
+    private func scheduleMouseFlush() {
+        guard mouseFlushTask == nil else { return }
+        mouseFlushTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+            guard let self else { return }
+            self.mouseFlushTask = nil
+            self.flushMouseMotion()
+            if abs(self.mouseX) >= 1 || abs(self.mouseY) >= 1
+                || abs(self.wheelX) >= 1 || abs(self.wheelY) >= 1 {
+                self.scheduleMouseFlush()
+            }
+        }
+    }
+
+    private func flushMouseMotion() {
+        guard canCaptureMouse else { clearMouseState(); return }
+        let drained = Int(max(0, ProcessInfo.processInfo.systemUptime - remoteMouseSampleTime) / 0.02)
+        guard logicalQueueDepth < 4, max(0, remoteMousePending - drained) < 4 else {
+            mouseX = 0; mouseY = 0; wheelX = 0; wheelY = 0
+            return
+        }
+        let x = min(127, max(-127, Int(mouseX)))
+        let y = min(127, max(-127, Int(mouseY)))
+        mouseX -= Double(x); mouseY -= Double(y)
+        if x != 0 || y != 0 {
+            mouseAttached = true
+            enqueue(.matrix(.mouseMove(x: x, y: y), fallback: []))
+        }
+        // One detent per axis per tick prevents a scroll gesture from queuing
+        // seconds of firmware reports (each report takes at least 20 ms).
+        let h = min(1, max(-1, Int(wheelX)))
+        let v = min(1, max(-1, Int(wheelY)))
+        wheelX -= Double(h); wheelY -= Double(v)
+        if h != 0 || v != 0 {
+            mouseAttached = true
+            enqueue(.matrix(.mouseWheel(vertical: v, horizontal: h), fallback: []))
+        }
+    }
+
+    private func clearMouseState() {
+        mouseFlushTask?.cancel()
+        mouseFlushTask = nil
+        mouseX = 0; mouseY = 0; wheelX = 0; wheelY = 0
+        mouseButtons.removeAll()
+        mouseAttached = false
+        remoteMousePending = 0
+        remoteMouseSampleTime = ProcessInfo.processInfo.systemUptime
     }
 
     func prepare() async {
@@ -45,6 +160,13 @@ final class C64InputController: ObservableObject {
     }
 
     func probeCapability() async {
+        mouseProbeGeneration += 1
+        let mouseGeneration = mouseProbeGeneration
+        settings.updateMouseAvailability(false)
+        if mouseAttached || mouseFlushTask != nil {
+            await cancelAndRelease()
+            guard mouseGeneration == mouseProbeGeneration else { return }
+        }
         guard settings.transport != .legacy else {
             settings.updateCapability(.legacyFallback)
             matrixUnavailable = true
@@ -53,9 +175,16 @@ final class C64InputController: ObservableObject {
         settings.updateCapability(.probing)
         do {
             try await client.releaseAllInput()
+            guard mouseGeneration == mouseProbeGeneration else { return }
             matrixUnavailable = false
             settings.updateCapability(.supported)
+            if mouseFirmwareEligible {
+                let state = try? await client.fetchMachineInputState()
+                guard mouseGeneration == mouseProbeGeneration else { return }
+                settings.updateMouseAvailability(state?.mouse != nil)
+            }
         } catch {
+            guard mouseGeneration == mouseProbeGeneration else { return }
             if Self.isUnsupported(error) {
                 matrixUnavailable = true
                 settings.joystickEnabled = false
@@ -173,6 +302,14 @@ final class C64InputController: ObservableObject {
     }
 
     func releaseAll() {
+        clearMouseState()
+        // Discard stale queued mouse reports before the detach barrier.
+        let remaining = queue.dropFirst(queueHead).filter {
+            if case .matrix(let event, _) = $0 { return event.kind != .mouse }
+            return true
+        }
+        queue = Array(remaining)
+        queueHead = 0
         heldKeys.removeAll()
         joystickSources.removeAll()
         emittedJoystick.removeAll()
@@ -185,6 +322,7 @@ final class C64InputController: ObservableObject {
     /// input API traffic while running.
     func releaseAllIfNeeded() {
         guard !heldKeys.isEmpty
+            || mouseAttached || mouseFlushTask != nil
             || !joystickSources.isEmpty
             || !emittedJoystick.isEmpty
             || logicalQueueDepth > 0
@@ -195,6 +333,7 @@ final class C64InputController: ObservableObject {
     func cancelAndRelease() async {
         guard !isTearingDown else { return }
         isTearingDown = true
+        clearMouseState()
         heldKeys.removeAll()
         joystickSources.removeAll()
         emittedJoystick.removeAll()
@@ -295,7 +434,9 @@ final class C64InputController: ObservableObject {
             case .matrix:
                 var events: [C64MachineInputEvent] = []
                 var fallback: [UInt8] = []
-                while events.count < 64, queueHead < queue.count {
+                // Even verbose keyboard chords stay inside the firmware's
+                // independent 4096-byte body limit with this batch size.
+                while events.count < 16, queueHead < queue.count {
                     guard case .matrix(let event, let bytes) = queue[queueHead] else {
                         break
                     }
@@ -324,7 +465,11 @@ final class C64InputController: ObservableObject {
             return
         }
         do {
-            try await client.sendMachineInput(events)
+            let state = try await client.sendMachineInput(events)
+            if let mouse = state?.mouse {
+                remoteMousePending = mouse.pending
+                remoteMouseSampleTime = ProcessInfo.processInfo.systemUptime
+            }
             // Probe already established support — don't republish on every
             // successful joystick/keyboard batch (that rebuilds the viewer).
             settings.updateCapability(.supported)
@@ -346,6 +491,7 @@ final class C64InputController: ObservableObject {
     }
 
     private func scheduleEmergencyRelease() {
+        clearMouseState()
         heldKeys.removeAll()
         joystickSources.removeAll()
         emittedJoystick.removeAll()

@@ -118,6 +118,13 @@ private struct DeviceInputSettings: View {
     @State private var importingKeymap = false
     @State private var importError: String?
 
+    private func gamepadMapping(_ name: String) -> GamepadFireMapping {
+        switch name { case "A": return input.buttonA; case "B": return input.buttonB; case "X": return input.buttonX; default: return input.buttonY }
+    }
+    private func setGamepadMapping(_ name: String, _ value: GamepadFireMapping) {
+        switch name { case "A": input.buttonA = value; case "B": input.buttonB = value; case "X": input.buttonX = value; default: input.buttonY = value }
+    }
+
     var body: some View {
         Form {
             Section("Keyboard") {
@@ -145,6 +152,20 @@ private struct DeviceInputSettings: View {
                     value: input.servicesReady ? "Ready" : "Not verified")
             }
 
+            Section("Mouse") {
+                MouseInputToggle(input: input)
+                Text("Click the viewer to control a 1351 mouse on port 1. Move, drag, or scroll inside the picture. Escape turns mouse input off; Option-right-click opens Stream64’s menu.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !input.mouseAvailable {
+                    Text("Requires detected C64 Ultimate firmware 1.2.1 or newer and remote mouse support.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                FirmwareSettingSection(api: UltimateAPIClient(device: device), category: "U64 Specific Settings", title: "C64 Mouse Settings",
+                    keys: ["Mouse Mode", "Mouse Sensitivity", "Mouse Acceleration", "Mouse Wheel Sensitivity", "Mouse Wheel Direction", "Menu Mouse Navigation"])
+            }
             Section {
                 Toggle(
                     "Use keyboard as virtual joystick",
@@ -163,6 +184,20 @@ private struct DeviceInputSettings: View {
                         Text($0.rawValue).tag($0)
                     }
                 }
+                Picker("Fire 2 key (port 2)", selection: $input.fire2Key) {
+                    ForEach(ExtraFireKey.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Picker("Fire 3 key (port 2)", selection: $input.fire3Key) {
+                    ForEach(ExtraFireKey.allCases) { Text($0.rawValue).tag($0) }
+                }
+                ForEach(["A", "B", "X", "Y"], id: \.self) { name in
+                    Picker("Gamepad button \(name)", selection: Binding(
+                        get: { gamepadMapping(name) }, set: { setGamepadMapping(name, $0) })) {
+                        ForEach(GamepadFireMapping.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                }
+                Text("Fire 2 and Fire 3 require port 2 and compatible software. Extra buttons default to unassigned.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle(
                     "Enable connected game controllers",
                     isOn: $input.gameControllerEnabled)

@@ -112,7 +112,7 @@ struct Assembly64Client {
         var kind: FileKind {
             if ManagedFileKind.isMODFilename(filename) { return .mod }
             switch fileExtension {
-            case "prg": return .prg
+            case "prg", "p00": return .prg
             case "d64", "g64", "d71", "g71", "d81": return .disk
             case "sid": return .sid
             case "crt": return .cartridge

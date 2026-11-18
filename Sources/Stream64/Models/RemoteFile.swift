@@ -64,7 +64,7 @@ enum ManagedFileKind: String, Codable {
         if isDirectory { return .directory }
         if isMODFilename(name) { return .mod }
         switch (name as NSString).pathExtension.lowercased() {
-        case "prg": return .prg
+        case "prg", "p00": return .prg
         case "d64", "g64", "d71", "g71", "d81": return .disk
         case "sid": return .sid
         case "crt": return .crt

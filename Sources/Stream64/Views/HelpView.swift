@@ -328,14 +328,32 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     REST access is available. Web Remote Control must already be enabled for \
     Stream64 to reach the configuration API.
 
-    All held keyboard and joystick state is released automatically on focus \
+    **Mouse input** — enable Mouse Input beside the keyboard and joystick \
+    controls, or in Settings → Input. This requires detected C64 Ultimate \
+    firmware 1.2.1 or newer and a mouse-capable input endpoint. Click the \
+    picture, then move, drag, or scroll inside it. Left, right and middle \
+    buttons drive the port-1 mouse using the device's Mouse Mode and \
+    sensitivity settings. Escape turns mouse input off before exiting \
+    fullscreen; Option-right-click opens Stream64's context menu. Leaving \
+    the picture or changing focus releases input and detaches the remote \
+    mouse. Software must support a 1351 mouse for pointer control. In GEOS, \
+    choose geos → select input → COMM 1351 and confirm OK. Its joystick driver \
+    can respond to clicks while ignoring proportional mouse movement.
+
+    Settings → Input also maps extra fire2/fire3 keys and gamepad face buttons. \
+    Extra fire buttons use port 2. Device Controls exposes the hardware audio \
+    mixer, mouse configuration, Software IEC diagnostics and Wi-Fi wake options. \
+    Changes are read back from the device; Save to Flash is explicit. Offline \
+    Wake requires a previously learned Wi-Fi MAC and an associated Wi-Fi link.
+
+    All held keyboard, joystick and mouse state is released automatically on focus \
     loss, disconnect, reset, device switch, controller removal, and app exit.
     """
 
     private static let filesText = """
     **Drag a file onto the picture** to load it on that C64:
 
-    • **.prg** — uploaded and run immediately (reset + load + RUN)
+    • **.prg / .p00** — uploaded and run immediately; P00 wrappers are validated and removed
     • **.d64 / .g64 / .d71 / .g71 / .d81** — disk image, mounted in drive A
     • **.sid** — played with the Ultimate's built-in SID player
     • **.mod** / **mod.*** — played with the Ultimate's tracker/MOD player \

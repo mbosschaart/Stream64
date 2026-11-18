@@ -123,6 +123,11 @@ enum WorkspaceRestorer {
                 applyChrome(entry, toDeviceWindow: session.device.name,
                             suffix: "Drive Bay")
 
+            case .firmwareControls:
+                guard let deviceID = entry.deviceID, let session = session(for: deviceID) else { continue }
+                FirmwareControlsWindowController.show(session: session, frame: entry.frame)
+                applyChrome(entry, toDeviceWindow: session.device.name, suffix: "Device Controls")
+
             case .ultimateConfig:
                 guard let deviceID = entry.deviceID,
                       let session = session(for: deviceID) else { continue }
@@ -294,6 +299,7 @@ enum WorkspaceRestorer {
         entries += Stream64ToolWindows.captureOpenWindows()
         entries += DriveBayWindowController.captureOpenWindows()
         entries += UltimateConfigWindowController.captureOpenWindows()
+        entries += FirmwareControlsWindowController.captureOpenWindows()
         entries += MemoryConsoleWindowController.captureOpenWindows()
         entries += DebugTraceWindowController.captureOpenWindows()
         entries += TelnetMonitorWindowController.captureOpenWindows()

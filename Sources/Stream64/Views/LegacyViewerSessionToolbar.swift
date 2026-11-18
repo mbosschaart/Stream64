@@ -117,6 +117,11 @@ struct LegacyViewerSessionToolbar: ToolbarContent {
             .help("Power off \(session.device.name)")
             .disabled(!session.isConnected)
 
+            if !session.isConnected && session.canWake {
+                Button { Task { await session.wake() } } label: {
+                    Label("Wake C64", systemImage: "sun.max")
+                }
+            }
             Divider()
 
             Toggle(isOn: $settings.captureKeyboardWhenFocused) {
@@ -238,6 +243,9 @@ struct LegacyViewerSessionToolbar: ToolbarContent {
             }
             .help("Browse and transfer files between this Mac and the Ultimate")
 
+            Button { FirmwareControlsWindowController.show(session: session) } label: {
+                Label("Device Controls", systemImage: "slider.horizontal.3")
+            }.disabled(!session.isConnected)
             Button {
                 DriveBayWindowController.show(session: session)
             } label: {
@@ -320,6 +328,7 @@ private struct LegacyJoystickToolbarControls: View {
     @ObservedObject var input: InputSettings
 
     var body: some View {
+        MouseInputToggle(input: input)
         Toggle(isOn: $input.joystickEnabled) {
             Label(
                 input.joystickEnabled

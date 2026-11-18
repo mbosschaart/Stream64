@@ -12,6 +12,7 @@ struct WorkspaceWindowEntry: Codable, Equatable {
         case hvsc
         case sidRadio
         case driveBay
+        case firmwareControls
         case ultimateConfig
         case memoryConsole
         case debugTrace

@@ -5,25 +5,47 @@ actor FileOperationCoordinator {
 
     private let local = LocalFileSystemProvider()
     private let deviceResolver: DeviceResolver
+    typealias DriveInspector = @Sendable (UltimateDevice) async throws -> [UltimateAPIClient.DriveInfo]
+    private let inspectDrives: DriveInspector
 
-    init(deviceResolver: @escaping DeviceResolver) {
+    init(deviceResolver: @escaping DeviceResolver,
+         inspectDrives: @escaping DriveInspector = { try await UltimateAPIClient(device: $0).fetchDrives() }) {
         self.deviceResolver = deviceResolver
+        self.inspectDrives = inspectDrives
     }
 
     func process(
         _ job: TransferJob,
         progress: @escaping FileProgressHandler
     ) async throws {
+        // Inspect current hardware state for every mutation, including jobs
+        // that were queued before an image was mounted. Read failures stop the
+        // operation; a stale or unavailable drive snapshot is not permission.
+        let mutations: [TransferReference]
+        switch job.operation {
+        case .copy(_, let destination): mutations = [destination]
+        case .move(let source, let destination), .rename(let source, let destination): mutations = [source, destination]
+        case .delete(let target), .makeDirectory(let target): mutations = [target]
+        }
+        for reference in mutations {
+            if case .ultimate(let id) = reference.endpoint {
+                guard let device = await deviceResolver(id) else { throw FileSystemError.notConnected }
+                try MountedImageProtection.validateMutation(reference.path, drives: await inspectDrives(device))
+            }
+        }
         switch job.operation {
         case .copy(let source, let destination):
             try validateWritableDestination(destination)
-            _ = try await copy(
+            let copied = try await copy(
                 source, destination, policy: job.conflictPolicy,
                 progress: progress)
+            if copied && job.includesTitleSettings == true {
+                _ = try await copyCompanion(source, destination, job: job, progress: progress)
+            }
         case .move(let source, let destination):
             try validateWritableDestination(destination)
             try validateMutableSource(source)
-            if source.endpoint == destination.endpoint,
+            if source.endpoint == destination.endpoint, job.includesTitleSettings != true,
                try await provider(for: destination.endpoint).item(
                     destination.path) == nil {
                 try await provider(for: source.endpoint).rename(
@@ -37,9 +59,18 @@ actor FileOperationCoordinator {
                 // directory, preserve the complete source tree if any child
                 // was skipped; this may leave already-copied duplicates, but
                 // never destroys uncopied data.
-                if copiedEverything {
+                let companionCopied = job.includesTitleSettings == true && copiedEverything
+                    ? try await copyCompanion(source, destination, job: job, progress: progress) : true
+                if copiedEverything && companionCopied {
+                    try await checkMounted(source.path, endpoint: source.endpoint)
                     try await provider(for: source.endpoint).delete(
                         source.path, recursive: true)
+                    if job.includesTitleSettings == true, TitleSettingsProfile.isTitle(source.path.name), !source.isDirectory {
+                        let companion = TitleSettingsProfile.companionPath(for: source.path)
+                        if try await provider(for: source.endpoint).item(companion) != nil {
+                            try await provider(for: source.endpoint).delete(companion, recursive: false)
+                        }
+                    }
                 }
             }
         case .rename(let source, let destination):
@@ -58,6 +89,28 @@ actor FileOperationCoordinator {
             try validateWritableDestination(target)
             try await provider(for: target.endpoint).makeDirectory(target.path)
         }
+    }
+
+    private func checkMounted(_ path: ManagedPath, endpoint: FileEndpoint) async throws {
+        if case .ultimate(let id) = endpoint {
+            guard let device = await deviceResolver(id) else { throw FileSystemError.notConnected }
+            try MountedImageProtection.validateMutation(path, drives: await inspectDrives(device))
+        }
+    }
+
+    private func copyCompanion(_ source: TransferReference, _ destination: TransferReference,
+                               job: TransferJob, progress: @escaping FileProgressHandler) async throws -> Bool {
+        guard !source.isDirectory, TitleSettingsProfile.isTitle(source.path.name) else { return true }
+        let sourcePath = TitleSettingsProfile.companionPath(for: source.path)
+        guard let item = try await provider(for: source.endpoint).item(sourcePath) else { return true }
+        let destinationPath = TitleSettingsProfile.companionPath(for: destination.path)
+        if case .ultimate(let id) = destination.endpoint {
+            guard let device = await deviceResolver(id) else { throw FileSystemError.notConnected }
+            try MountedImageProtection.validateMutation(destinationPath, drives: await inspectDrives(device))
+        }
+        return try await copy(.init(endpoint: source.endpoint, path: sourcePath, isDirectory: false, size: item.size),
+            .init(endpoint: destination.endpoint, path: destinationPath, isDirectory: false, size: item.size),
+            policy: job.conflictPolicy, progress: progress)
     }
 
     private func copy(
@@ -85,6 +138,7 @@ actor FileOperationCoordinator {
             throw FileSystemError.unsafePath
         }
 
+        try await checkMounted(destinationPath, endpoint: requestedDestination.endpoint)
         if source.isDirectory {
             if try await destinationProvider.item(destinationPath) == nil {
                 try await destinationProvider.makeDirectory(destinationPath)
@@ -138,6 +192,7 @@ actor FileOperationCoordinator {
             ".stream64-backup-\(UUID().uuidString)")
         var backupCreated = false
         do {
+            try await checkMounted(destinationPath, endpoint: requestedDestination.endpoint)
             if try await destinationProvider.item(destinationPath) != nil {
                 // Preserve the original until promotion succeeds. Deleting
                 // first made a network/rename failure destructive.

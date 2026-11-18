@@ -30,14 +30,17 @@ struct TransferJob: Identifiable, Codable, Hashable {
     var completedBytes: Int64
     var totalBytes: Int64?
     var errorMessage: String?
+    var includesTitleSettings: Bool?
 
     init(
         operation: TransferOperation,
-        conflictPolicy: FileConflictPolicy = .ask
+        conflictPolicy: FileConflictPolicy = .ask,
+        includesTitleSettings: Bool = false
     ) {
         id = UUID()
         self.operation = operation
         self.conflictPolicy = conflictPolicy
+        self.includesTitleSettings = includesTitleSettings
         createdAt = Date()
         state = .queued
         completedBytes = 0
@@ -48,6 +51,7 @@ struct TransferJob: Identifiable, Codable, Hashable {
 
 @MainActor
 final class TransferQueue: ObservableObject {
+    var includeTitleSettings = true
     typealias Processor = @Sendable (
         TransferJob,
         @escaping FileProgressHandler
@@ -78,7 +82,8 @@ final class TransferQueue: ObservableObject {
         conflictPolicy: FileConflictPolicy = .ask
     ) {
         jobs.append(TransferJob(
-            operation: operation, conflictPolicy: conflictPolicy))
+            operation: operation, conflictPolicy: conflictPolicy,
+            includesTitleSettings: includeTitleSettings))
         save()
         startWorkerIfNeeded()
     }

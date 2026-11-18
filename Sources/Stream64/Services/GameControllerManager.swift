@@ -53,7 +53,12 @@ final class GameControllerManager {
             pad.buttonA.pressedChangedHandler = {
                 [weak self] _, _, pressed in
                 Task { @MainActor in
-                    self?.setFire(pressed)
+                    self?.setButton("A", pressed: pressed)
+                }
+            }
+            for (name, button) in [("B", pad.buttonB), ("X", pad.buttonX), ("Y", pad.buttonY)] {
+                button.pressedChangedHandler = { [weak self] _, _, pressed in
+                    Task { @MainActor in self?.setButton(name, pressed: pressed) }
                 }
             }
         } else if let pad = controller.microGamepad {
@@ -63,7 +68,7 @@ final class GameControllerManager {
             pad.buttonA.pressedChangedHandler = {
                 [weak self] _, _, pressed in
                 Task { @MainActor in
-                    self?.setFire(pressed)
+                    self?.setButton("A", pressed: pressed)
                 }
             }
         }
@@ -97,12 +102,21 @@ final class GameControllerManager {
             down: y < -threshold)
     }
 
-    private func setFire(_ pressed: Bool) {
+    func setButton(_ name: String, pressed: Bool) {
         guard let target,
               target.settings.gameControllerEnabled,
               target.settings.joystickEnabled else { return }
-        target.setJoystick(
-            source: "gamepad-button", input: .fire, pressed: pressed)
+        let mapping: GamepadFireMapping
+        switch name {
+        case "A": mapping = target.settings.buttonA
+        case "B": mapping = target.settings.buttonB
+        case "X": mapping = target.settings.buttonX
+        case "Y": mapping = target.settings.buttonY
+        default: return
+        }
+        guard let direction = mapping.direction else { return }
+        guard target.settings.joystickPort == 2 || direction == .fire else { return }
+        target.setJoystick(source: "gamepad-button-" + name, input: direction, pressed: pressed)
     }
 
     private func disconnect(_ controller: GCController) {
@@ -121,8 +135,11 @@ final class GameControllerManager {
                 source: source, left: false, right: false,
                 up: false, down: false)
         }
-        target.setJoystick(
-            source: "gamepad-button", input: .fire, pressed: false)
+        for name in ["A", "B", "X", "Y"] {
+            for direction in [JoystickDirection.fire, .fire2, .fire3] {
+                target.setJoystick(source: "gamepad-button-" + name, input: direction, pressed: false)
+            }
+        }
     }
 }
 

@@ -77,6 +77,9 @@ struct StreamContextMenu: View {
                 }
             }
         } else {
+            if session.canWake {
+                Button("Wake C64", systemImage: "sun.max") { Task { await session.wake() } }
+            }
             Button("Connect", systemImage: "bolt") {
                 Task { await session.connect() }
             }
@@ -136,6 +139,10 @@ struct StreamContextMenu: View {
             DriveBayWindowController.show(session: session)
         }
         .disabled(!isConnectedSnapshot)
+
+        Button("Device Controls…", systemImage: "slider.horizontal.3") {
+            FirmwareControlsWindowController.show(session: session)
+        }.disabled(!isConnectedSnapshot)
 
         Button("Ultimate Config…", systemImage: "gearshape.2") {
             UltimateConfigWindowController.show(session: session)
@@ -234,6 +241,8 @@ struct StreamContextMenu: View {
             Toggle(
                 "Capture Keyboard",
                 isOn: $settings.captureKeyboardWhenFocused)
+            Toggle("Mouse Input", isOn: inputBind(\.mouseEnabled))
+                .disabled(!input.mouseAvailable || input.capability != .supported || input.transport == .legacy)
             Picker("Keymap", selection: inputBind(\.keymap)) {
                 ForEach(C64KeymapChoice.allCases) {
                     Text($0.rawValue).tag($0)

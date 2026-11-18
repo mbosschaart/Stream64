@@ -40,8 +40,12 @@ struct DriveBayView: View {
                             ? "Refresh after the Ultimate finishes booting."
                             : "Connect to the device first."))
             } else {
-                List(model.drives) { drive in
-                    DriveBayRow(drive: drive, model: model)
+                List(model.drives.filter { $0.isEmulated || $0.isSoftIEC }) { drive in
+                    if drive.isSoftIEC {
+                        SoftIECDriveRow(drive: drive, model: model)
+                    } else {
+                        DriveBayRow(drive: drive, model: model)
+                    }
                 }
                 .listStyle(.inset)
             }
@@ -65,6 +69,10 @@ struct DriveBayView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         TextField("Disk name (optional)", text: $model.createDiskName)
                             .textFieldStyle(.roundedBorder)
+                        if model.createKind == .dnp {
+                            Stepper("\(model.dnpTracks) tracks", value: $model.dnpTracks, in: 1...255)
+                                .fixedSize()
+                        }
                         if model.createKind == .d64 {
                             Picker("Tracks", selection: $model.createTracks) {
                                 Text("35").tag(35)
@@ -80,7 +88,9 @@ struct DriveBayView: View {
                         .fixedSize()
                         .disabled(!isConnected || model.busy)
                     }
-                    Text("Example path: /Temp/blank.d64 — then mount from Drive A/B.")
+                    Text(model.createKind == .dnp
+                        ? "DNP is a native Software IEC partition image. Each track is 64 KiB; select the image in the firmware's partition setup."
+                        : "Example path: /Temp/blank.d64 — then mount from Drive A/B.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -163,6 +173,11 @@ private struct DriveBayRow: View {
                     .disabled(model.busy || !model.session.isConnected)
                     .accessibilityLabel("Drive mode")
 
+                    Picker("Write mode", selection: $model.mountMode) {
+                        ForEach(UltimateAPIClient.DiskMountMode.allCases) { Text($0.label).tag($0) }
+                    }.fixedSize().help("Temporary Writes accepts changes in memory without writing them to the image.")
+                    Button("Reset Drive") { Task { await model.reset(drive: drive.letter) } }
+                        .disabled(model.busy || !model.session.isConnected)
                     Button("Mount…") {
                         model.chooseAndMount(drive: drive.letter)
                     }
@@ -229,8 +244,16 @@ final class DriveBayViewModel: ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var busy = false
     @Published var createPath = "/Temp/blank.d64"
-    @Published var createKind: UltimateAPIClient.BlankDiskKind = .d64
+    @Published var createKind: UltimateAPIClient.BlankDiskKind = .d64 {
+        didSet {
+            if createPath.lowercased().hasSuffix("." + oldValue.fileExtension) {
+                createPath = String(createPath.dropLast(oldValue.fileExtension.count)) + createKind.fileExtension
+            }
+        }
+    }
     @Published var createTracks = 35
+    @Published var dnpTracks = 64
+    @Published var mountMode: UltimateAPIClient.DiskMountMode = .readwrite
     @Published var createDiskName = ""
     private var sessionObserver: AnyCancellable?
 
@@ -287,6 +310,13 @@ final class DriveBayViewModel: ObservableObject {
         }
     }
 
+    func reset(drive: String) async {
+        await run {
+            try await session.api.resetDrive(drive: drive)
+            statusMessage = "Drive reset."
+        }
+    }
+
     func unmount(drive: String) async {
         await run {
             try await session.api.unmountDisk(drive: drive)
@@ -308,7 +338,7 @@ final class DriveBayViewModel: ObservableObject {
             try await session.api.createBlankDisk(
                 path: path,
                 kind: createKind,
-                tracks: createKind == .d64 ? createTracks : nil,
+                tracks: createKind == .dnp ? dnpTracks : (createKind == .d64 ? createTracks : nil),
                 diskName: createDiskName)
             statusMessage = "Created \(path)."
         }
@@ -333,7 +363,7 @@ final class DriveBayViewModel: ObservableObject {
                 try await session.api.mountDisk(
                     data: data,
                     filename: url.lastPathComponent,
-                    drive: drive)
+                    drive: drive, mode: mountMode)
                 statusMessage = "Mounted \(url.lastPathComponent) on \(drive.uppercased())."
             }
         }
@@ -403,11 +433,11 @@ final class DriveBayWindowController: NSWindowController, NSWindowDelegate {
             kind: .driveBay, deviceID: session.device.id)
         let model = DriveBayViewModel(session: session)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 840, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.title = "\(session.device.name) Drive Bay"
-        window.minSize = NSSize(width: 560, height: 320)
+        window.minSize = NSSize(width: 720, height: 520)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)

@@ -30,7 +30,7 @@ struct Assembly64ArchiveInspector {
         var isSupportedByDevice: Bool {
             if ManagedFileKind.isMODFilename(filename) { return true }
             switch fileExtension {
-            case "prg", "d64", "g64", "d71", "g71", "d81", "sid", "crt":
+            case "prg", "p00", "d64", "g64", "d71", "g71", "d81", "sid", "crt":
                 return true
             default:
                 return false
@@ -202,7 +202,7 @@ struct Assembly64ArchiveInspector {
     static func firstSupportedPayload(
         from data: Data,
         limits: Limits = .default
-    ) throws -> (filename: String, data: Data) {
+    ) throws -> (filename: String, data: Data, titleProfile: TitleSettingsProfile?) {
         let items = try inspect(data, limits: limits)
         guard let item = items
             .filter(\.isSupportedByDevice)
@@ -218,7 +218,14 @@ struct Assembly64ArchiveInspector {
         }
         let bytes = try extract(
             item, from: data, inspected: items, limits: limits)
-        return (item.filename, bytes)
+        let companionName = (item.normalizedPath as NSString).deletingPathExtension + ".cfg"
+        let companion = items.first { $0.normalizedPath.caseInsensitiveCompare(companionName) == .orderedSame }
+        let profile: TitleSettingsProfile?
+        if let companion, TitleSettingsProfile.isTitle(item.filename) {
+            guard companion.uncompressedSize <= TitleSettingsProfile.maximumBytes else { throw InspectionError.fileTooLarge(companion.normalizedPath) }
+            profile = try TitleSettingsProfile(data: extract(companion, from: data, inspected: items, limits: limits))
+        } else { profile = nil }
+        return (item.filename, bytes, profile)
     }
 
     private static func normalizedPath(_ path: String) throws -> String {
